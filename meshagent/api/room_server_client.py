@@ -403,13 +403,15 @@ class ToolDescription:
         title: str,
         description: str,
         input_schema: dict,
-        thumbnail_url: Optional[str] = None
+        thumbnail_url: Optional[str] = None,
+        defs: Optional[dict] = None
     ):
         self.name = name
         self.title = title
         self.description = description
         self.input_schema = input_schema
         self.thumbnail_url = thumbnail_url
+        self.defs = defs
 
     def to_json(self):
         return {
@@ -536,6 +538,7 @@ class AgentsClient:
                             description=tool_info.get("description", ""),
                             input_schema=tool_info["input_schema"],
                             thumbnail_url=tool_info.get("thumbnail_url", None),
+                            defs=tool_info.get("defs", None)
                         )
                     )
 
