@@ -404,7 +404,8 @@ class ToolDescription:
         description: str,
         input_schema: dict,
         thumbnail_url: Optional[str] = None,
-        defs: Optional[dict] = None
+        defs: Optional[dict] = None,
+        pricing: Optional[str] = None
     ):
         self.name = name
         self.title = title
@@ -412,6 +413,7 @@ class ToolDescription:
         self.input_schema = input_schema
         self.thumbnail_url = thumbnail_url
         self.defs = defs
+        self.pricing = pricing
 
     def to_json(self):
         return {
@@ -420,6 +422,8 @@ class ToolDescription:
             "title" : self.title,
             "thumbnail_url" : self.thumbnail_url,
             "input_schema" : self.input_schema,
+            "defs" : self.defs,
+            "pricing" : self.pricing
         }
 
 class ToolkitDescription:
