@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Optional
 from abc import ABC, abstractmethod
 import logging
+from typing import Literal, get_args
 
 logger = logging.getLogger("schema")
 logger.setLevel(logging.INFO)
@@ -13,11 +14,12 @@ class MeshSchemaValidationException(MeshSchemaException):
     pass
 
 # a basic value type
-class SimpleValue(Enum):
-    NUMBER = "number"
-    STRING = "string"
-    NULL = "null"
-    BOOLEAN = "boolean"
+SimpleValue = Literal[
+    "number",
+    "string",
+    "null",
+    "boolean"
+]
 
 
 # defines a schema that can be used to represent a document, all schemas must have a single root object
@@ -115,7 +117,7 @@ class ValueProperty(ElementProperty):
         self._enum = enum
     
     def validate(self, schema: MeshSchema):
-        if self._type not in [ v.value for v in SimpleValue.__members__.values() ]:
+        if self._type not in get_args(SimpleValue):
             raise(MeshSchemaValidationException("Invalid value type: "+self._type))
 
     @property

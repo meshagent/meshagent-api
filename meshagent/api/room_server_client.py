@@ -1326,7 +1326,7 @@ class TextDataType(DataType):
 _data_types["text"] = TextDataType
 
 
-type CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
+CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
 class DatabaseClient:
     """
