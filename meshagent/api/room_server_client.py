@@ -589,8 +589,8 @@ class StorageClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
         self._events = {}
-        room.protocol.register_handler("storage.file_deleted", self._on_file_deleted)
-        room.protocol.register_handler("storage.file_updated", self._on_file_updated)
+        room.protocol.register_handler("storage.file.deleted", self._on_file_deleted)
+        room.protocol.register_handler("storage.file.updated", self._on_file_updated)
 
 
     def on(self, event_name: str, func: Callable):
@@ -610,10 +610,10 @@ class StorageClient:
 
 
     async def _on_file_deleted(self, protocol, message_id, msg_type, data):
-        self.emit("file_deleted", path=json.loads(data)["path"])
+        self.emit("file.deleted", path=json.loads(data)["path"])
 
     async def _on_file_updated(self, protocol, message_id, msg_type, data):
-        self.emit("file_updated", path=json.loads(data)["path"])
+        self.emit("file.updated", path=json.loads(data)["path"])
 
     async def exists(self, *, path: str):
         """
