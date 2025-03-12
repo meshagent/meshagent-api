@@ -32,9 +32,7 @@ setuptools.setup(
         "pytest>=8.3.4",
         "pytest-asyncio>=0.24.0",
         "PyJWT>=2.10.1",
-        "stpyv8>=13.1.201.8",
-        "livekit-api>=0.8.0",
-        "livekit-agents>=0.12.2",
+        "stpyv8>=13.1.201.8"
     ],
     package_data={        
         "meshagent.api": ["py.typed", "*.pyi", "**/*.pyi",  "**/*.js"],

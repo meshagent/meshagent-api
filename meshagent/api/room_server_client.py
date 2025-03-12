@@ -589,8 +589,8 @@ class StorageClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
         self._events = {}
-        room.protocol.register_handler("storage.file_deleted", self._on_file_deleted)
-        room.protocol.register_handler("storage.file_updated", self._on_file_updated)
+        room.protocol.register_handler("storage.file.deleted", self._on_file_deleted)
+        room.protocol.register_handler("storage.file.updated", self._on_file_updated)
 
 
     def on(self, event_name: str, func: Callable):
@@ -610,10 +610,10 @@ class StorageClient:
 
 
     async def _on_file_deleted(self, protocol, message_id, msg_type, data):
-        self.emit("file_deleted", path=json.loads(data)["path"])
+        self.emit("file.deleted", path=json.loads(data)["path"])
 
     async def _on_file_updated(self, protocol, message_id, msg_type, data):
-        self.emit("file_updated", path=json.loads(data)["path"])
+        self.emit("file.updated", path=json.loads(data)["path"])
 
     async def exists(self, *, path: str):
         """
@@ -1600,6 +1600,7 @@ class DatabaseClient:
         *,
         table: str,
         column: str,
+        replace: Optional[bool] = None
     ) -> None:
         """
         Create a vector index on a given column.
@@ -1610,6 +1611,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "column": column,
+            "replace": replace,
         }
         await self.room.send_request("database.create_vector_index", payload)
         return None
@@ -1619,6 +1621,7 @@ class DatabaseClient:
         *,
         table: str,
         column: str,
+        replace: Optional[bool] = None
     ) -> None:
         """
         Create a scalar index on a given column.
@@ -1629,6 +1632,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "column": column,
+            "replace": replace,
         }
         await self.room.send_request("database.create_scalar_index", payload)
         return None
@@ -1638,6 +1642,7 @@ class DatabaseClient:
         *,
         table: str,
         column: str,
+        replace: Optional[bool] = None
     ) -> None:
         """
         Create a full-text search index on a given text column.
@@ -1648,6 +1653,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "column": column,
+            "replace" : replace,
         }
         await self.room.send_request("database.create_full_text_search_index", payload)
         return None
@@ -1665,5 +1671,6 @@ class DatabaseClient:
         }
         response = await self.room.send_request("database.list_indexes", payload)
         if hasattr(response, "json"):
-            return response.json
-        return {}
+            return response.json["indexes"]
+        
+        raise RoomException("unexpected return type")
