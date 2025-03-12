@@ -1600,6 +1600,7 @@ class DatabaseClient:
         *,
         table: str,
         column: str,
+        replace: Optional[bool] = None
     ) -> None:
         """
         Create a vector index on a given column.
@@ -1610,6 +1611,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "column": column,
+            "replace": replace,
         }
         await self.room.send_request("database.create_vector_index", payload)
         return None
@@ -1619,6 +1621,7 @@ class DatabaseClient:
         *,
         table: str,
         column: str,
+        replace: Optional[bool] = None
     ) -> None:
         """
         Create a scalar index on a given column.
@@ -1629,6 +1632,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "column": column,
+            "replace": replace,
         }
         await self.room.send_request("database.create_scalar_index", payload)
         return None
@@ -1638,6 +1642,7 @@ class DatabaseClient:
         *,
         table: str,
         column: str,
+        replace: Optional[bool] = None
     ) -> None:
         """
         Create a full-text search index on a given text column.
@@ -1648,6 +1653,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "column": column,
+            "replace" : replace,
         }
         await self.room.send_request("database.create_full_text_search_index", payload)
         return None
@@ -1665,5 +1671,6 @@ class DatabaseClient:
         }
         response = await self.room.send_request("database.list_indexes", payload)
         if hasattr(response, "json"):
-            return response.json
-        return {}
+            return response.json["indexes"]
+        
+        raise RoomException("unexpected return type")
