@@ -166,6 +166,32 @@ class ErrorResponse(Response):
 
 response_types["error"] = ErrorResponse
 
+
+class RawOutputs(Response):
+    def __init__(self, *, outputs: dict, usage: Optional[dict[str,float]] = None):
+        super().__init__(usage=usage)
+        self.outputs = outputs
+
+    def to_json(self):
+        return {
+            "type" : "raw",
+            "outputs" : self.outputs,
+            "usage" : self.usage
+        }
+    
+    @staticmethod
+    def unpack(*, header: dict, payload: bytes):
+        return RawOutputs(json=header["outputs"], usage=header.get("usage", None))
+
+    def pack(self):
+        return pack_message(header=self.to_json())
+    
+    def __str__(self):
+        return f"RawOutputs: outputs={json.dumps(self.outputs)} usage={self.usage}"
+
+
+response_types["raw"] = RawOutputs
+
 class JsonResponse(Response):
     def __init__(self, *, json: dict, usage: Optional[dict[str,float]] = None):
         super().__init__(usage=usage)
