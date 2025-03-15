@@ -258,15 +258,18 @@ class RoomClient:
             attributes = message["attributes"]
             self._on_participant_init(participant_id, attributes)
             
-
+class _RefCount[T]:
+    def __init__(self, ref: T):
+        self.ref = ref
+        self.count = 0
 
 class SyncClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
         room.protocol.register_handler("room.sync", self._handle_sync)
 
-        self._connected_documents = dict[str, MeshDocument]()
-        self._connecting_documents = dict[str, asyncio.Future]()
+        self._connected_documents = dict[str, _RefCount[MeshDocument]]()
+        self._connecting_documents = dict[str, asyncio.Future[_RefCount[MeshDocument]]]()
         self._sync_ch = Chan[_QueuedSync]()
         self._main_task = None
     
@@ -294,13 +297,19 @@ class SyncClient:
          await self.room.send_request("room.create", { "path" : path, "json" : json })
         
     async def open(self, *, path: str, create: bool = True) -> MeshDocument:
-        if path in self._connected_documents or path in self._connecting_documents:
-            raise RoomException(f"Already connected to {path}")
+
+        if path in self._connecting_documents:
+            await self._connecting_documents[path]
+        
+        if path in self._connected_documents:
+            doc = self._connected_documents[path]
+            doc.count = doc.count + 1
+            return doc.ref
 
         # todo: add support for state vector / partial updates        
         # todo: initial bytes loading
 
-        connecting_fut = asyncio.Future()
+        connecting_fut = asyncio.Future[_RefCount[MeshDocument]]()
         self._connecting_documents[path] = connecting_fut
 
         def publish_sync(base64: str):
@@ -317,10 +326,11 @@ class SyncClient:
             })
 
             schema_json = response["schema"]
-            doc = runtime.new_document(schema=MeshSchema.from_json(schema_json), on_document_sync=publish_sync, factory=MeshDocument)
+            doc : MeshDocument = runtime.new_document(schema=MeshSchema.from_json(schema_json), on_document_sync=publish_sync, factory=MeshDocument)
             
-            self._connected_documents[path] = doc
-            connecting_fut.set_result(True)
+            ref = _RefCount(doc)
+            self._connected_documents[path] = ref
+            connecting_fut.set_result(ref)
             self._connecting_documents.pop(path)
 
             logger.info("Connected to %s", path)
@@ -328,19 +338,22 @@ class SyncClient:
             connecting_fut.set_exception(e)
             self._connecting_documents.pop(path)
             raise
-
+        
+        await doc.synchronized
         return doc
     
     async def close(self, *, path: str) -> None:
         await asyncio.sleep(5) # TODO: flush pending changes instead of waiting for them
 
-        response = await self.room.send_request("room.disconnect", {"path":path})
-
         if path not in self._connected_documents:
             raise RoomException("Not connected to "+path)
 
-        doc = self._connected_documents.pop(path)
-        runtime._unregister_document(doc=doc)
+        ref = self._connected_documents[path]
+        ref.count = ref.count - 1
+        if ref.count == 0:
+            doc = self._connected_documents.pop(path)
+            response = await self.room.send_request("room.disconnect", {"path":path})
+            runtime._unregister_document(doc=doc.ref)
 
     async def sync(self, *, path: str, data: bytes) -> None:
          await self.room.send_request("room.sync", {"path":path}, data=data)
@@ -360,9 +373,9 @@ class SyncClient:
         if path in self._connected_documents:
             doc = self._connected_documents[path]
             
-            runtime.apply_backend_changes(doc.id, payload.decode("utf-8"))
-            if doc.synchronized.done() == False:
-                doc.synchronized.set_result(True)
+            runtime.apply_backend_changes(doc.ref.id, payload.decode("utf-8"))
+            if doc.ref.synchronized.done() == False:
+                doc.ref.synchronized.set_result(True)
         else:
             raise RoomException("received change for a document that is not connected:" + path)
 
