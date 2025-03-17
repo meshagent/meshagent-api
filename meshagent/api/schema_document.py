@@ -1,5 +1,5 @@
 import uuid
-from typing import Callable
+from typing import Callable, Any, Optional
 import json
 from meshagent.api.schema import MeshSchema, ElementType, ChildProperty, ValueProperty
 
@@ -102,6 +102,14 @@ class Element(EventEmitter):
     def schema(self) -> ElementType:
         return self._schema
 
+    def set_attribute(self, name: str, value: Any):
+        self._data["attributes"][name] = value
+    
+    def get_attribute(self, name: str, default: Optional[Any] = None):
+         if name in self._data["attributes"]:
+            return self._data["attributes"][name]
+         return default
+    
     def __getitem__(self, name: str):
         if name in self._data["attributes"]:
             return self._data["attributes"][name]
