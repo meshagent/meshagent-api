@@ -473,12 +473,15 @@ class AgentsClient:
         await self.room.send_request("agent.call", { "name" : name, "url": url, "arguments": arguments})
         return None
 
-    async def ask(self, *, agent: str, arguments: dict, participant_id: Optional[str] = None, requires: Optional[list[Requirement]] = None):
+    async def ask(self, *, agent: str, arguments: dict, on_behalf_of: Optional[RemoteParticipant] = None, requires: Optional[list[Requirement]] = None):
         request =  {
-            "participant_id" : participant_id,
             "agent": agent,
             "arguments": arguments,
         }
+
+        if on_behalf_of != None:
+            request["on_behalf_of_id"] = on_behalf_of.id
+    
         if requires != None:
             request["requires"] = [
                 *map(lambda x : x.to_json(), requires)
