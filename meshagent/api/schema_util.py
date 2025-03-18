@@ -1,4 +1,5 @@
 from copy import deepcopy
+from typing import Optional
 
 def validation_schema(description: str):
     return {
@@ -30,15 +31,19 @@ def prompt_schema(description: str):
         }
     }
 
-def no_arguments_schema(description: str):
-    return {
-        "description" : description,
-        "type" : "object",
+def no_arguments_schema(description: Optional[str] = None):
+    schema = {
+       "type" : "object",
         "required" : [],
         "additionalProperties" : False,
         "properties" : {
         }
     }
+
+    if description != None:
+        schema["description"] = description
+    
+    return schema
 
 def merge(*, schema: dict, additional_properties: dict) -> dict:
     schema = deepcopy(schema)

@@ -473,8 +473,18 @@ class AgentsClient:
         await self.room.send_request("agent.call", { "name" : name, "url": url, "arguments": arguments})
         return None
 
-    async def ask(self, *, agent: str, arguments: dict):
-        response = await self.room.send_request("agent.ask", { "agent": agent, "arguments": arguments})
+    async def ask(self, *, agent: str, arguments: dict, participant_id: Optional[str] = None, requires: Optional[list[Requirement]] = None):
+        request =  {
+            "participant_id" : participant_id,
+            "agent": agent,
+            "arguments": arguments,
+        }
+        if requires != None:
+            request["requires"] = [
+                *map(lambda x : x.to_json(), requires)
+            ]
+
+        response = await self.room.send_request("agent.ask", request)
         return response["answer"]
 
     async def invoke_tool(self, *, toolkit: str, tool: str, arguments: dict, participant_id: Optional[str] = None, on_behalf_of_id: Optional[str] = None) -> FileResponse | str | dict | None:
