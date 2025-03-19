@@ -69,11 +69,6 @@ class DocumentRuntime(AbstractContextManager):
         self._v8.eval(
         '''
 
-        const module = {
-            exports: {
-            }
-        };
-
         const crypto = {
             getRandomValues(v) {
                 let rands = onGetRandomValues(v.BYTES_PER_ELEMENT, v.length);
@@ -116,17 +111,17 @@ class DocumentRuntime(AbstractContextManager):
 
     def apply_backend_changes(self, document_id: str, base64: str):
         logger.info("applying backend changes to document %s: %s", document_id, base64)
-        self.execute("module.exports.applyBackendChanges({id},{base64})".format(id=json.dumps(document_id),base64=json.dumps(base64)))
+        self.execute("meshagent.applyBackendChanges({id},{base64})".format(id=json.dumps(document_id),base64=json.dumps(base64)))
 
     def _register_document(self, doc: 'RuntimeDocument', data: bytes | None = None) -> None:
         self._docs[doc.id] = doc
         if data == None:
-            self.execute("module.exports.registerDocument({id})".format(id=json.dumps(doc.id)))
+            self.execute("meshagent.registerDocument({id})".format(id=json.dumps(doc.id)))
         else:
-            self.execute("module.exports.registerDocument({id}, {data})".format(id=json.dumps(doc.id), data= json.dumps(base64.standard_b64encode(data).decode("utf-8"))))
+            self.execute("meshagent.registerDocument({id}, {data})".format(id=json.dumps(doc.id), data= json.dumps(base64.standard_b64encode(data).decode("utf-8"))))
 
     def _unregister_document(self,  doc: 'RuntimeDocument') -> None:
-        self.execute("module.exports.unregisterDocument({id})".format(id=json.dumps(doc.id)))
+        self.execute("meshagent.unregisterDocument({id})".format(id=json.dumps(doc.id)))
         self._docs.pop(doc.id)
 
 runtime = DocumentRuntime()
@@ -150,18 +145,18 @@ class RuntimeDocument(Document):
 
         if vector == None:
             base64_state = runtime.execute('''
-                module.exports.getState({id});
+                meshagent.getState({id});
             '''.format(id=json.dumps(self._id)))
         else:
             base64_state = runtime.execute('''
-                module.exports.getState({id}, {vector});
+                meshagent.getState({id}, {vector});
             '''.format(id=json.dumps(self._id), vector=json.dumps(base64.standard_b64encode(vector))))
 
         return base64.standard_b64decode(base64_state)
 
     def get_state_vector(self) -> bytes:
         base64_state = runtime.execute('''
-            module.exports.getStateVector({id});
+            meshagent.getStateVector({id});
         '''.format(id=json.dumps(self._id)))
 
         return base64.standard_b64decode(base64_state)
@@ -175,7 +170,7 @@ class RuntimeDocument(Document):
         logger.info("applying changes to document %s: %s", self.id, changes_json)
      
         runtime.execute('''
-            module.exports.applyChanges({changes});
+            meshagent.applyChanges({changes});
         '''.format(changes=changes_json))
         
     @property
