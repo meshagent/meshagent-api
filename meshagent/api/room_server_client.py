@@ -15,7 +15,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 logger = logging.getLogger("room_server_client")
-logger.setLevel(logging.WARN)
+logger.setLevel(logging.INFO)
 
 class RoomException(Exception):
     pass
@@ -122,6 +122,12 @@ class RoomMessage:
         self.message = message
         self.attachment = attachment
 
+class _QueuedRoomMessage(RoomMessage):
+    def __init__(self, *, from_participant_id, type, message, attachment = None, to: RemoteParticipant):
+        super().__init__(from_participant_id=from_participant_id, type=type, message=message, attachment=attachment)
+        self.to = to
+        self.fut = asyncio.Future()
+
 class RoomClient:
 
     def __init__(self, *, protocol: ClientProtocol):
@@ -166,8 +172,10 @@ class RoomClient:
         await self.protocol.__aenter__()
 
         await self._ready
-        
+           
         await self.sync.start()
+
+        await self.messaging.start()
 
         await self._local_participant_ready
 
@@ -176,6 +184,7 @@ class RoomClient:
     async def __aexit__(self, exc_type, exc, tb):        
         
         await self.sync.stop()
+        await self.messaging.stop()
         await self.protocol.__aexit__(None, None, None)
 
         return
@@ -850,6 +859,8 @@ class MessagingClient:
         room.protocol.register_handler("messaging.send", self._handle_message_send)
         self._stream_writers: Dict[str, asyncio.Future] = {}
         self._stream_readers: Dict[str, MessageStreamReader] = {}
+        self._message_queue = Chan[_QueuedRoomMessage]()
+        self._send_task = None
 
 
     @property
@@ -916,6 +927,53 @@ class MessagingClient:
         else:
             self.emit("message", message=message)
 
+    async def start(self):
+        self._send_task = asyncio.create_task(self._send_messages())
+
+    async def stop(self):
+
+        
+        self._message_queue.close()
+        await asyncio.gather(self._send_task)
+
+
+    async def _send_messages(self):
+        async for msg in self._message_queue:
+            try:
+                body = {
+                    "type": msg.type,
+                    "message": msg.message,
+                }
+            
+                body["to_participant_id"] = msg.to.id
+                await self.room.send_request("messaging.send", body, data=msg.attachment)
+                msg.fut.set_result(True)
+                
+            except Exception as ex:
+                logger.info("Unable to send message to participant", exc_info=ex)
+                msg.fut.set_exception(ex)
+
+    def send_message_nowait(
+        self,
+        *,
+        to: Participant,
+        type: str,
+        message: dict,
+        attachment: Optional[bytes] = None
+    ):
+        if self._send_task == None:
+            raise RoomException("Cannot send messages because messaging has not been started")
+        
+        self._message_queue.send_nowait(
+            _QueuedRoomMessage(
+                from_participant_id=self.room.local_participant.id,
+                to=to,
+                type=type,
+                message=message,
+                attachment=attachment
+            )
+        )
+
     async def send_message(
         self,
         *,
@@ -924,15 +982,23 @@ class MessagingClient:
         message: dict,
         attachment: Optional[bytes] = None
     ):
-        body = {
-            "type": type,
-            "message": message,
-        }
-       
-        body["to_participant_id"] = to.id
+        if self._send_task == None:
+            raise RoomException("Cannot send messages because messaging has not been started")
+        
+        msg = _QueuedRoomMessage(
+                from_participant_id=self.room.local_participant.id,
+                to=to,
+                type=type,
+                message=message,
+                attachment=attachment
+            )
+        
+        self._message_queue.send_nowait(
+           msg
+        )
 
-
-        await self.room.send_request("messaging.send", body, data=attachment)
+        await msg.fut
+     
         
     async def broadcast_message(
         self,
