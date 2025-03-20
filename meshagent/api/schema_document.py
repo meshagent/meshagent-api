@@ -182,7 +182,7 @@ class Element(EventEmitter):
             "attributes" : {
                 "$id" : str(uuid.uuid4()),
             },
-            "children" : self._defaultChildren(tag_name),
+            "children" : self._default_children(tag_name),
         }
 
         for k,v in attributes.items():
@@ -213,7 +213,7 @@ class Element(EventEmitter):
             "attributes" : {
                 "$id" : str(uuid.uuid4()),
             },
-            "children" : self._defaultChildren(tag_name),
+            "children" : self._default_children(tag_name),
         }
 
         for k,v in attributes.items():
@@ -249,7 +249,7 @@ class Element(EventEmitter):
             "attributes" : {
                 "$id" : str(uuid.uuid4()),
             },
-            "children" : self._defaultChildren(tag_name),
+            "children" : self._default_children(tag_name),
         }
 
         for k,v in attributes.items():
@@ -269,7 +269,7 @@ class Element(EventEmitter):
         return self.get_node_by_id(elementData["attributes"]["$id"])
     
 
-    def _defaultChildren(self, tag_name:str) -> None:
+    def _default_children(self, tag_name:str) -> None:
         if tag_name == "text":
             return [{
                 "text" : {
