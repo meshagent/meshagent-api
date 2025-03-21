@@ -645,10 +645,12 @@ class StorageClient:
 
 
     async def _on_file_deleted(self, protocol, message_id, msg_type, data):
-        self.emit("file.deleted", path=json.loads(data)["path"])
+        payload = json.loads(data)
+        self.emit("file.deleted", path=payload["path"], participant_id=payload["participant_id"])
 
     async def _on_file_updated(self, protocol, message_id, msg_type, data):
-        self.emit("file.updated", path=json.loads(data)["path"])
+        payload = json.loads(data)
+        self.emit("file.updated", path=payload["path"], participant_id=payload["participant_id"])
 
     async def exists(self, *, path: str):
         """
