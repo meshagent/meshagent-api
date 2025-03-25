@@ -2,7 +2,7 @@ from meshagent.api.protocol import Protocol, ClientProtocol
 import json
 import asyncio
 import logging
-from typing import Optional, Callable, Dict, List, Any, Literal
+from typing import Optional, Callable, Dict, List, Any, Literal, Type
 
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
@@ -37,7 +37,6 @@ class Requirement(ABC):
     @abstractmethod
     def to_json(self):
         pass
-        
 
 class RequiredToolkit(Requirement):
     # Require a toolkit to be present for this tool to execute, optionally a list of specific tools in the toolkit
@@ -282,6 +281,12 @@ class SyncClient:
         self._sync_ch = Chan[_QueuedSync]()
         self._main_task = None
     
+    def get_open_documents(self) -> dict[str,MeshDocument]:
+        open_documents = {}
+        for k, v in self._connected_documents.items():
+            open_documents[k] = v.ref
+        return open_documents
+
     async def _main(self):
     
         async for q in self._sync_ch:
