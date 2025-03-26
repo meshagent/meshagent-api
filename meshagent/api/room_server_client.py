@@ -507,7 +507,7 @@ class AgentsClient:
             ]
 
         response = await self.room.send_request("agent.ask", request)
-        return response
+        return JsonResponse(json=response["answer"])
 
     async def invoke_tool(self, *, toolkit: str, tool: str, arguments: dict, participant_id: Optional[str] = None, on_behalf_of_id: Optional[str] = None, caller_context: Optional[Dict[str,Any]] = None) -> FileResponse | str | dict | None:
     
