@@ -9,7 +9,7 @@ from meshagent.api.schema import MeshSchema
 from meshagent.api.messaging import split_message_header, split_message_payload, pack_message
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
-from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse
+from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse, Response
 import uuid
 
 from abc import ABC, abstractmethod
@@ -492,7 +492,7 @@ class AgentsClient:
         await self.room.send_request("agent.call", { "name" : name, "url": url, "arguments": arguments})
         return None
 
-    async def ask(self, *, agent: str, arguments: dict, on_behalf_of: Optional[RemoteParticipant] = None, requires: Optional[list[Requirement]] = None):
+    async def ask(self, *, agent: str, arguments: dict, on_behalf_of: Optional[RemoteParticipant] = None, requires: Optional[list[Requirement]] = None) -> Response:
         request =  {
             "agent": agent,
             "arguments": arguments,
@@ -509,7 +509,7 @@ class AgentsClient:
         response = await self.room.send_request("agent.ask", request)
         return JsonResponse(json=response["answer"])
 
-    async def invoke_tool(self, *, toolkit: str, tool: str, arguments: dict, participant_id: Optional[str] = None, on_behalf_of_id: Optional[str] = None, caller_context: Optional[Dict[str,Any]] = None) -> FileResponse | str | dict | None:
+    async def invoke_tool(self, *, toolkit: str, tool: str, arguments: dict, participant_id: Optional[str] = None, on_behalf_of_id: Optional[str] = None, caller_context: Optional[Dict[str,Any]] = None) -> Response:
     
         response = await self.room.send_request("agent.invoke_tool", {
             "toolkit" : toolkit,
