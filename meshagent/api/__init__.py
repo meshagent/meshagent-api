@@ -6,6 +6,7 @@ from .schema_document import MeshSchema, Element, ElementType, ChildProperty, Va
 from .messaging import JsonResponse, TextResponse, FileResponse, ErrorResponse, EmptyResponse
 from .helpers import deploy_schema, websocket_room_url, participant_token, websocket_protocol, meshagent_base_url
 from .webhooks import WebhookServer, SchemaRegistration, SchemaRegistry, RoomStartedEvent, RoomEndedEvent, CallEvent
-
+from .version import __version__
 from typing import Optional
+
 
