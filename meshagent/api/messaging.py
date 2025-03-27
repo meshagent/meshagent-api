@@ -1,7 +1,7 @@
 import json
 from abc import abstractmethod, ABC
 
-from typing import Optional
+from typing import Optional, Any, Dict
 
 
 def split_message_payload(data:bytes):
@@ -25,8 +25,9 @@ def pack_message(*, header: dict, data:bytes|None = None) -> bytes:
 
 
 class Response(ABC):
-    def __init__(self, *, usage: Optional[dict[str,float]] = None):
+    def __init__(self, *, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
         self.usage = usage
+        self.caller_context = caller_context
 
     
     @abstractmethod
@@ -41,8 +42,8 @@ class Response(ABC):
 response_types = dict[str, type]()
 
 class LinkResponse(Response):
-    def __init__(self, *, url: str, name: str, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, url: str, name: str, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
         self.name = name
         self.url = url
 
@@ -67,8 +68,8 @@ class LinkResponse(Response):
 response_types["link"] = LinkResponse
 
 class FileResponse(Response):
-    def __init__(self, *, data: bytes, name: str, mime_type: str, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, data: bytes, name: str, mime_type: str, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
         self.data = data
         self.name = name
         self.mime_type = mime_type
@@ -94,8 +95,8 @@ class FileResponse(Response):
 response_types["file"] = FileResponse
 
 class TextResponse(Response):
-    def __init__(self, *, text: str, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, text: str, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
         self.text = text
 
     @staticmethod
@@ -118,8 +119,8 @@ class TextResponse(Response):
 response_types["text"] = TextResponse
 
 class EmptyResponse(Response):
-    def __init__(self, *, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
 
     
     def to_json(self):
@@ -142,8 +143,8 @@ class EmptyResponse(Response):
 response_types["empty"] = EmptyResponse
 
 class ErrorResponse(Response):
-    def __init__(self, *, text: str, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, text: str, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
         self.text = text
 
     def to_json(self):
@@ -168,8 +169,8 @@ response_types["error"] = ErrorResponse
 
 
 class RawOutputs(Response):
-    def __init__(self, *, outputs: dict, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, outputs: dict, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
         self.outputs = outputs
 
     def to_json(self):
@@ -193,8 +194,8 @@ class RawOutputs(Response):
 response_types["raw"] = RawOutputs
 
 class JsonResponse(Response):
-    def __init__(self, *, json: dict, usage: Optional[dict[str,float]] = None):
-        super().__init__(usage=usage)
+    def __init__(self, *, json: dict, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+        super().__init__(usage=usage, caller_context=caller_context)
         self.json = json
 
     def __getitem__(self, name: str):

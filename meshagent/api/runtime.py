@@ -116,9 +116,9 @@ class DocumentRuntime(AbstractContextManager):
     def _register_document(self, doc: 'RuntimeDocument', data: bytes | None = None) -> None:
         self._docs[doc.id] = doc
         if data == None:
-            self.execute("meshagent.registerDocument({id})".format(id=json.dumps(doc.id)))
+            self.execute("meshagent.registerDocument({id}, null, false)".format(id=json.dumps(doc.id)))
         else:
-            self.execute("meshagent.registerDocument({id}, {data})".format(id=json.dumps(doc.id), data= json.dumps(base64.standard_b64encode(data).decode("utf-8"))))
+            self.execute("meshagent.registerDocument({id}, {data}, false)".format(id=json.dumps(doc.id), data= json.dumps(base64.standard_b64encode(data).decode("utf-8"))))
 
     def _unregister_document(self,  doc: 'RuntimeDocument') -> None:
         self.execute("meshagent.unregisterDocument({id})".format(id=json.dumps(doc.id)))

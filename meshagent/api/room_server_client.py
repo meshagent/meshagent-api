@@ -9,7 +9,7 @@ from meshagent.api.schema import MeshSchema
 from meshagent.api.messaging import split_message_header, split_message_payload, pack_message
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
-from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse
+from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse, Response
 import uuid
 
 from abc import ABC, abstractmethod
@@ -432,7 +432,8 @@ class ToolDescription:
         input_schema: dict,
         thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
-        pricing: Optional[str] = None
+        pricing: Optional[str] = None,
+        supports_context: Optional[bool] = None
     ):
         self.name = name
         self.title = title
@@ -441,6 +442,9 @@ class ToolDescription:
         self.thumbnail_url = thumbnail_url
         self.defs = defs
         self.pricing = pricing
+        if supports_context == None:
+            supports_context = False
+        self.supports_context = supports_context
 
     def to_json(self):
         return {
@@ -450,7 +454,8 @@ class ToolDescription:
             "thumbnail_url" : self.thumbnail_url,
             "input_schema" : self.input_schema,
             "defs" : self.defs,
-            "pricing" : self.pricing
+            "pricing" : self.pricing,
+            "supports_context" : self.supports_context
         }
 
 class ToolkitDescription:
@@ -487,7 +492,7 @@ class AgentsClient:
         await self.room.send_request("agent.call", { "name" : name, "url": url, "arguments": arguments})
         return None
 
-    async def ask(self, *, agent: str, arguments: dict, on_behalf_of: Optional[RemoteParticipant] = None, requires: Optional[list[Requirement]] = None):
+    async def ask(self, *, agent: str, arguments: dict, on_behalf_of: Optional[RemoteParticipant] = None, requires: Optional[list[Requirement]] = None) -> Response:
         request =  {
             "agent": agent,
             "arguments": arguments,
@@ -502,27 +507,18 @@ class AgentsClient:
             ]
 
         response = await self.room.send_request("agent.ask", request)
-        return response["answer"]
+        return JsonResponse(json=response["answer"])
 
-    async def invoke_tool(self, *, toolkit: str, tool: str, arguments: dict, participant_id: Optional[str] = None, on_behalf_of_id: Optional[str] = None) -> FileResponse | str | dict | None:
+    async def invoke_tool(self, *, toolkit: str, tool: str, arguments: dict, participant_id: Optional[str] = None, on_behalf_of_id: Optional[str] = None, caller_context: Optional[Dict[str,Any]] = None) -> Response:
     
         response = await self.room.send_request("agent.invoke_tool", {
             "toolkit" : toolkit,
             "tool" : tool,
             "participant_id" : participant_id,
             "on_behalf_of_id" : on_behalf_of_id,
-            "arguments" : arguments
+            "arguments" : arguments,
+            "caller_context" : caller_context
         })
-
-        if isinstance(response, JsonResponse):
-            return response.json
-        
-        if isinstance(response, TextResponse):
-            return response.text
-        
-        if isinstance(response, EmptyResponse):
-            return None
-        
         return response
         
 
@@ -582,7 +578,8 @@ class AgentsClient:
                             description=tool_info.get("description", ""),
                             input_schema=tool_info["input_schema"],
                             thumbnail_url=tool_info.get("thumbnail_url", None),
-                            defs=tool_info.get("defs", None)
+                            defs=tool_info.get("defs", None),
+                            supports_context=tool_info.get("supports_context", False)
                         )
                     )
 
