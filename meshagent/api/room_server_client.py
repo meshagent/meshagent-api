@@ -269,7 +269,7 @@ class RoomClient:
 class _RefCount[T]:
     def __init__(self, ref: T):
         self.ref = ref
-        self.count = 0
+        self.count = 1
 
 class SyncClient:
     def __init__(self, *, room: RoomClient):
