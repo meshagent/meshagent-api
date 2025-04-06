@@ -2,7 +2,7 @@ from meshagent.api.protocol import Protocol, ClientProtocol
 import json
 import asyncio
 import logging
-from typing import Optional, Callable, Dict, List, Any, Literal, Type
+from typing import Optional, Callable, Dict, List, Any, Literal, Type, Generic, TypeVar
 
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
@@ -265,8 +265,10 @@ class RoomClient:
             participant_id = message["participantId"]
             attributes = message["attributes"]
             self._on_participant_init(participant_id, attributes)
-            
-class _RefCount[T]:
+
+T = TypeVar("T")
+
+class _RefCount(Generic[T]):
     def __init__(self, ref: T):
         self.ref = ref
         self.count = 1
