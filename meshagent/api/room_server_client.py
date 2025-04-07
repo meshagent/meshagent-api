@@ -476,6 +476,13 @@ class ToolkitDescription:
         self.tools = tools
         self.thumbnail_url = thumbnail_url
 
+    def get_tool(self, name: str) -> ToolDescription | None:
+        for t in self.tools:
+            if t.name == name:
+                return t
+            
+        return None
+
     def to_json(self):
         return {
             "name" : self.name,
