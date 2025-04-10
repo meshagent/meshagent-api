@@ -612,8 +612,10 @@ class LivekitClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
 
-    async def get_connection_info(self) -> LivekitConnectionInfo:
-        response = await self.room.send_request("livekit.connect", {})
+    async def get_connection_info(self, *, breakout_room: Optional[str] = None) -> LivekitConnectionInfo:
+        response = await self.room.send_request("livekit.connect", {
+            "breakout_room" : breakout_room
+        })
 
         return LivekitConnectionInfo(
             url=response["url"],
