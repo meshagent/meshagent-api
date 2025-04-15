@@ -6,7 +6,7 @@ from meshagent.api.protocol import MemoryServerProtocol, MemoryClientProtocol
 from meshagent.api.chan import Chan
 
 logger = logging.getLogger("test")
-logger.setLevel(logging.INFO)
+
 
 @pytest.mark.asyncio
 async def test_protocol():

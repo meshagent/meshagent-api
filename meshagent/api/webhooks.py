@@ -17,7 +17,7 @@ from .helpers import deploy_schema, websocket_protocol, websocket_room_url, vali
 from .room_server_client import RoomClient
 
 logger = logging.getLogger("webhooks")
-logger.setLevel(logging.INFO)
+
 
 class RoomStartedEvent:
     def __init__(self, *, room_name: str, room_url: str):

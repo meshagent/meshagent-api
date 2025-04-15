@@ -18,7 +18,7 @@ with open(os.path.join(os.path.dirname(__file__), "entrypoint.js"), 'r') as file
 
 
 logger = logging.getLogger("document_runtime")
-#logger.setLevel(logging.INFO)
+#
 
 
 random = secrets.SystemRandom()
