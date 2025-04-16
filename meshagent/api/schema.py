@@ -5,7 +5,7 @@ import logging
 from typing import Literal, get_args
 
 logger = logging.getLogger("schema")
-logger.setLevel(logging.INFO)
+
 
 class MeshSchemaException(Exception):
     pass

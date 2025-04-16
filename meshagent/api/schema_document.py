@@ -5,7 +5,7 @@ from meshagent.api.schema import MeshSchema, ElementType, ChildProperty, ValuePr
 
 import logging
 logger = logging.getLogger("schema_document")
-logger.setLevel(logging.INFO)
+
 
 
 def tag_name_from_json(json: dict) -> str:

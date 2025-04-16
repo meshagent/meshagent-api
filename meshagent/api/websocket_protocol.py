@@ -7,7 +7,7 @@ import urllib
 from meshagent.api.protocol import Protocol, ClientProtocol
 
 logger = logging.getLogger("protocol.websocket")
-logger.setLevel(logging.INFO)
+
 
 class WebSocketClientProtocol(ClientProtocol):
     def __init__(self, *, url: str, token: str, heartbeat : float = 30):

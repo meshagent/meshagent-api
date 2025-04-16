@@ -3,7 +3,7 @@ import logging
 from meshagent.api.protocol import Protocol
 
 logger = logging.getLogger("agent")
-logger.setLevel(logging.INFO)
+
 
 class Participant:
     def __init__(self, *, id: str, attributes: dict):
