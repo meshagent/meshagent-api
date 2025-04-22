@@ -103,7 +103,7 @@ class Element(EventEmitter):
         return self._schema
 
     def set_attribute(self, name: str, value: Any):
-        self._data["attributes"][name] = value
+        self.__setitem__(name, value)
     
     def get_attribute(self, name: str, default: Optional[Any] = None):
          if name in self._data["attributes"]:
