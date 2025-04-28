@@ -1,91 +1,165 @@
 import asyncio
-
-from typing import Optional
-
+from typing import Optional, Protocol
 import logging
-from typing import Protocol
-
-from meshagent.api import WebSocketClientProtocol, RoomMessage
-
-from .room_server_client import RoomClient
-
-logger = logging.getLogger("services")
+from aiohttp import web
+import os
+import signal
 
 from meshagent.api.webhooks import WebhookServer
+from meshagent.api import WebSocketClientProtocol, RoomMessage
+from meshagent.api.room_server_client import RoomClient
+
+logger = logging.getLogger("services")
 
 class Portable(Protocol):
     async def start(room: RoomClient) -> None: ...
     async def stop() -> None: ...
 
+class ServicePath:
+    def __init__(self, *, path: str, cls: type[Portable]):
+        self.cls = cls
+        self.path = path
+
+
 class ServiceHost:
 
-    def __init__(self, *, host: Optional[str] = None, webhook_secret: Optional[str] = None):
+    def __init__(self, *, host: Optional[str] = None, webhook_secret: Optional[str] = None, port: Optional[int] = None):
 
         if host == None:
             host = "localhost"
 
         self.host = host
         self.webhook_secret = webhook_secret
-        self.ports = list[WebhookServer]()
+        if port == None:
+            port = os.getenv("MESHAGENT_PORT")
+        
+        self.port = port
+        self.paths = list[WebhookServer]()
 
-    def port(self, *, path: Optional[str] = None, port: int):
+        self._hosts = None
+        self._app = None
+
+
+    def path(self, path: str):
+
         def deco(cls: type[Portable]):
-
-            class ServiceWebhookServer(WebhookServer):
-
-                def __init__(self, *, host = None, port = None, webhook_secret = None, app = None, path = None, validate_webhook_secret = None):
-                    super().__init__(host=host, port=port, webhook_secret=webhook_secret, app=app, path=path, validate_webhook_secret=validate_webhook_secret)
-                
-                async def _spawn(self, *, room_name: str, room_url: str, token: str, arguments: Optional[dict] = None):
-
-                    logger.info(f"room: {room_name} url: {room_url} token: {token} arguments: {arguments}")
-                    agent = cls()
-
-                    async def run():
-                        async with RoomClient(protocol=WebSocketClientProtocol(url=room_url, token=token)) as room:
-                
-                            dismissed = asyncio.Future()
-
-                            def on_message(message: RoomMessage):
-                                if message.type == "dismiss":
-                                    logger.info(f"dismissed by {message.from_participant_id}")
-                                    dismissed.set_result(True)
-
-                            room.messaging.on("message", on_message)
-                        
-                            await agent.start(room=room)
-
-                            done, pending = await asyncio.wait([
-                                dismissed,
-                                asyncio.ensure_future(room.protocol.wait_for_close())
-                            ], return_when=asyncio.FIRST_COMPLETED)
-                            
-                            await agent.stop()
-
-                    def on_done(task: asyncio.Task):
-                        try:
-                            result = task.result()
-                        except Exception as e:
-                            logger.error("agent encountered an error", exc_info=e)
-
-                    task = asyncio.create_task(run())
-                    task.add_done_callback(on_done)
-                    
-                async def on_call(self, event):
-                        await self._spawn(room_name=event.room_name, room_url=event.room_url, token=event.token, arguments=event.arguments)
-            
-            self.ports.append(ServiceWebhookServer(host=self.host, validate_webhook_secret=self.webhook_secret != None, path=path, port=port))
+           
+            self.paths.append(ServicePath(path=path, cls=cls))
 
             return cls
 
         return deco
 
+    async def _liveness_check_request(self, request: web.Request):
+       
+        return web.json_response({"ok":True})
+       
+    async def _start_server(self):
+
+        self._runner = web.AppRunner(self._app)
+        
+        await self._runner.setup()
+
+        logger.info(f"starting service host on {self.host}:{self.port}")
+        
+        self._site = web.TCPSite(self._runner, self.host, self.port)
+        await self._site.start()
+        return self
+
+    async def _stop_server(self):
+     
+        await self._site.stop()
+        await self._runner.cleanup()
+
+        self._app = None
+        self._site = None
+        self._runner = None
+
+    def _create_host(self, p: ServicePath):
+
+        class ServiceWebhookServer(WebhookServer):
+
+            def __init__(self, *, host = None, port = None, webhook_secret = None, app = None, path = None, validate_webhook_secret = None):
+                super().__init__(host=host, port=port, webhook_secret=webhook_secret, app=app, path=path, validate_webhook_secret=validate_webhook_secret)
+            
+            async def _spawn(self, *, room_name: str, room_url: str, token: str, arguments: Optional[dict] = None):
+                print(f"[JE]: spawning {p.path}")
+                logger.info(f"room: {room_name} url: {room_url} token: {token} arguments: {arguments}")
+                agent = p.cls()
+
+                async def run():
+                    async with RoomClient(protocol=WebSocketClientProtocol(url=room_url, token=token)) as room:
+            
+                        dismissed = asyncio.Future()
+
+                        def on_message(message: RoomMessage):
+                            if message.type == "dismiss":
+                                logger.info(f"dismissed by {message.from_participant_id}")
+                                dismissed.set_result(True)
+
+                        room.messaging.on("message", on_message)
+                    
+                        await agent.start(room=room)
+
+                        done, pending = await asyncio.wait([
+                            dismissed,
+                            asyncio.ensure_future(room.protocol.wait_for_close())
+                        ], return_when=asyncio.FIRST_COMPLETED)
+                        
+                        await agent.stop()
+
+                def on_done(task: asyncio.Task):
+                    try:
+                        result = task.result()
+                    except Exception as e:
+                        logger.error("agent encountered an error", exc_info=e)
+
+                task = asyncio.create_task(run())
+                task.add_done_callback(on_done)
+                
+            async def on_call(self, event):
+                    await self._spawn(room_name=event.room_name, room_url=event.room_url, token=event.token, arguments=event.arguments)
+        print(f"[JE]: {p.path}")
+        host = ServiceWebhookServer(validate_webhook_secret=self.webhook_secret != None, path=p.path, app=self._app)
+        return host
+
     async def start(self):
-        await asyncio.gather(*map(lambda x: x.start(), self.ports))
+
+        if self._app != None:
+            raise Exception("App is already started")
+        
+        self._app = web.Application()
+
+        self._app.router.add_get("/", self._liveness_check_request)
+
+        
+        self._hosts : list[WebhookServer] = list(map(lambda x: self._create_host(x), self.paths))
+
+        await asyncio.gather(*map(lambda x: x.start(), self._hosts))
+
+        await self._start_server()
 
     async def stop(self):
-        await asyncio.gather(*map(lambda x: x.stop(), self.ports))
+        
+        await self._stop_server()
+
+        await asyncio.gather(*map(lambda x: x.stop(), self._hosts))
+
+        self._hosts = None
     
     async def run(self):
-        await asyncio.gather(*map(lambda x: x.run(), self.ports))
+        await self.start()
+        try:
+            term = asyncio.Future()
+
+            def clean_termination(signal, frame):
+                term.set_result(True)
+            
+            signal.signal(signal.SIGTERM, clean_termination)
+            signal.signal(signal.SIGABRT, clean_termination)
+
+            await term
+
+        finally:
+            await self.stop()
         
