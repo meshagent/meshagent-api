@@ -31,7 +31,7 @@ class Response(ABC):
 
     
     @abstractmethod
-    def to_json(self):
+    def to_json(self) -> dict:
         pass
 
     @abstractmethod
