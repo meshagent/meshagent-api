@@ -14,6 +14,7 @@ import uuid
 
 from abc import ABC, abstractmethod
 
+
 logger = logging.getLogger("room_server_client")
 logger.setLevel(logging.WARN)
 

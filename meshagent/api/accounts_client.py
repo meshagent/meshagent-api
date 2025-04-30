@@ -1,7 +1,96 @@
 import aiohttp
 from typing import Any, Dict, List, Optional, Literal
+from typing import List
+from pydantic import BaseModel, ValidationError
+from typing import Literal, Optional, Dict
+from meshagent.api import RoomException
 
-from meshagent.api.room_server_client import RequiredToolkit
+from pydantic import BaseModel, Field
+from abc import ABC, abstractmethod
+
+# ------------------------------------------------------------------
+#  Secret models
+# ------------------------------------------------------------------
+
+class _BaseSecret(BaseModel):
+    """Common fields shared by all secrets."""
+    id: str
+    name: str
+
+
+class PullSecret(_BaseSecret):
+    """
+    A Docker-registry credential.
+
+    When you call `model_dump() / dict()` this object produces the same
+    structure consumed by `map_secret_data("docker", …)` in the room
+    provisioner.
+    """
+    type: Literal["docker"] = "docker"
+
+    server: str   = Field(..., description="Registry host (e.g. registry-1.docker.io)")
+    username: str
+    password: str
+    email: str    = Field("none@example.com", description="Email is required by the Docker spec, but is unused")
+
+    def to_payload(self) -> Dict[str, str]:
+        return {
+            "server":   self.server,
+            "username": self.username,
+            "password": self.password,
+            "email":    self.email,
+        }
+
+
+class KeysSecret(_BaseSecret):
+    """
+    An *opaque* secret that will be exposed to containers as individual
+    environment variables.
+
+    Example:
+        KeysSecret(
+            id="sec-123",
+            name="openai",
+            data={"OPENAI_API_KEY": "sk-...", "ORG": "myorg"}
+        )
+    """
+    type: Literal["keys"] = "keys"
+    data: Dict[str, str]
+
+    def to_payload(self) -> Dict[str, str]:
+        return self.data
+
+SecretLike = PullSecret | KeysSecret
+
+
+def _parse_secret(raw: dict) -> SecretLike:
+    """
+    Decide which concrete Pydantic class to use based on the 'type' field.
+    """
+    if raw.get("type") == "pull_secret":
+        return PullSecret.model_validate(raw)
+    else:  # defaults to keys_secret
+        return KeysSecret.model_validate(raw)
+    
+class Port(BaseModel):
+    type: Literal["mcp.sse","meshagent.callable","webserver"]
+    liveness_path: Optional[str | None] = None
+    participant_name: Optional[str | None] = None
+
+
+class Service(BaseModel):
+    id: str
+    image: str
+    name: str
+    environment: Dict[str,str]
+    command: Optional[str | None] = None
+    room_storage_path: Optional[str | None] = None
+    pull_secret: str | None
+    runtime_secrets: Dict[str,str]
+    environment_secrets: list[str] | None
+    created_at: str
+    ports: Dict[int,Port] | None
+
 
 ProjectRole = Literal["member","admin"]
 
@@ -426,3 +515,159 @@ class AccountsClient:
         async with self._session.delete(endpoint, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
+    # ---------------------------------------------------------------------
+    # Services
+    # ---------------------------------------------------------------------
+
+    async def create_service(
+        self,
+        *,
+        project_id: str,
+        service: Service,
+    ) -> Dict[str, Any]:
+        """
+        POST /accounts/projects/{project_id}/services
+        Body: full service spec, e.g.
+          {
+            "name": "...",
+            "image": "...",
+            "pull_secret": "...",
+            "environment": {...},
+            "environment_secrets": [...],
+            "runtime_secrets": {...},
+            "command": "...",
+            "ports": {...}
+          }
+        Returns: { "id": "<service_id>" }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/services"
+        async with self._session.post(
+            url, headers=self._get_headers(), json=service.model_dump(mode="json")
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def update_service(
+        self,
+        *,
+        project_id: str,
+        service_id: str,
+        service: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        PUT /accounts/projects/{project_id}/services/{service_id}
+        Body: same structure as create_service (fields you wish to change).
+        Returns: {} on success.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
+        )
+        async with self._session.put(
+            url, headers=self._get_headers(), json=service
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def get_service(self, *, project_id: str, service_id: str) -> Service:
+        """
+        GET /accounts/projects/{project_id}/services/{service_id}
+        Returns a `Service` instance.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            # Handler returns a JSON string, so we read text then validate
+            raw = await resp.text()
+            try:
+                return Service.model_validate_json(raw)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid service payload: {exc}") from exc
+
+    async def list_services(self, *, project_id: str) -> List[Service]:
+        """
+        GET /accounts/projects/{project_id}/services
+        Returns a list of `Service` instances.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/services"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [Service.model_validate(item) for item in data["services"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid services payload: {exc}") from exc
+            
+    async def delete_service(self, *, project_id: str, service_id: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/services/{service_id}
+        Returns nothing on success.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+
+
+    async def create_secret(
+        self,
+        *,
+        project_id: str,
+        secret: SecretLike,
+    ) -> str:
+        """
+        POST /accounts/projects/{project_id}/secrets
+        Returns the new secret_id.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
+        payload = {
+            "name":  secret.name,
+            "type":  secret.type,          # "docker" | "keys"
+            "data":  secret.to_payload(),  # already shaped for the provisioner
+        }
+        async with self._session.post(url, headers=self._get_headers(), json=payload) as resp:
+            resp.raise_for_status()
+            return (await resp.json())["id"]
+
+    async def update_secret(
+        self,
+        *,
+        project_id: str,
+        secret: SecretLike,
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/secrets/{secret.id}
+        Body ➜ { "name", "type", "data" }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret.id}"
+        payload = {
+            "name":  secret.name,
+            "type":  secret.type,
+            "data":  secret.to_payload(),
+        }
+        async with self._session.put(url, headers=self._get_headers(), json=payload) as resp:
+            resp.raise_for_status()
+
+
+    async def delete_secret(
+        self, *, project_id: str, secret_id: str
+    ) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/secrets/{secret_id}
+        Returns {} (or 204 No Content) on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret_id}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+
+
+    async def list_secrets(self, project_id: str) -> List[SecretLike]:
+        """
+        GET /accounts/projects/{project_id}/secrets
+        Returns [PullSecret | KeysSecret, …]
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            raw = await resp.json()
+            return [_parse_secret(item) for item in raw["secrets"]]
