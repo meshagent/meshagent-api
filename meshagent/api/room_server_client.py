@@ -12,6 +12,8 @@ from meshagent.api.chan import Chan
 from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse, Response
 import uuid
 
+from datetime import datetime
+
 from abc import ABC, abstractmethod
 
 
@@ -624,10 +626,11 @@ class LivekitClient:
         )
 
 class StorageEntry:
-    def __init__(self, name: str, is_folder: bool):
+    def __init__(self, name: str, is_folder: bool, created_at: datetime, updated_at: datetime):
         self.name = name
         self.is_folder = is_folder
-
+        self.updated_at = updated_at
+        self.created_at = created_at
     
 
 class StorageClient:
@@ -797,7 +800,7 @@ class StorageClient:
         """
          
         response = await self.room.send_request("storage.list", { "path":path })        
-        return list(map(lambda f : StorageEntry(**f), response["files"]))
+        return list(map(lambda f : StorageEntry(name=f["name"], is_folder=f["is_folder"], created_at=datetime.fromisoformat(f["created_at"]), updated_at=datetime.fromisoformat(f["updated_at"])), response["files"]))
 
     async def delete(self, path: str):
         """
