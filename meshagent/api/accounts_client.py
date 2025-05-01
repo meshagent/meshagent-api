@@ -82,14 +82,14 @@ class Service(BaseModel):
     id: str
     image: str
     name: str
-    environment: Dict[str,str]
-    command: Optional[str | None] = None
-    room_storage_path: Optional[str | None] = None
-    pull_secret: str | None
-    runtime_secrets: Dict[str,str]
-    environment_secrets: list[str] | None
+    environment: Optional[Dict[str,str]] = None
+    command: Optional[str] = None
+    room_storage_path: Optional[str] = None
+    pull_secret: Optional[str] = None
+    runtime_secrets: Optional[Dict[str,str]] = None
+    environment_secrets: Optional[list[str]] = None
     created_at: str
-    ports: Dict[int,Port] | None
+    ports: Optional[Dict[int,Port]] = None
 
 
 ProjectRole = Literal["member","admin"]
