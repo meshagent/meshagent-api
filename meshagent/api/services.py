@@ -4,7 +4,13 @@ import logging
 from aiohttp import web
 import os
 import signal
+import json
 
+import jwt
+import hashlib
+from aiohttp import ClientSession
+
+from meshagent.api import RoomException
 from meshagent.api.webhooks import WebhookServer
 from meshagent.api import WebSocketClientProtocol, RoomMessage
 from meshagent.api.room_server_client import RoomClient
@@ -83,7 +89,7 @@ class ServiceHost:
                 super().__init__(host=host, port=port, webhook_secret=webhook_secret, app=app, path=path, validate_webhook_secret=validate_webhook_secret)
             
             async def _spawn(self, *, room_name: str, room_url: str, token: str, arguments: Optional[dict] = None):
-                print(f"[JE]: spawning {p.path}")
+                
                 logger.info(f"room: {room_name} url: {room_url} token: {token} arguments: {arguments}")
                 agent = p.cls()
 
@@ -119,7 +125,7 @@ class ServiceHost:
                 
             async def on_call(self, event):
                     await self._spawn(room_name=event.room_name, room_url=event.room_url, token=event.token, arguments=event.arguments)
-        print(f"[JE]: {p.path}")
+        
         host = ServiceWebhookServer(validate_webhook_secret=self.webhook_secret != None, path=p.path, app=self._app)
         return host
 
@@ -163,3 +169,32 @@ class ServiceHost:
         finally:
             await self.stop()
         
+
+async def send_webhook(session: ClientSession, *, url: str, event: str, data: dict, secret: Optional[str] = None):
+    
+    payload_body = {
+        "event" : event,
+        "data" : data
+    }
+
+    payload = json.dumps(payload_body)
+    hash = hashlib.sha256(payload.encode())
+
+    headers = {
+        "Content-Type" : "application/json",
+    }
+
+    if secret != None:
+        headers["Authorization"] = "Bearer "+jwt.encode({
+            "sha256" : hash.hexdigest()
+        }, key=secret, algorithm='HS256')
+
+    async with session.post(url, headers=headers, data=payload) as resp:
+
+        try:
+            resp.raise_for_status()
+
+        except Exception as e:
+            logger.warning("webhook call failed", exc_info=e)
+            raise RoomException(f"error status returned from webhook call, http status code: {resp.status}")
+            
