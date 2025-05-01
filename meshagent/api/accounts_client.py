@@ -67,13 +67,13 @@ def _parse_secret(raw: dict) -> SecretLike:
     """
     Decide which concrete Pydantic class to use based on the 'type' field.
     """
-    if raw.get("type") == "pull_secret":
-        return PullSecret.model_validate(raw)
+    if raw.get("type") == "docker":
+        return PullSecret.model_validate({ "id" : raw["id"], "name" : raw["name"], "type" : raw["type"], **raw["data"] })
     else:  # defaults to keys_secret
-        return KeysSecret.model_validate(raw)
+        return KeysSecret.model_validate({  "id" : raw["id"], "name" : raw["name"], "type" : raw["type"], "data": raw["data"] })
     
 class Port(BaseModel):
-    type: Literal["mcp.sse","meshagent.callable","webserver"]
+    type: Literal["mcp.sse","meshagent.callable","http","tcp"]
     liveness_path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
 
