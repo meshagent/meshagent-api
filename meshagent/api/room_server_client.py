@@ -687,6 +687,15 @@ class StorageClient:
         response = await self.room.send_request("storage.exists", { "path":path })   
         return response["exists"]
     
+    async def stat(self, *, path: str) -> StorageEntry | None:
+        
+        response = await self.room.send_request("storage.stat", { "path":path })   
+        exists = response["exists"]
+        if not exists:
+            return None
+        else:
+            return StorageEntry(name=response["name"], is_folder=response["is_folder"], created_at=datetime.fromisoformat(response["created_at"]), updated_at=datetime.fromisoformat(response["updated_at"]))
+    
     async def open(self, *, path: str, overwrite: bool = False):
 
         """
