@@ -89,7 +89,8 @@ class Service(BaseModel):
     runtime_secrets: Optional[Dict[str,str]] = None
     environment_secrets: Optional[list[str]] = None
     created_at: str
-    ports: Optional[Dict[int,Port]] = None
+    ports: Optional[Dict[int,Port]] = None,
+    role: Optional[Literal["user","tool","agent"]] = None
 
 
 ProjectRole = Literal["member","admin"]
