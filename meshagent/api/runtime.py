@@ -1,4 +1,3 @@
-import STPyV8
 import json
 import uuid
 from contextlib import AbstractContextManager
@@ -23,106 +22,120 @@ logger = logging.getLogger("document_runtime")
 
 random = secrets.SystemRandom()
 
-class DocumentRuntime(AbstractContextManager):
-  
-    class Global(STPyV8.JSClass):
-        def __init__(self, runtime: 'DocumentRuntime'):
-            runtime = runtime
-            
-        def onSendUpdateToBackend(self, value: dict):
-            # value is an array of bytes
-            logger.info("send to server from runtime %s", value)
-            parsed = json.loads(value)                    
-            runtime.on_document_sync(document_id=parsed["documentID"], base64=parsed["data"])
-            
-        def onSendUpdateToClient(self, value: str):
-            # value is a string
-            logger.info("send to client from runtime %s", value)
-            
-            parsed = json.loads(value)
+try:
+    import STPyV8
 
-            doc = runtime.get_doc(parsed["documentID"])
-            doc.receive_changes(parsed["data"])
-
-
-        def onGetRandomValues(self, width: int, length: int):
-            if width == 1:
-                vals = [* map(lambda _: random.randrange(0,0xff), range(length)) ]
-            elif width == 2:
-                vals = [* map(lambda _: random.randrange(0,0xffff), range(length)) ]
-            elif width == 4:
-                vals = [* map(lambda _: random.randrange(0,0xffffffff), range(length)) ]
-            elif width == 8:
-                vals = [* map(lambda _: random.randrange(0,0xffffffffffffffff), range(length)) ]
-            else:
-                raise Exception("Unexpected width {width}".format(width=width))
-            
-            return vals
+    class DocumentRuntime(AbstractContextManager):
     
-    def __init__(self):
-        self._docs = dict[str,Document]()
-        # TODO: Polyfill crypto
-       
-    def __enter__(self):
-        self._v8 = STPyV8.JSContext(DocumentRuntime.Global(runtime=self))
-        self._v8.__enter__()
-        self._v8.eval(
-        '''
+        class Global(STPyV8.JSClass):
+            def __init__(self, runtime: 'DocumentRuntime'):
+                runtime = runtime
+                
+            def onSendUpdateToBackend(self, value: dict):
+                # value is an array of bytes
+                logger.info("send to server from runtime %s", value)
+                parsed = json.loads(value)                    
+                runtime.on_document_sync(document_id=parsed["documentID"], base64=parsed["data"])
+                
+            def onSendUpdateToClient(self, value: str):
+                # value is a string
+                logger.info("send to client from runtime %s", value)
+                
+                parsed = json.loads(value)
 
-        const crypto = {
-            getRandomValues(v) {
-                let rands = onGetRandomValues(v.BYTES_PER_ELEMENT, v.length);
-                for(let i = 0; i < v.length; i++) {
-                    v[i] = rands[i];
+                doc = runtime.get_doc(parsed["documentID"])
+                doc.receive_changes(parsed["data"])
+
+
+            def onGetRandomValues(self, width: int, length: int):
+                if width == 1:
+                    vals = [* map(lambda _: random.randrange(0,0xff), range(length)) ]
+                elif width == 2:
+                    vals = [* map(lambda _: random.randrange(0,0xffff), range(length)) ]
+                elif width == 4:
+                    vals = [* map(lambda _: random.randrange(0,0xffffffff), range(length)) ]
+                elif width == 8:
+                    vals = [* map(lambda _: random.randrange(0,0xffffffffffffffff), range(length)) ]
+                else:
+                    raise Exception("Unexpected width {width}".format(width=width))
+                
+                return vals
+        
+        def __init__(self):
+            self._docs = dict[str,Document]()
+            # TODO: Polyfill crypto
+        
+        def __enter__(self):
+            self._v8 = STPyV8.JSContext(DocumentRuntime.Global(runtime=self))
+            self._v8.__enter__()
+            self._v8.eval(
+            '''
+
+            const crypto = {
+                getRandomValues(v) {
+                    let rands = onGetRandomValues(v.BYTES_PER_ELEMENT, v.length);
+                    for(let i = 0; i < v.length; i++) {
+                        v[i] = rands[i];
+                    }
+                    return v;
                 }
-                return v;
-            }
-        };
+            };
 
-        '''
-            +_js)        
-        return self
+            '''
+                +_js)        
+            return self
+        
+        def __exit__(self, exc_type, exc_value, traceback):
+            logger.info("stopping v8")
+            self._v8.__exit__(exc_type, exc_value, traceback)
+            return None
+
+        def close(self):
+            self._v8.close()
+            self._v8 = None
+
+        def execute(self, code: str):
+            return self._v8.eval(code)
+
+        def get_doc(self, id:str) -> 'RuntimeDocument':
+            return self._docs[id]
+        
+        def new_document(self, schema: MeshSchema, id: str | None = None, data: bytes | None = None, on_document_sync: Callable | None = None, json:dict|None=None, factory: Callable = None) -> 'RuntimeDocument':
+            if factory is None:
+                factory = RuntimeDocument
+            return factory(schema=schema, id=id, data=data, json=json, on_document_sync=on_document_sync)
+
+        def on_document_sync(self, document_id: str, base64: str):        
+            doc = self.get_doc(document_id)
+            if doc.on_document_sync != None:
+                logger.info("publishing backend changes to document %s: %s", document_id, base64)
+                doc.on_document_sync(base64)
+
+        def apply_backend_changes(self, document_id: str, base64: str):
+            logger.info("applying backend changes to document %s: %s", document_id, base64)
+            self.execute("meshagent.applyBackendChanges({id},{base64})".format(id=json.dumps(document_id),base64=json.dumps(base64)))
+
+        def _register_document(self, doc: 'RuntimeDocument', data: bytes | None = None) -> None:
+            self._docs[doc.id] = doc
+            if data == None:
+                self.execute("meshagent.registerDocument({id}, null, false)".format(id=json.dumps(doc.id)))
+            else:
+                self.execute("meshagent.registerDocument({id}, {data}, false)".format(id=json.dumps(doc.id), data= json.dumps(base64.standard_b64encode(data).decode("utf-8"))))
+
+        def _unregister_document(self,  doc: 'RuntimeDocument') -> None:
+            self.execute("meshagent.unregisterDocument({id})".format(id=json.dumps(doc.id)))
+            self._docs.pop(doc.id)
+except ImportError:
+
+    class DocumentRuntime(AbstractContextManager):
+        ...
     
+    def __enter__(self):
+        ...
+
     def __exit__(self, exc_type, exc_value, traceback):
-        logger.info("stopping v8")
-        self._v8.__exit__(exc_type, exc_value, traceback)
         return None
 
-    def close(self):
-        self._v8.close()
-        self._v8 = None
-
-    def execute(self, code: str):
-        return self._v8.eval(code)
-
-    def get_doc(self, id:str) -> 'RuntimeDocument':
-        return self._docs[id]
-    
-    def new_document(self, schema: MeshSchema, id: str | None = None, data: bytes | None = None, on_document_sync: Callable | None = None, json:dict|None=None, factory: Callable = None) -> 'RuntimeDocument':
-        if factory is None:
-            factory = RuntimeDocument
-        return factory(schema=schema, id=id, data=data, json=json, on_document_sync=on_document_sync)
-
-    def on_document_sync(self, document_id: str, base64: str):        
-        doc = self.get_doc(document_id)
-        if doc.on_document_sync != None:
-            logger.info("publishing backend changes to document %s: %s", document_id, base64)
-            doc.on_document_sync(base64)
-
-    def apply_backend_changes(self, document_id: str, base64: str):
-        logger.info("applying backend changes to document %s: %s", document_id, base64)
-        self.execute("meshagent.applyBackendChanges({id},{base64})".format(id=json.dumps(document_id),base64=json.dumps(base64)))
-
-    def _register_document(self, doc: 'RuntimeDocument', data: bytes | None = None) -> None:
-        self._docs[doc.id] = doc
-        if data == None:
-            self.execute("meshagent.registerDocument({id}, null, false)".format(id=json.dumps(doc.id)))
-        else:
-            self.execute("meshagent.registerDocument({id}, {data}, false)".format(id=json.dumps(doc.id), data= json.dumps(base64.standard_b64encode(data).decode("utf-8"))))
-
-    def _unregister_document(self,  doc: 'RuntimeDocument') -> None:
-        self.execute("meshagent.unregisterDocument({id})".format(id=json.dumps(doc.id)))
-        self._docs.pop(doc.id)
 
 runtime = DocumentRuntime()
 runtime.__enter__()
