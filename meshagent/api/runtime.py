@@ -129,12 +129,12 @@ except ImportError:
 
     class DocumentRuntime(AbstractContextManager):
         ...
-    
-    def __enter__(self):
-        ...
+        
+        def __enter__(self):
+            ...
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        return None
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
 
 
 runtime = DocumentRuntime()
