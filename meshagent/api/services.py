@@ -37,7 +37,7 @@ class ServiceHost:
         self.host = host
         self.webhook_secret = webhook_secret
         if port == None:
-            port = os.getenv("MESHAGENT_PORT")
+            port = os.getenv("MESHAGENT_PORT", 8080)
         
         self.port = port
         self.paths = list[WebhookServer]()
