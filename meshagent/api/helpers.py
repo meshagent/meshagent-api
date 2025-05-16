@@ -40,7 +40,7 @@ def participant_token(*, participant_name: str, room_name: str, role: Optional[s
         raise Exception('MESHAGENT_PROJECT_ID must be set, you can find this value in the Meshagent Studio when you view API keys.')
     
     if os.getenv("MESHAGENT_KEY_ID") is None:
-        raise Exception('MESHAGENT_KEY_ID is must be set, you can find this value in the Meshagent Studio when you view API keys.')
+        raise Exception('MESHAGENT_KEY_ID must be set, you can find this value in the Meshagent Studio when you view API keys.')
     
     if os.getenv("MESHAGENT_SECRET") is None:
         raise Exception('MESHAGENT_SECRET is must be set with a valid api key, you can find this value in the Meshagent Studio when you view API keys.')
