@@ -120,10 +120,14 @@ class ParticipantToken:
         )
 
     @staticmethod
-    def from_jwt(jwt_str: str, *, token: Optional[str] = None) -> 'ParticipantToken':
+    def from_jwt(jwt_str: str, *, token: Optional[str] = None, validate: Optional[bool] = True) -> 'ParticipantToken':
         if token == None:
              token = os.getenv("MESHAGENT_SECRET")
 
-        decoded = jwt.decode(jwt=jwt_str, key=token, algorithms=['HS256'])
+        if validate:
+            decoded = jwt.decode(jwt=jwt_str, key=token, algorithms=['HS256'])
+        else:
+            decoded = jwt.decode(jwt=jwt_str, options={"verify_signature": False})
+
         return ParticipantToken.from_json(decoded)
     
