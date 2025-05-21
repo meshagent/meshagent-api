@@ -76,7 +76,7 @@ class Port(BaseModel):
     type: Literal["mcp.sse","meshagent.callable","http","tcp"]
     liveness_path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
-
+    path: Optional[str | None] = None
 
 class Service(BaseModel):
     id: str
