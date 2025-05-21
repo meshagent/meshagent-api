@@ -1393,6 +1393,21 @@ class DateDataType(DataType):
     
 _data_types["date"] = DateDataType
 
+class TimestampDataType(DataType):
+
+    def __init__(self):
+        super().__init__()
+    
+    @staticmethod
+    def from_json(data: dict):
+
+        assert data["type"] == "timestamp"
+        return TimestampDataType()
+    
+    def to_json(self):
+        return { "type" : "timestamp" }
+    
+_data_types["timestamp"] = TimestampDataType
 
 class FloatDataType(DataType):
 
