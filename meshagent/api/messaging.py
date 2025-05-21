@@ -15,7 +15,7 @@ def split_message_header(data:bytes):
     return header_str
 
 def pack_message(*, header: dict, data:bytes|None = None) -> bytes:
-    json_message = json.dumps(header).encode("utf-8")
+    json_message = json.dumps(header, default=str).encode("utf-8")
     message = bytearray()
     message.extend(len(json_message).to_bytes(8))
     message.extend(json_message)
