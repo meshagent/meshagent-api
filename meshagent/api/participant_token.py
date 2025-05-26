@@ -110,7 +110,6 @@ class ParticipantToken:
         if "kid" in data:
             api_key_id = data.pop("kid")
 
-
         return ParticipantToken(
             name=name,
             project_id=project_id,
