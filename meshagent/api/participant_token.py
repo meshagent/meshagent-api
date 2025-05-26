@@ -94,7 +94,7 @@ class ParticipantToken:
                 # We are exporting a token using the default secret, so we should remove the key id
                 payload.pop("kid")
              
-        return jwt.encode(payload=payload, key=token, algorithm='HS256')
+        return jwt.encode(payload={**extra_payload, **payload}, key=token, algorithm='HS256')
 
     @staticmethod
     def from_json(data: dict) -> 'ParticipantToken':
