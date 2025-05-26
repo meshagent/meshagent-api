@@ -32,7 +32,7 @@ class ServiceHost:
     def __init__(self, *, host: Optional[str] = None, webhook_secret: Optional[str] = None, port: Optional[int] = None):
 
         if host == None:
-            host = "localhost"
+            host = os.getenv("MESHAGENT_HOST", "0.0.0.0")
 
         self.host = host
         self.webhook_secret = webhook_secret
