@@ -31,7 +31,7 @@ def unpack_message(data:bytes) -> tuple[dict, bytes]:
     return header, payload
     
 
-def pack_message(*, header: dict, data:bytes|None = None) -> bytes:
+def pack_message(header: dict, data:bytes|None = None) -> bytes:
 
     otel = {}
     inject(otel)
