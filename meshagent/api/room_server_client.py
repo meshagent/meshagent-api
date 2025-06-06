@@ -6,7 +6,7 @@ from typing import Optional, Callable, Dict, List, Any, Literal, Type, Generic, 
 
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
-from meshagent.api.messaging import split_message_header, split_message_payload, pack_message
+from meshagent.api.messaging import unpack_message, split_message_payload, pack_message
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
 from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse, Response
@@ -378,11 +378,7 @@ class SyncClient:
          await self.room.send_request("room.sync", {"path":path}, data=data)
 
     async def _handle_sync(self, protocol: Protocol, message_id: int, type: str, data: bytes) -> None:
-        
-        header_str = split_message_header(data=data)
-        payload = split_message_payload(data=data)
-
-        header = json.loads(header_str)
+        header, payload = unpack_message(data=data)
         path = header["path"]
 
         if path in self._connecting_documents:
@@ -926,11 +922,8 @@ class MessagingClient:
         await self.room.send_request("messaging.disable", {})
     
     async def _handle_message_send(self, protocol: Protocol, message_id: int, type: str, data: bytes) -> None:
-        header_str = split_message_header(data)
-        payload = split_message_payload(data)
-
-        header = json.loads(header_str)
-
+        header, payload = unpack_message(data)
+        
         message = RoomMessage(from_participant_id=header["from_participant_id"], type=header["type"], message=header["message"], attachment=payload)
 
        

@@ -3,6 +3,7 @@ from abc import abstractmethod, ABC
 
 from typing import Optional, Any, Dict
 
+from opentelemetry.propagate import extract, inject
 
 def split_message_payload(data:bytes):
     header_size = int.from_bytes(data[0:8], "big")
@@ -14,8 +15,39 @@ def split_message_header(data:bytes):
     header_str = data[8:8+header_size].decode("utf-8")
     return header_str
 
+def unpack_message(data:bytes) -> tuple[dict, bytes]:
+    header : dict = json.loads(split_message_header(data=data))
+    payload = split_message_payload(data=data)
+    
+    meshagent_data : dict = header.get("__meshagent__")
+    if meshagent_data != None:
+        
+        del header["__meshagent__"]
+        otel = meshagent_data.get("otel")
+
+        if otel != None:
+            extract(otel)
+
+    return header, payload
+    
+
 def pack_message(*, header: dict, data:bytes|None = None) -> bytes:
-    json_message = json.dumps(header, default=str).encode("utf-8")
+
+    otel = {}
+    inject(otel)
+
+    extra = {
+        "__meshagent__" : {
+            "v" : 1,
+            "otel" : otel
+        }
+    }
+
+    json_message = json.dumps({
+        **header,
+        **extra
+    }, default=str).encode("utf-8")
+
     message = bytearray()
     message.extend(len(json_message).to_bytes(8))
     message.extend(json_message)
@@ -222,9 +254,9 @@ class JsonResponse(Response):
 response_types["json"] = JsonResponse
 
 def unpack_response(data: bytes) -> Response:
-    header = json.loads(split_message_header(data=data))
-    payload = split_message_payload(data=data)
 
+    header, payload = unpack_message(data)
+    
     T = response_types[header["type"]]
     return T.unpack(header=header, payload=payload)
 
