@@ -6,7 +6,7 @@ from typing import Optional, Callable, Dict, List, Any, Literal, Type, Generic, 
 
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
-from meshagent.api.messaging import unpack_message, split_message_payload, pack_message
+from meshagent.api.messaging import unpack_message, pack_message, unpack_message
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
 from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse, Response
@@ -78,7 +78,7 @@ class LocalParticipant(Participant):
 
     async def set_attribute(self, name: str, value):   
         self._attributes[name] = value
-        await self.protocol.send("set_attributes", json.dumps({ name: value}).encode("utf-8"))
+        await self.protocol.send("set_attributes", pack_message({ name: value}))
         
 class RemoteParticipant(Participant):
     def __init__(self, *, id: str, role: Optional[str] = None, attributes: Optional[dict] = None):
@@ -227,7 +227,7 @@ class RoomClient:
         return await pr.fut
     
     async def _handle_ready(self, protocol: Protocol, message_id: int, type: str, data: bytes) -> None:
-        init = json.loads(data)
+        init, _ = unpack_message(data)
 
         self._room_name = init["room_name"]
         self._room_url = init["room_url"]
@@ -261,7 +261,7 @@ class RoomClient:
     
     async def _handle_participant(self, protocol, message_id, msg_type, data):
         # Decode and parse the message
-        message = json.loads(data.decode('utf-8'))        
+        message, _ = unpack_message(data)        
         type = message["type"]
 
         if type == "init":
@@ -658,11 +658,11 @@ class StorageClient:
 
 
     async def _on_file_deleted(self, protocol, message_id, msg_type, data):
-        payload = json.loads(data)
+        payload, _ = unpack_message(data)
         self.emit("file.deleted", path=payload["path"], participant_id=payload["participant_id"])
 
     async def _on_file_updated(self, protocol, message_id, msg_type, data):
-        payload = json.loads(data)
+        payload, _ = unpack_message(data)
         self.emit("file.updated", path=payload["path"], participant_id=payload["participant_id"])
 
     async def exists(self, *, path: str):
@@ -1309,7 +1309,7 @@ class DeveloperClient:
             handler(**kwargs)
 
     async def _handle_log(self, protocol: Protocol, message_id: int, type: str, data: bytes) -> None:
-        raw_json : dict = json.loads(data)
+        raw_json, _ = unpack_message(data)
 
         type = raw_json.get("type", "unknown")
         data = raw_json.get("data", {})
