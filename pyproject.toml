@@ -41,8 +41,11 @@ Source = "https://www.meshagent.com"
 include = ["meshagent.*"]
 
 [tool.setuptools.package-data]
-"meshagent.api" = ["py.typed", "*.pyi", "**/*.pyi", "**/*.js"]
+"meshagent.api" = ["py.typed", "*.pyi", "**/*.pyi", "**/*.js", "entrypoint.js"]
 
 [tool.setuptools.dynamic]
 version = {attr = "meshagent.api.version.__version__"}
 readme = { file = "README.md", content-type = "text/markdown" }
+
+
+

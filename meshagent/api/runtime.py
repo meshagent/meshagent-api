@@ -11,9 +11,11 @@ from meshagent.api.schema_document import Document
 
 import os
 
+
 _js : str
-with open(os.path.join(os.path.dirname(__file__), "entrypoint.js"), 'r') as file:
-    _js = file.read()
+from importlib import resources 
+with resources.files("meshagent.api").joinpath("entrypoint.js").open("r") as f:
+    _js = f.read()
 
 
 logger = logging.getLogger("document_runtime")
