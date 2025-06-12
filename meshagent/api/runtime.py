@@ -18,6 +18,7 @@ with resources.files("meshagent.api").joinpath("entrypoint.js").open("r") as f:
     _js = f.read()
 
 
+
 logger = logging.getLogger("document_runtime")
 #
 
