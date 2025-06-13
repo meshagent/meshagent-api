@@ -181,17 +181,16 @@ class AccountsClient:
             resp.raise_for_status()
             return None
     
-    async def list_shares(self, share_id: str, name: str) -> None:
+    async def list_shares(self, project_id: str) -> None:
         """
         Corresponds to: GET /accounts/projects/:id/shares
         Returns a JSON dict with { "shares" : [{ "id", "settings" }] } on success.
         """
-        url = f"{self.base_url}/shares/{share_id}"
+        url = f"{self.base_url}/shares/{project_id}"
        
         async with self._session.get(
             url,
             headers=self._get_headers(),
-            json={ "name" : name },
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
