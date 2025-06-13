@@ -71,12 +71,19 @@ def _parse_secret(raw: dict) -> SecretLike:
         return PullSecret.model_validate({ "id" : raw["id"], "name" : raw["name"], "type" : raw["type"], **raw["data"] })
     else:  # defaults to keys_secret
         return KeysSecret.model_validate({  "id" : raw["id"], "name" : raw["name"], "type" : raw["type"], "data": raw["data"] })
-    
-class Port(BaseModel):
+
+class Endpoint(BaseModel):
     type: Literal["mcp.sse","meshagent.callable","http","tcp"]
+    path: Optional[str | None] = None
+
+class Port(BaseModel):
     liveness_path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
+
+    type: Optional[Literal["mcp.sse","meshagent.callable","http","tcp"]] = None
     path: Optional[str | None] = None
+    
+    endpoints: Optional[list[Endpoint]] = None
 
 class Service(BaseModel):
     id: str

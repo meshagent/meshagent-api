@@ -12,6 +12,7 @@ def compute_packets(data: bytes) -> int:
     return  math.ceil(len(data) / 1024)
 
 logger = logging.getLogger("protocol")
+logger.setLevel(logging.WARNING)
 # 
 
 class Message:
