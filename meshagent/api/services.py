@@ -37,7 +37,9 @@ class ServiceHost:
         self.host = host
         self.webhook_secret = webhook_secret
         if port == None:
-            port = os.getenv("MESHAGENT_PORT", 8080)
+            port = os.getenv("MESHAGENT_PORT", 8081)
+            if port != None:
+                port = int(port)
         
         self.port = port
         self.paths = list[WebhookServer]()
@@ -118,7 +120,7 @@ class ServiceHost:
                     try:
                         result = task.result()
                     except Exception as e:
-                        logger.error("agent encountered an error", exc_info=e)
+                        logger.error(f"Unable to call service endpoint: {e}", exc_info=e)
 
                 task = asyncio.create_task(run())
                 task.add_done_callback(on_done)
