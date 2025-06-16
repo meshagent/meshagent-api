@@ -198,5 +198,5 @@ async def send_webhook(session: ClientSession, *, url: str, event: str, data: di
 
         except Exception as e:
             logger.warning("webhook call failed", exc_info=e)
-            raise RoomException(f"error status returned from webhook call, http status code: {resp.status}")
+            raise RoomException(f"error status returned from webhook call {url}, http status code: {resp.status}")
             

@@ -201,7 +201,7 @@ response_types["error"] = ErrorResponse
 
 
 class RawOutputs(Response):
-    def __init__(self, *, outputs: dict, usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
+    def __init__(self, *, outputs: list[dict], usage: Optional[dict[str,float]] = None, caller_context: Optional[Dict[str,Any]] = None):
         super().__init__(usage=usage, caller_context=caller_context)
         self.outputs = outputs
 
