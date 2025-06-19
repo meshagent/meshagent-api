@@ -47,7 +47,6 @@ class ServiceHost:
         self._hosts = None
         self._app = None
 
-
     def path(self, path: str):
 
         def deco(cls: type[Portable]):
