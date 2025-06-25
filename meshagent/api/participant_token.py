@@ -48,6 +48,10 @@ class ParticipantToken:
             
         return True
 
+    def add_tunnel_grant(self, ports: list[int]):
+         ports_str = ",".join(ports)
+         self.grants.append(ParticipantGrant(name="tunnel_ports", scope=ports_str))
+
     def add_role_grant(self, role: str):
         self.grants.append(ParticipantGrant(name="role", scope=role))
 

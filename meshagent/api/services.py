@@ -171,7 +171,7 @@ class ServiceHost:
             await self.stop()
         
 
-async def send_webhook(session: ClientSession, *, url: str, event: str, data: dict, secret: Optional[str] = None, headers: Optional[map[str,str]] = None):
+async def send_webhook(session: ClientSession, *, url: str, event: str, data: dict, secret: Optional[str] = None, headers: Optional[dict[str,str]] = None):
     
     payload_body = {
         "event" : event,
@@ -183,7 +183,7 @@ async def send_webhook(session: ClientSession, *, url: str, event: str, data: di
 
     if headers != None:
         headers = {}
-        
+
     headers = {
         **headers,
         "Content-Type" : "application/json",
