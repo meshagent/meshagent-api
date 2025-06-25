@@ -98,6 +98,7 @@ class Service(BaseModel):
     created_at: str
     ports: Optional[Dict[int,Port]] = None,
     role: Optional[Literal["user","tool","agent"]] = None
+    builtin: bool = Field(exclude=True, default=False) 
 
 
 ProjectRole = Literal["member","admin"]
