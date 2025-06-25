@@ -171,7 +171,7 @@ class ServiceHost:
             await self.stop()
         
 
-async def send_webhook(session: ClientSession, *, url: str, event: str, data: dict, secret: Optional[str] = None):
+async def send_webhook(session: ClientSession, *, url: str, event: str, data: dict, secret: Optional[str] = None, headers: Optional[map[str,str]] = None):
     
     payload_body = {
         "event" : event,
@@ -181,12 +181,16 @@ async def send_webhook(session: ClientSession, *, url: str, event: str, data: di
     payload = json.dumps(payload_body)
     hash = hashlib.sha256(payload.encode())
 
+    if headers != None:
+        headers = {}
+        
     headers = {
+        **headers,
         "Content-Type" : "application/json",
     }
 
     if secret != None:
-        headers["Authorization"] = "Bearer "+jwt.encode({
+        headers["Meshagent-Signature"] = "Bearer "+jwt.encode({
             "sha256" : hash.hexdigest()
         }, key=secret, algorithm='HS256')
 

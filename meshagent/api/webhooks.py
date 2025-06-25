@@ -101,12 +101,12 @@ class WebhookServer:
         data = req.get("data", None)
 
         if self._validate_webhook_secret:
-            authorization = request.headers.get("Authorization")
+            authorization = request.headers.get("Meshagent-Signature")
             if authorization == None:
-                raise web.HTTPUnauthorized(reason="missing authorization")
+                raise web.HTTPUnauthorized(reason="missing signature")
             
             if authorization.startswith("Bearer ") == False:
-                raise web.HTTPUnauthorized(reason="missing authorization")
+                raise web.HTTPUnauthorized(reason="missing signature")
             
             raw_jwt = authorization.removeprefix("Bearer ")
 
