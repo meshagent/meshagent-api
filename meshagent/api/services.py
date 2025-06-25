@@ -181,7 +181,7 @@ async def send_webhook(session: ClientSession, *, url: str, event: str, data: di
     payload = json.dumps(payload_body)
     hash = hashlib.sha256(payload.encode())
 
-    if headers != None:
+    if headers == None:
         headers = {}
 
     headers = {
