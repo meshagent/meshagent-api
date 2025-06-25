@@ -104,7 +104,7 @@ class ParticipantToken:
     @staticmethod
     def from_json(data: dict) -> 'ParticipantToken':
         data = data.copy()
-        if name not in data:
+        if "name" not in data:
             raise Exception(f"Participant token does not have a name {json.dumps(data)}")
         
         name = data.pop("name")
