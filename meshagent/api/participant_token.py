@@ -2,6 +2,7 @@ import os
 import jwt
 from typing import Optional, List
 from datetime import datetime
+import json
 
 class ParticipantGrant:
     def __init__(self, *, name: str, scope: Optional[str]):
@@ -99,6 +100,9 @@ class ParticipantToken:
     @staticmethod
     def from_json(data: dict) -> 'ParticipantToken':
         data = data.copy()
+        if name not in data:
+            raise Exception(f"Participant token does not have a name {json.dumps(data)}")
+        
         name = data.pop("name")
         grants = data.pop("grants")
         project_id = None
