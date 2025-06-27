@@ -8,6 +8,7 @@ from meshagent.api import RoomException
 from pydantic import BaseModel, Field
 from abc import ABC, abstractmethod
 
+
 # ------------------------------------------------------------------
 #  Secret models
 # ------------------------------------------------------------------
@@ -100,6 +101,8 @@ class Service(BaseModel):
     role: Optional[Literal["user","tool","agent"]] = None
     builtin: bool = Field(exclude=True, default=False) 
 
+class Services(BaseModel):
+    services: list['Service']
 
 ProjectRole = Literal["member","admin"]
 
