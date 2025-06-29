@@ -10,9 +10,9 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 keywords = []
 dependencies = [
-  "pyjwt~=2.10.1",
-  "aiohttp~=3.11.14",
-  "jsonschema~=4.23.0",
+  "pyjwt~=2.10",
+  "aiohttp~=3.10",
+  "jsonschema~=4.23",
 ]
 classifiers = [
   # You can add your classifiers here if needed.
@@ -20,16 +20,16 @@ classifiers = [
 
 [project.optional-dependencies]
 all = [
-  "stpyv8~=13.1.201.22"
+  "stpyv8~=13.1"
 ]
 
 sync = [
-  "stpyv8~=13.1.201.22"
+  "stpyv8~=13.1"
 ]
 
 ci = [
-  "pytest~=8.3.5",
-  "pytest-asyncio~=0.26.0"
+  "pytest~=8.3",
+  "pytest-asyncio~=0.26"
 ]
 
 [project.urls]
