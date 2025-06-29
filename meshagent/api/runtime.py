@@ -36,13 +36,13 @@ try:
                 
             def onSendUpdateToBackend(self, value: dict):
                 # value is an array of bytes
-                logger.info("send to server from runtime %s", value)
+                logger.debug("send to server from runtime %s", value)
                 parsed = json.loads(value)                    
                 runtime.on_document_sync(document_id=parsed["documentID"], base64=parsed["data"])
                 
             def onSendUpdateToClient(self, value: str):
                 # value is a string
-                logger.info("send to client from runtime %s", value)
+                logger.debug("send to client from runtime %s", value)
                 
                 parsed = json.loads(value)
 
@@ -89,7 +89,7 @@ try:
             return self
         
         def __exit__(self, exc_type, exc_value, traceback):
-            logger.info("stopping v8")
+            logger.debug("stopping v8")
             self._v8.__exit__(exc_type, exc_value, traceback)
             return None
 
@@ -111,11 +111,11 @@ try:
         def on_document_sync(self, document_id: str, base64: str):        
             doc = self.get_doc(document_id)
             if doc.on_document_sync != None:
-                logger.info("publishing backend changes to document %s: %s", document_id, base64)
+                logger.debug("publishing backend changes to document %s: %s", document_id, base64)
                 doc.on_document_sync(base64)
 
         def apply_backend_changes(self, document_id: str, base64: str):
-            logger.info("applying backend changes to document %s: %s", document_id, base64)
+            logger.debug("applying backend changes to document %s: %s", document_id, base64)
             self.execute("meshagent.applyBackendChanges({id},{base64})".format(id=json.dumps(document_id),base64=json.dumps(base64)))
 
         def _register_document(self, doc: 'RuntimeDocument', data: bytes | None = None) -> None:
@@ -183,7 +183,7 @@ class RuntimeDocument(Document):
             "changes" : changes,
         }
         changes_json = json.dumps(changes)
-        logger.info("applying changes to document %s: %s", self.id, changes_json)
+        logger.debug("applying changes to document %s: %s", self.id, changes_json)
      
         runtime.execute('''
             meshagent.applyChanges({changes});

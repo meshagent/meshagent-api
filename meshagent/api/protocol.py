@@ -92,7 +92,7 @@ class Protocol:
         return packets
 
     async def _handle_message(self, message_id: int, type: str, data: bytes) -> None:
-        logger.info("invoking handler %s", type)
+        logger.debug("invoking handler %s", type)
         try:
             if type in self._handlers:
                 fn = self._handlers[type]
@@ -122,7 +122,7 @@ class Protocol:
       
         await self.send_packet(header_data)
         
-        logger.info("publishing message payload %s", message_id)
+        logger.debug("publishing message payload %s", message_id)
         await self._send_payload(message_id=message_id, data=data)
 
 
@@ -153,12 +153,12 @@ class Protocol:
                 self.recv_packet_total = int.from_bytes(data[12:16], "big")
                 self.recv_message_id = message_id
                 self.recv_type = str(data[16:], "utf-8")
-                logger.info("recieved packet %s of %d", self.recv_type, self.recv_packet_total)
+                logger.debug("recieved packet %s of %d", self.recv_type, self.recv_packet_total)
             
                 if self.recv_packet_total == 0:
 
                     data = b''.join(self.recv_packets)
-                    logger.info("sending single packet message")
+                    logger.debug("sending single packet message")
                     self._recv_ch.send_nowait(Message(id=message_id, type=self.recv_type, data=data))
                     
                     mark_ready()
@@ -186,7 +186,7 @@ class Protocol:
             if self.recv_packet_total == self.recv_packet_id:
                 # reset
                 
-                logger.info("sending multiple packet message %d of %d", self.recv_packet_id, self.recv_packet_total)
+                logger.debug("sending multiple packet message %d of %d", self.recv_packet_id, self.recv_packet_total)
                     
                 data = b''.join(self.recv_packets)
                 self._recv_ch.send_nowait(Message(id=message_id, type=self.recv_type, data=data))
@@ -198,29 +198,29 @@ class Protocol:
                             
 
     async def _send_task(self) -> None:
-        logger.info("send channel task started")
+        logger.debug("send channel task started")
 
         async for message in self._send_ch:
-            logger.info("send queued message %d", message.id)
+            logger.debug("send queued message %d", message.id)
             message_id = message.id
             type = message.type
             data = message.data
             await self._send_message(message_id=message_id, type=type, data=data)
 
-        logger.info("send channel task ended")
+        logger.debug("send channel task ended")
 
     async def _recv_task(self) -> None:
 
-        logger.info("recv channel task started")
+        logger.debug("recv channel task started")
 
         async for message in self._recv_ch:
-            logger.info("received queued message %d %s %d", message.id, message.type, len(message.data))
+            logger.debug("received queued message %d %s %d", message.id, message.type, len(message.data))
             message_id = message.id
             type = message.type
             data = message.data
             await self._handle_message(message_id=message_id, type=type, data=data)
 
-        logger.info("recv channel task ended")
+        logger.debug("recv channel task ended")
             
 
     def next_message_id(self):
@@ -231,7 +231,7 @@ class Protocol:
 
         if message_id == None:
             message_id = self.next_message_id()
-            logger.info("sending message %d", message_id)
+            logger.debug("sending message %d", message_id)
 
         if isinstance(data, str):
             data = bytes(data, "utf-8")

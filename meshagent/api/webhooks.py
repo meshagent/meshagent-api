@@ -158,7 +158,7 @@ class WebhookServer:
     async def __aenter__(self):
         
         if self._shared == False:
-            self._runner = web.AppRunner(self._app)
+            self._runner = web.AppRunner(self._app, access_log=None)
             
             await self._runner.setup()
 

@@ -63,7 +63,6 @@ class KeysSecret(_BaseSecret):
 
 SecretLike = PullSecret | KeysSecret
 
-
 def _parse_secret(raw: dict) -> SecretLike:
     """
     Decide which concrete Pydantic class to use based on the 'type' field.
@@ -76,6 +75,7 @@ def _parse_secret(raw: dict) -> SecretLike:
 class Endpoint(BaseModel):
     type: Literal["mcp.sse","meshagent.callable","http","tcp"]
     path: Optional[str | None] = None
+    participant_name: Optional[str | None] = None
 
 class Port(BaseModel):
     liveness_path: Optional[str | None] = None
