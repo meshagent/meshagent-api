@@ -98,7 +98,7 @@ class ServiceHost:
             async def _spawn(self, *, room_name: str, room_url: str, token: str, arguments: Optional[dict] = None):
                 
                 agent = p.cls()
-                logger.info(f"{getattr(agent, "name", "")} answering call and joining room")
+                logger.info(f"{getattr(agent, "name", "")} answering call and joining room at url {room_url}")
                 
                 async def run():
                     async with RoomClient(protocol=WebSocketClientProtocol(url=room_url, token=token)) as room:
