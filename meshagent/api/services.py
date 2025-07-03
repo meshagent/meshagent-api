@@ -42,7 +42,7 @@ class ServiceHost:
                 port = int(port)
         
         self.port = port
-        self.paths = list[WebhookServer]()
+        self.paths = list[ServicePath]()
 
         self._hosts = None
         self._app = None
@@ -56,6 +56,11 @@ class ServiceHost:
             return cls
 
         return deco
+    
+    def add_path(self, *, path: str, cls):
+        
+        self.paths.append(ServicePath(path=path, cls=cls))
+        
 
     async def _liveness_check_request(self, request: web.Request):
        
@@ -67,7 +72,8 @@ class ServiceHost:
         
         await self._runner.setup()
 
-        logger.info(f"starting service host on {self.host}:{self.port}")
+        for path in self.paths:
+            logger.info(f"starting -> {self.host}:{self.port}{path.path} -> {path.cls}")
         
         self._site = web.TCPSite(self._runner, self.host, self.port)
         await self._site.start()
@@ -91,9 +97,9 @@ class ServiceHost:
             
             async def _spawn(self, *, room_name: str, room_url: str, token: str, arguments: Optional[dict] = None):
                 
-                logger.info(f"room: {room_name} url: {room_url} token: {token} arguments: {arguments}")
                 agent = p.cls()
-
+                logger.info(f"{getattr(agent, "name", "")} answering call and joining room")
+                
                 async def run():
                     async with RoomClient(protocol=WebSocketClientProtocol(url=room_url, token=token)) as room:
             
@@ -125,7 +131,7 @@ class ServiceHost:
                 task.add_done_callback(on_done)
                 
             async def on_call(self, event):
-                    await self._spawn(room_name=event.room_name, room_url=event.room_url, token=event.token, arguments=event.arguments)
+                await self._spawn(room_name=event.room_name, room_url=event.room_url, token=event.token, arguments=event.arguments)
         
         host = ServiceWebhookServer(validate_webhook_secret=self.webhook_secret != None, path=p.path, app=self._app)
         return host

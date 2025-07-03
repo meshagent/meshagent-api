@@ -124,7 +124,7 @@ class WebhookServer:
             if hash.hexdigest() != sha256:
                 raise web.HTTPUnauthorized(reason="signature does not match payload")
 
-        logger.info(f"received webhook event={event} data={data}")
+        logger.debug(f"received webhook event={event} data={data}")
         await self.on_webhook(payload=req)
 
         return web.json_response({"ok":True})
