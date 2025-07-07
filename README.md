@@ -5,7 +5,6 @@ The ``meshagent.api`` is the foundation that all other packages build on. It inc
 ### JWT Authentication
  MeshAgent uses **JSON Web Tokens (JWTs)** to authenticate participants. A token encodes who you are (participant name) and what you’re allowed to access (project ID, room name, role). The token is signed, so the server can verify it without storing any state.
 
-<CodeGroup>
 ```Python Python
 from meshagent.api import ParticipantToken
 token = ParticipantToken(
@@ -16,19 +15,16 @@ token = ParticipantToken(
 token.add_room_grant(room_name="my-room", role="user")
 jwt = token.to_jwt(secret="your-api-secret")
 ```
-</CodeGroup>
 
 ### WebSocket Protocol
 A WebSocket keeps a two-way connection open between your Python code and the Meshagent server. This allows instant messaging, file transfers, and document updates. ``WebSocketClientProtocol`` manages the underlying connection:
 
-<CodeGroup>
 ```Python Python
 from meshagent.api import WebSocketClientProtocol
 protocol = WebSocketClientProtocol(url=room_url, token=jwt)
 async with protocol:
     # communication occurs over this protocol
 ```
-</CodeGroup>
 
 Messages are encoded and decoded using a ``Protocol`` layer that is transport-agnostic.
 
@@ -41,7 +37,6 @@ Messages are encoded and decoded using a ``Protocol`` layer that is transport-ag
 - ``agents``: manage agent instances.
 - ``queues``, ``database``, ``livekit``, and more.
 
-<CodeGroup>
 ```Python Python
 from meshagent.api import RoomClient
 async with RoomClient(protocol=protocol) as room:
@@ -49,7 +44,6 @@ async with RoomClient(protocol=protocol) as room:
     async with room.storage.open(path="example.txt", overwrite=True) as f:
         await f.write(b"content")
 ```
-</CodeGroup>
 
 ### Document Runtime and Schemas
 ``SyncClient`` and the document runtime allow multiple participants to edit structured documents (defined by a ``MeshSchema``) with real-time updates propagated via WebSocket messages.
@@ -65,7 +59,6 @@ Separate from rooms, ``AccountsClient`` is a REST-based client for managing proj
 
 When a call to the agent or tool arrives through a webhook, the ``ServiceHost`` spawns that agent or tool and connects it to the requested room via the ``RoomClient`` and ``WebSocketClientProtocol``. The ``ServiceHost`` starts an HTTP servier and registers each path so that multiple agents or toolkits can be hosted.  
 
-<CodeGroup>
 ```Python Python
 from meshagent.api.services import ServiceHost
 
@@ -79,4 +72,4 @@ class SimpleChatbot(ChatBot):
 print(f"running on port {service.port}")
 asyncio.run(service.run())
 ```
-</CodeGroup>
+
