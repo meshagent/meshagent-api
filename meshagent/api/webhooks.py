@@ -18,28 +18,43 @@ class RoomStartedEvent:
         self.room_name = room_name
         self.room_url = room_url
 
+
 class RoomEndedEvent:
     def __init__(self, *, room_name: str):
         self.room_name = room_name
 
+
 class CallEvent:
-    def __init__(self, *, room_name: str, room_url: str, token: str, arguments: Optional[dict] = None):
+    def __init__(
+        self,
+        *,
+        room_name: str,
+        room_url: str,
+        token: str,
+        arguments: Optional[dict] = None,
+    ):
         self.room_name = room_name
         self.room_url = room_url
         self.token = token
         self.arguments = arguments
 
 
-
 class WebhookServer:
-
-    def __init__(self, *, host: Optional[str] = None, port: Optional[int] = None, webhook_secret: Optional[str] = None, app: Optional[web.Application] = None, path: Optional[str] = None, validate_webhook_secret: Optional[bool] = None):
+    def __init__(
+        self,
+        *,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        webhook_secret: Optional[str] = None,
+        app: Optional[web.Application] = None,
+        path: Optional[str] = None,
+        validate_webhook_secret: Optional[bool] = None,
+    ):
         if validate_webhook_secret == None:
             validate_webhook_secret = True
 
         if host == None:
             host = "0.0.0.0"
-
 
         if port == None:
             port_env = os.environ.get("MESHAGENT_PORT", None)
@@ -50,7 +65,7 @@ class WebhookServer:
 
         self._host = host
         self._port = port
-        
+
         if app == None:
             self._shared = False
             app = web.Application()
@@ -78,25 +93,23 @@ class WebhookServer:
     @property
     def app(self):
         return self._app
-    
+
     def add_routes(self, app: web.Application) -> None:
-        
         # add a root request handler, many serverless servers will require this
         if self._shared == False:
             app.router.add_get("/", self._liveness_check_request)
 
         app.router.add_post(self._path, self._webhook_request)
-        
+
     async def _liveness_check_request(self, request: web.Request):
-        return web.json_response({"ok":True})
+        return web.json_response({"ok": True})
 
     async def _webhook_request(self, request: web.Request):
-
-        req : dict = await request.json()
+        req: dict = await request.json()
 
         if isinstance(req, dict) == False:
             raise web.HTTPBadRequest(reason="invalid request body")
-        
+
         event = req.get("event", None)
         data = req.get("data", None)
 
@@ -104,14 +117,16 @@ class WebhookServer:
             authorization = request.headers.get("Meshagent-Signature")
             if authorization == None:
                 raise web.HTTPUnauthorized(reason="missing signature")
-            
+
             if authorization.startswith("Bearer ") == False:
                 raise web.HTTPUnauthorized(reason="missing signature")
-            
+
             raw_jwt = authorization.removeprefix("Bearer ")
 
             try:
-                decoded_jwt:dict= jwt.decode(raw_jwt, key=self._webhook_secret, algorithms=["HS256"])
+                decoded_jwt: dict = jwt.decode(
+                    raw_jwt, key=self._webhook_secret, algorithms=["HS256"]
+                )
             except Exception as e:
                 logger.warning("invalid jwt", exc_info=e)
                 raise web.HTTPUnauthorized(reason="invalid jwt")
@@ -127,46 +142,52 @@ class WebhookServer:
         logger.debug(f"received webhook event={event} data={data}")
         await self.on_webhook(payload=req)
 
-        return web.json_response({"ok":True})
+        return web.json_response({"ok": True})
 
     async def on_webhook(self, *, payload: dict):
-        
         event = payload["event"]
         data = payload["data"]
-        
 
         if event == "room.started":
             url = data["room_url"]
-            await self.on_room_started(RoomStartedEvent(room_name=data["room_name"], room_url=url))
+            await self.on_room_started(
+                RoomStartedEvent(room_name=data["room_name"], room_url=url)
+            )
 
         elif event == "room.ended":
             await self.on_room_ended(RoomEndedEvent(room_name=data["room_name"]))
 
         elif event == "room.call":
             url = data["room_url"]
-            await self.on_call(CallEvent(room_name=data["room_name"], room_url=url, token=data["token"], arguments=data["arguments"]))
-        
+            await self.on_call(
+                CallEvent(
+                    room_name=data["room_name"],
+                    room_url=url,
+                    token=data["token"],
+                    arguments=data["arguments"],
+                )
+            )
+
     async def on_room_started(self, event: RoomStartedEvent):
         pass
-    
+
     async def on_room_ended(self, event: RoomEndedEvent):
         pass
 
     async def on_call(self, event: CallEvent):
         pass
- 
+
     async def __aenter__(self):
-        
         if self._shared == False:
             self._runner = web.AppRunner(self._app, access_log=None)
-            
+
             await self._runner.setup()
 
             logger.info(f"starting webhook server on {self._host}:{self._port}")
-            
+
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
-        
+
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -183,12 +204,11 @@ class WebhookServer:
     async def run(self):
         await self.__aenter__()
         try:
-
             term = asyncio.Future()
 
             def clean_termination(signal, frame):
                 term.set_result(True)
-            
+
             signal.signal(signal.SIGTERM, clean_termination)
             signal.signal(signal.SIGABRT, clean_termination)
 
@@ -196,4 +216,3 @@ class WebhookServer:
 
         finally:
             await self.__aexit__(None, None, None)
-

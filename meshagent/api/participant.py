@@ -15,5 +15,3 @@ class Participant:
 
     def get_attribute(self, name: str):
         return self._attributes.get(name, None)
-    
-        
