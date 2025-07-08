@@ -2,14 +2,14 @@ from meshagent.api.protocol import Protocol, ClientProtocol
 import json
 import asyncio
 import logging
-from typing import Optional, Callable, Dict, List, Any, Literal, Type, Generic, TypeVar
+from typing import Optional, Callable, Dict, List, Any, Literal, Generic, TypeVar
 
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
-from meshagent.api.messaging import unpack_message, pack_message, unpack_message
+from meshagent.api.messaging import pack_message, unpack_message
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
-from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, TextResponse, EmptyResponse, FileResponse, Response
+from meshagent.api.messaging import unpack_response, ErrorResponse, JsonResponse, EmptyResponse, FileResponse, Response
 import uuid
 
 from datetime import datetime
@@ -711,7 +711,7 @@ class StorageClient:
         """
 
         response = await self.room.send_request("storage.open", { "path":path, "overwrite" : overwrite })   
-        return FileHandle(id=response["handle"]);     
+        return FileHandle(id=response["handle"])     
     
     async def write(self, *, handle: FileHandle, data: bytes) -> None:
 
@@ -747,7 +747,7 @@ class StorageClient:
             await storage_client.close(handle=my_handle)
         """
 
-        await self.room.send_request("storage.close", { "handle": handle.id });   
+        await self.room.send_request("storage.close", { "handle": handle.id })   
 
     async def download(self, *, path: str) -> FileResponse:
         """
@@ -764,7 +764,7 @@ class StorageClient:
             print(file_response.data)  # raw bytes
         """
 
-        response = await self.room.send_request("storage.download", { "path": path });   
+        response = await self.room.send_request("storage.download", { "path": path })   
         return response
     
     async def download_url(self, *, path: str) -> str:
@@ -784,7 +784,7 @@ class StorageClient:
             print("Download using:", url)
         """
 
-        response = await self.room.send_request("storage.download_url", { "path": path });   
+        response = await self.room.send_request("storage.download_url", { "path": path })   
         return response["url"]    
     
     async def list(self, *, path: str) -> list[StorageEntry]:

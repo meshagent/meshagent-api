@@ -1,7 +1,7 @@
 import json
 import logging
 
-from meshagent.api.schema import MeshSchema, ElementType, SimpleValue,  ChildProperty, ValueProperty, MeshSchemaValidationException
+from meshagent.api.schema import MeshSchema, ElementType, ChildProperty, ValueProperty, MeshSchemaValidationException
 from jsonschema import validate, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ def test_schema_validates_tag_names():
             )
         
         raise Exception("schema did not prevent extra prop")
-    except MeshSchemaValidationException as e:
+    except MeshSchemaValidationException:
         pass
 
 
@@ -40,7 +40,7 @@ def test_schema_validates_value_names():
             )
         
         raise Exception("schema did not prevent extra prop")
-    except MeshSchemaValidationException as e:
+    except MeshSchemaValidationException:
         pass
 
 
@@ -59,7 +59,7 @@ def test_schema_validates_child_tag_names():
             )
         
         raise Exception("schema did not prevent extra prop")
-    except MeshSchemaValidationException as e:
+    except MeshSchemaValidationException:
         pass
 
 
@@ -94,7 +94,7 @@ def test_schema_requires_properties():
         }, schema)
 
         raise Exception("schema did not prevent extra prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
 
@@ -103,7 +103,7 @@ def test_schema_requires_properties():
         }, schema)
 
         raise Exception("schema did not prevent missing prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
 
@@ -141,7 +141,7 @@ def test_nested_schema_object():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
     
 
@@ -185,7 +185,7 @@ def test_nested_array_values():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
 def test_nested_array_objects():
@@ -219,7 +219,7 @@ def test_nested_array_objects():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
     try:
@@ -228,7 +228,7 @@ def test_nested_array_objects():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
     
 
@@ -265,7 +265,7 @@ def test_nested_array_multi_objects():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
     try:
@@ -274,7 +274,7 @@ def test_nested_array_multi_objects():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
 
@@ -312,7 +312,7 @@ def test_nested_array_multi_objects_ordered():
         }, schema)
 
         raise Exception("schema did not prevent bad order")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
     try:
@@ -321,7 +321,7 @@ def test_nested_array_multi_objects_ordered():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass
 
     try:
@@ -330,7 +330,7 @@ def test_nested_array_multi_objects_ordered():
         }, schema)
 
         raise Exception("schema did not prevent bad prop")
-    except ValidationError as e:
+    except ValidationError:
         pass 
 
 def test_roudntrip_schema_json():

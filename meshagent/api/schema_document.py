@@ -1,7 +1,7 @@
 import uuid
 from typing import Callable, Any, Optional
 import json
-from meshagent.api.schema import MeshSchema, ElementType, ChildProperty, ValueProperty
+from meshagent.api.schema import MeshSchema, ElementType, ChildProperty
 
 import logging
 logger = logging.getLogger("schema_document")

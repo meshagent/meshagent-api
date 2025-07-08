@@ -1,4 +1,4 @@
-from meshagent.api.schema import MeshSchema, ElementType, ValueProperty, ChildProperty, SimpleValue
+from meshagent.api.schema import MeshSchema, ElementType, ValueProperty, ChildProperty
 from meshagent.api.schema_document import Element, Text
 from meshagent.api import runtime
 

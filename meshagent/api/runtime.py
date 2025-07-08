@@ -9,7 +9,6 @@ import secrets
 from meshagent.api.schema import MeshSchema
 from meshagent.api.schema_document import Document
 
-import os
 
 
 _js : str

@@ -1,6 +1,5 @@
 import logging
 
-from meshagent.api.protocol import Protocol
 
 logger = logging.getLogger("agent")
 

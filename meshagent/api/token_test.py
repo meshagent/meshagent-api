@@ -1,7 +1,6 @@
 import os
 import pytest
 import jwt
-from unittest.mock import patch
 
 from meshagent.api.participant_token import ParticipantToken, ParticipantGrant
 

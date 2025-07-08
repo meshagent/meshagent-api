@@ -1,11 +1,8 @@
-import uuid
-from typing import Callable
 import json
 import logging
-from jsonschema import validate, ValidationError
+from jsonschema import validate
 
 from meshagent.api.schema import MeshSchema, ElementType, ChildProperty, ValueProperty
-from meshagent.api.schema_document import Document, Element, Text
 from meshagent.api.runtime import DocumentRuntime
 
 logger = logging.getLogger(__name__)
