@@ -1102,7 +1102,7 @@ class MessagingClient:
         def on_send_complete(task: asyncio.Task):
             try:
                 task.result()
-            except e:
+            except Exception as e:
                 logger.warning("unable to send stream response", exc_info=e)
 
         if not from_participant:
