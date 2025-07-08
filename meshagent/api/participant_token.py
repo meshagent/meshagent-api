@@ -4,26 +4,30 @@ from typing import Optional, List
 from datetime import datetime
 import json
 
+
 class ParticipantGrant:
     def __init__(self, *, name: str, scope: Optional[str]):
         self.name = name
         self.scope = scope
 
     def to_json(self) -> dict:
-        return {
-            "name": self.name,
-            "scope": self.scope
-        }
+        return {"name": self.name, "scope": self.scope}
 
     @staticmethod
-    def from_json(data: dict) -> 'ParticipantGrant':
-        return ParticipantGrant(
-            name=data["name"],
-            scope=data["scope"]
-        )
+    def from_json(data: dict) -> "ParticipantGrant":
+        return ParticipantGrant(name=data["name"], scope=data["scope"])
+
 
 class ParticipantToken:
-    def __init__(self, *, name: str, project_id: Optional[str] = None, api_key_id: str = None, grants: Optional[List[ParticipantGrant]] = None, extra_payload: Optional[dict] = None):
+    def __init__(
+        self,
+        *,
+        name: str,
+        project_id: Optional[str] = None,
+        api_key_id: str = None,
+        grants: Optional[List[ParticipantGrant]] = None,
+        extra_payload: Optional[dict] = None,
+    ):
         if grants is None:
             grants = []
         self.name = name
@@ -37,7 +41,7 @@ class ParticipantToken:
         for grant in self.grants:
             if grant.name == "role" and grant.scope != "user":
                 return grant.scope
-            
+
         return "user"
 
     @property
@@ -45,12 +49,12 @@ class ParticipantToken:
         for grant in self.grants:
             if grant.name == "role" and grant.scope != "user":
                 return False
-            
+
         return True
 
     def add_tunnel_grant(self, ports: list[int]):
-         ports_str = ",".join(ports)
-         self.grants.append(ParticipantGrant(name="tunnel_ports", scope=ports_str))
+        ports_str = ",".join(ports)
+        self.grants.append(ParticipantGrant(name="tunnel_ports", scope=ports_str))
 
     def add_role_grant(self, role: str):
         self.grants.append(ParticipantGrant(name="role", scope=role))
@@ -62,51 +66,52 @@ class ParticipantToken:
         for g in self.grants:
             if g.name == name:
                 return g.scope
-            
+
         return None
 
     def to_json(self) -> dict:
-        j = {
-            "name": self.name,
-            "grants": [g.to_json() for g in self.grants]
-        }
+        j = {"name": self.name, "grants": [g.to_json() for g in self.grants]}
 
-        if self.project_id != None:
+        if self.project_id is not None:
             j["sub"] = self.project_id
 
-        if self.api_key_id != None:
+        if self.api_key_id is not None:
             j["kid"] = self.api_key_id
 
         return j
-    
-    def to_jwt(self, *, token: Optional[str] = None, expiration: Optional[datetime] = None) -> str:
-        
 
+    def to_jwt(
+        self, *, token: Optional[str] = None, expiration: Optional[datetime] = None
+    ) -> str:
         extra_payload = self.extra_payload
         if extra_payload is None:
             extra_payload = {}
         else:
             extra_payload = extra_payload.copy()
 
-        if expiration != None:
+        if expiration is not None:
             extra_payload["exp"] = expiration
 
         payload = self.to_json()
-        
-        if token == None:
-             token = os.getenv("MESHAGENT_SECRET")
-             if "kid" in payload:
+
+        if token is None:
+            token = os.getenv("MESHAGENT_SECRET")
+            if "kid" in payload:
                 # We are exporting a token using the default secret, so we should remove the key id
                 payload.pop("kid")
-             
-        return jwt.encode(payload={**extra_payload, **payload}, key=token, algorithm='HS256')
+
+        return jwt.encode(
+            payload={**extra_payload, **payload}, key=token, algorithm="HS256"
+        )
 
     @staticmethod
-    def from_json(data: dict) -> 'ParticipantToken':
+    def from_json(data: dict) -> "ParticipantToken":
         data = data.copy()
         if "name" not in data:
-            raise Exception(f"Participant token does not have a name {json.dumps(data)}")
-        
+            raise Exception(
+                f"Participant token does not have a name {json.dumps(data)}"
+            )
+
         name = data.pop("name")
         grants = data.pop("grants")
         project_id = None
@@ -123,18 +128,19 @@ class ParticipantToken:
             project_id=project_id,
             api_key_id=api_key_id,
             grants=[ParticipantGrant.from_json(g) for g in grants],
-            extra_payload=data
+            extra_payload=data,
         )
 
     @staticmethod
-    def from_jwt(jwt_str: str, *, token: Optional[str] = None, validate: Optional[bool] = True) -> 'ParticipantToken':
-        if token == None:
-             token = os.getenv("MESHAGENT_SECRET")
+    def from_jwt(
+        jwt_str: str, *, token: Optional[str] = None, validate: Optional[bool] = True
+    ) -> "ParticipantToken":
+        if token is None:
+            token = os.getenv("MESHAGENT_SECRET")
 
         if validate:
-            decoded = jwt.decode(jwt=jwt_str, key=token, algorithms=['HS256'])
+            decoded = jwt.decode(jwt=jwt_str, key=token, algorithms=["HS256"])
         else:
             decoded = jwt.decode(jwt=jwt_str, options={"verify_signature": False})
 
         return ParticipantToken.from_json(decoded)
-    

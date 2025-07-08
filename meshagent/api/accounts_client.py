@@ -1,20 +1,19 @@
 import aiohttp
 from typing import Any, Dict, List, Optional, Literal
-from typing import List
 from pydantic import BaseModel, ValidationError
-from typing import Literal, Optional, Dict
 from meshagent.api import RoomException
 
-from pydantic import BaseModel, Field
-from abc import ABC, abstractmethod
+from pydantic import Field
 
 
 # ------------------------------------------------------------------
 #  Secret models
 # ------------------------------------------------------------------
 
+
 class _BaseSecret(BaseModel):
     """Common fields shared by all secrets."""
+
     id: str
     name: str
 
@@ -27,19 +26,23 @@ class PullSecret(_BaseSecret):
     structure consumed by `map_secret_data("docker", …)` in the room
     provisioner.
     """
+
     type: Literal["docker"] = "docker"
 
-    server: str   = Field(..., description="Registry host (e.g. registry-1.docker.io)")
+    server: str = Field(..., description="Registry host (e.g. registry-1.docker.io)")
     username: str
     password: str
-    email: str    = Field("none@example.com", description="Email is required by the Docker spec, but is unused")
+    email: str = Field(
+        "none@example.com",
+        description="Email is required by the Docker spec, but is unused",
+    )
 
     def to_payload(self) -> Dict[str, str]:
         return {
-            "server":   self.server,
+            "server": self.server,
             "username": self.username,
             "password": self.password,
-            "email":    self.email,
+            "email": self.email,
         }
 
 
@@ -55,56 +58,74 @@ class KeysSecret(_BaseSecret):
             data={"OPENAI_API_KEY": "sk-...", "ORG": "myorg"}
         )
     """
+
     type: Literal["keys"] = "keys"
     data: Dict[str, str]
 
     def to_payload(self) -> Dict[str, str]:
         return self.data
 
+
 SecretLike = PullSecret | KeysSecret
+
 
 def _parse_secret(raw: dict) -> SecretLike:
     """
     Decide which concrete Pydantic class to use based on the 'type' field.
     """
     if raw.get("type") == "docker":
-        return PullSecret.model_validate({ "id" : raw["id"], "name" : raw["name"], "type" : raw["type"], **raw["data"] })
+        return PullSecret.model_validate(
+            {"id": raw["id"], "name": raw["name"], "type": raw["type"], **raw["data"]}
+        )
     else:  # defaults to keys_secret
-        return KeysSecret.model_validate({  "id" : raw["id"], "name" : raw["name"], "type" : raw["type"], "data": raw["data"] })
+        return KeysSecret.model_validate(
+            {
+                "id": raw["id"],
+                "name": raw["name"],
+                "type": raw["type"],
+                "data": raw["data"],
+            }
+        )
+
 
 class Endpoint(BaseModel):
-    type: Literal["mcp.sse","meshagent.callable","http","tcp"]
+    type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
     path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
+
 
 class Port(BaseModel):
     liveness_path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
 
-    type: Optional[Literal["mcp.sse","meshagent.callable","http","tcp"]] = None
+    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
     path: Optional[str | None] = None
-    
+
     endpoints: Optional[list[Endpoint]] = None
+
 
 class Service(BaseModel):
     id: str
     image: str
     name: str
-    environment: Optional[Dict[str,str]] = None
+    environment: Optional[Dict[str, str]] = None
     command: Optional[str] = None
     room_storage_path: Optional[str] = None
     pull_secret: Optional[str] = None
-    runtime_secrets: Optional[Dict[str,str]] = None
+    runtime_secrets: Optional[Dict[str, str]] = None
     environment_secrets: Optional[list[str]] = None
     created_at: str
-    ports: Optional[Dict[int,Port]] = None,
-    role: Optional[Literal["user","tool","agent"]] = None
-    builtin: bool = Field(exclude=True, default=False) 
+    ports: Optional[Dict[int, Port]] = (None,)
+    role: Optional[Literal["user", "tool", "agent"]] = None
+    builtin: bool = Field(exclude=True, default=False)
+
 
 class Services(BaseModel):
-    services: list['Service']
+    services: list["Service"]
 
-ProjectRole = Literal["member","admin"]
+
+ProjectRole = Literal["member", "admin"]
+
 
 class AccountsClient:
     """
@@ -133,14 +154,14 @@ class AccountsClient:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
-        
+
     async def get_project_role(self, project_id: str) -> ProjectRole:
         """
         Corresponds to: GET /accounts/projects/{id}/role
         Returns a JSON dict with { "role" : "member" | "admin" } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}"
-       
+
         async with self._session.get(
             url,
             headers=self._get_headers(),
@@ -148,28 +169,30 @@ class AccountsClient:
             resp.raise_for_status()
             return await resp.json()["role"]
 
-    async def create_share(self, project_id: str, settings: Optional[dict] = None) -> Dict[str, Any]:
+    async def create_share(
+        self, project_id: str, settings: Optional[dict] = None
+    ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects
         Body: { "name": "<name>" }
         Returns a JSON dict with { "id" } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/shares"
-       
+
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json={ "settings" : settings },
+            json={"settings": settings},
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
-        
+
     async def delete_share(self, project_id: str, share_id: str) -> None:
         """
         Corresponds to: DELETE /accounts/projects/:id/shares/:share_id
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/shares/{share_id}"
-       
+
         async with self._session.delete(
             url,
             headers=self._get_headers(),
@@ -177,35 +200,37 @@ class AccountsClient:
             resp.raise_for_status()
             return None
 
-    async def update_share(self, project_id: str, share_id: str, settings: Optional[dict] = None) -> None:
+    async def update_share(
+        self, project_id: str, share_id: str, settings: Optional[dict] = None
+    ) -> None:
         """
         Corresponds to: PUT /accounts/projects/:id/shares/:share_id
         Body: { "settings" }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/shares/{share_id}"
-       
+
         async with self._session.put(
             url,
             headers=self._get_headers(),
-            json={ "settings" : settings },
+            json={"settings": settings},
         ) as resp:
             resp.raise_for_status()
             return None
-    
+
     async def list_shares(self, project_id: str) -> None:
         """
         Corresponds to: GET /accounts/projects/:id/shares
         Returns a JSON dict with { "shares" : [{ "id", "settings" }] } on success.
         """
         url = f"{self.base_url}/shares/{project_id}"
-       
+
         async with self._session.get(
             url,
             headers=self._get_headers(),
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
-        
+
     async def connect_share(self, share_id: str) -> None:
         """
         Corresponds to: POST /shares/:share_id/connect
@@ -213,7 +238,7 @@ class AccountsClient:
         Returns a JSON dict with { "jwt", "room_url" } on success.
         """
         url = f"{self.base_url}/shares/{share_id}"
-       
+
         async with self._session.post(
             url,
             headers=self._get_headers(),
@@ -221,25 +246,28 @@ class AccountsClient:
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
-        
 
-    async def create_project(self, name: str, settings: Optional[dict] = None) -> Dict[str, Any]:
+    async def create_project(
+        self, name: str, settings: Optional[dict] = None
+    ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects
         Body: { "name": "<name>" }
         Returns a JSON dict with { "id", "owner_user_id", "name" } on success.
         """
         url = f"{self.base_url}/accounts/projects"
-       
+
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json={"name": name, "settings" : settings },
+            json={"name": name, "settings": settings},
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-    async def add_user_to_project(self, project_id: str, user_id: str) -> Dict[str, Any]:
+    async def add_user_to_project(
+        self, project_id: str, user_id: str
+    ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/:id/users
         Body: { "project_id", "user_id" }
@@ -247,33 +275,38 @@ class AccountsClient:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
         body = {"project_id": project_id, "user_id": user_id}
-        async with self._session.post(url, headers=self._get_headers(), json=body) as resp:
+        async with self._session.post(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-    async def remove_user_from_project(self, project_id: str, user_id: str) -> Dict[str, Any]:
+    async def remove_user_from_project(
+        self, project_id: str, user_id: str
+    ) -> Dict[str, Any]:
         """
         Corresponds to: DELETE /accounts/projects/:project_id/users/:user_id
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
-    
-        async with self._session.delete(
-            url, headers=self._get_headers()
-        ) as resp:
+
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-    async def update_project_settings(self, project_id: str, settings: dict) -> Dict[str, Any]:
+    async def update_project_settings(
+        self, project_id: str, settings: dict
+    ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/:id/settings
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/settings"
-        
-        async with self._session.put(url, headers=self._get_headers(), json=settings) as resp:
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=settings
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
-
 
     async def get_users_in_project(self, project_id: str) -> Dict[str, Any]:
         """
@@ -281,7 +314,7 @@ class AccountsClient:
         Returns a JSON dict with { "users": [...] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -292,24 +325,25 @@ class AccountsClient:
         Returns the user profile JSON, e.g. { "id", "first_name", "last_name", "email" } or raises 404 if not found.
         """
         url = f"{self.base_url}/accounts/profiles/{user_id}"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-    async def update_user_profile(self, user_id: str, first_name: str, last_name: str) -> Dict[str, Any]:
+    async def update_user_profile(
+        self, user_id: str, first_name: str, last_name: str
+    ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/profiles/:id
         Body: { "first_name", "last_name" }
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/profiles/{user_id}"
-        body = {
-            "first_name": first_name,
-            "last_name":  last_name
-        }
-        
-        async with self._session.put(url, headers=self._get_headers(), json=body) as resp:
+        body = {"first_name": first_name, "last_name": last_name}
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -319,7 +353,7 @@ class AccountsClient:
         Returns a JSON dict with { "projects": [...] }.
         """
         url = f"{self.base_url}/accounts/projects"
-    
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -330,12 +364,14 @@ class AccountsClient:
         Returns a JSON dict with { "projects": [...] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-    async def create_project_participant_token(self, project_id: str, room_name: str) -> Dict[str, Any]:
+    async def create_project_participant_token(
+        self, project_id: str, room_name: str
+    ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/{project_id}/participant-tokens
         Body: { "room_name": "<>" }
@@ -345,34 +381,36 @@ class AccountsClient:
         payload = {
             "room_name": room_name,
         }
-        
-        async with self._session.post(url, headers=self._get_headers(), json=payload) as resp:
-            resp.raise_for_status()
-            return await resp.json()    
 
-    async def create_project_api_key(self, project_id: str, name: str, description: str) -> Dict[str, Any]:
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def create_project_api_key(
+        self, project_id: str, name: str, description: str
+    ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/{project_id}/api-keys
         Body: { "name": "<>", "description": "<>" }
         Returns a JSON dict with { "id", "name", "description", "token" }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
-        payload = {
-            "name": name,
-            "description": description
-        }
-    
-        async with self._session.post(url, headers=self._get_headers(), json=payload) as resp:
+        payload = {"name": name, "description": description}
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
-
 
     async def get_usage(self, project_id: str) -> list[map]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/usage
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/usage"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
@@ -384,7 +422,7 @@ class AccountsClient:
         Returns 204 No Content on success (no JSON body).
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys/{id}"
-        
+
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             # The server returns status 204 with no content, so no need to parse JSON.
@@ -395,7 +433,7 @@ class AccountsClient:
         Returns a JSON dict like: { "tokens": [ { ... }, ... ] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -406,7 +444,7 @@ class AccountsClient:
         Returns a JSON dict with { "tokens": <decrypted_token> }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys/{id}/decrypt"
-       
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -417,7 +455,7 @@ class AccountsClient:
         Returns a JSON dict: { "id", "room_name", "created_at }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -428,22 +466,24 @@ class AccountsClient:
         Returns a JSON dict: { "sessions": [...] }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
 
-    async def list_session_events(self, project_id: str, session_id: str) -> Dict[str, Any]:
+    async def list_session_events(
+        self, project_id: str, session_id: str
+    ) -> Dict[str, Any]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/sessions/{session_id}/events
         Returns a JSON dict: { "events": [...] }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/events"
-        
+
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
-            
+
     async def create_project_webhook(
         self,
         project_id: str,
@@ -452,7 +492,7 @@ class AccountsClient:
         events: List[str],
         description: str = "",
         action: Optional[str] = "",
-        payload: Optional[dict] = ""
+        payload: Optional[dict] = "",
     ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/{project_id}/webhooks
@@ -466,11 +506,13 @@ class AccountsClient:
             "description": description,
             "url": url,
             "events": events,
-            "action" : action,
-            "payload" : payload
+            "action": action,
+            "payload": payload,
         }
-        
-        async with self._session.post(endpoint, headers=self._get_headers(), json=payload) as resp:
+
+        async with self._session.post(
+            endpoint, headers=self._get_headers(), json=payload
+        ) as resp:
             resp.raise_for_status()
             # If the server returns JSON with newly created webhook info, parse it:
             return await resp.json()
@@ -483,25 +525,29 @@ class AccountsClient:
         url: str,
         events: List[str],
         description: str = "",
-        action:  Optional[str] = None,
-        payload: Optional[dict] = None
+        action: Optional[str] = None,
+        payload: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/{project_id}/webhooks/{webhook_id}
         Body: { "name", "description", "url", "events" }
         Returns JSON (could be the updated resource or an empty dict).
         """
-        endpoint = f"{self.base_url}/accounts/projects/{project_id}/webhooks/{webhook_id}"
+        endpoint = (
+            f"{self.base_url}/accounts/projects/{project_id}/webhooks/{webhook_id}"
+        )
         payload = {
             "name": name,
             "description": description,
             "url": url,
             "events": events,
-            "action" : action,
-            "payload" : payload
+            "action": action,
+            "payload": payload,
         }
-        
-        async with self._session.put(endpoint, headers=self._get_headers(), json=payload) as resp:
+
+        async with self._session.put(
+            endpoint, headers=self._get_headers(), json=payload
+        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -511,18 +557,20 @@ class AccountsClient:
         Returns a JSON dict like: { "webhooks": [ { ... }, ... ] }
         """
         endpoint = f"{self.base_url}/accounts/projects/{project_id}/webhooks"
-        
+
         async with self._session.get(endpoint, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
-        
+
     async def delete_project_webhook(self, project_id: str, webhook_id: str) -> None:
         """
         Corresponds to: DELETE /accounts/projects/{project_id}/webhooks/{webhook_id}
         Typically returns 200 or 204 on success (no JSON body).
         """
-        endpoint = f"{self.base_url}/accounts/projects/{project_id}/webhooks/{webhook_id}"
-       
+        endpoint = (
+            f"{self.base_url}/accounts/projects/{project_id}/webhooks/{webhook_id}"
+        )
+
         async with self._session.delete(endpoint, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
@@ -570,9 +618,7 @@ class AccountsClient:
         Body: same structure as create_service (fields you wish to change).
         Returns: {} on success.
         """
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
-        )
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.put(
             url, headers=self._get_headers(), json=service
         ) as resp:
@@ -607,18 +653,15 @@ class AccountsClient:
                 return [Service.model_validate(item) for item in data["services"]]
             except ValidationError as exc:
                 raise RoomException(f"Invalid services payload: {exc}") from exc
-            
+
     async def delete_service(self, *, project_id: str, service_id: str) -> None:
         """
         DELETE /accounts/projects/{project_id}/services/{service_id}
         Returns nothing on success.
         """
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
-        )
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
-
 
     async def create_secret(
         self,
@@ -632,11 +675,13 @@ class AccountsClient:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
         payload = {
-            "name":  secret.name,
-            "type":  secret.type,          # "docker" | "keys"
-            "data":  secret.to_payload(),  # already shaped for the provisioner
+            "name": secret.name,
+            "type": secret.type,  # "docker" | "keys"
+            "data": secret.to_payload(),  # already shaped for the provisioner
         }
-        async with self._session.post(url, headers=self._get_headers(), json=payload) as resp:
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
             resp.raise_for_status()
             return (await resp.json())["id"]
 
@@ -652,17 +697,16 @@ class AccountsClient:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret.id}"
         payload = {
-            "name":  secret.name,
-            "type":  secret.type,
-            "data":  secret.to_payload(),
+            "name": secret.name,
+            "type": secret.type,
+            "data": secret.to_payload(),
         }
-        async with self._session.put(url, headers=self._get_headers(), json=payload) as resp:
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
             resp.raise_for_status()
 
-
-    async def delete_secret(
-        self, *, project_id: str, secret_id: str
-    ) -> None:
+    async def delete_secret(self, *, project_id: str, secret_id: str) -> None:
         """
         DELETE /accounts/projects/{project_id}/secrets/{secret_id}
         Returns {} (or 204 No Content) on success.
@@ -670,7 +714,6 @@ class AccountsClient:
         url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
-
 
     async def list_secrets(self, project_id: str) -> List[SecretLike]:
         """
