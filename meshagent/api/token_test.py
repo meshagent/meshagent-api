@@ -1,9 +1,9 @@
 import os
 import pytest
 import jwt
-from unittest.mock import patch
 
 from meshagent.api.participant_token import ParticipantToken, ParticipantGrant
+
 
 @pytest.fixture
 def setup_env():
@@ -12,9 +12,11 @@ def setup_env():
         os.environ["MESHAGENT_SECRET"] = "testsecret"
     yield
 
+
 def test_participant_grant_to_json():
     grant = ParticipantGrant(name="access_room", scope="read")
     assert grant.to_json() == {"name": "access_room", "scope": "read"}
+
 
 def test_participant_grant_from_json():
     data = {"name": "access_room", "scope": "read"}
@@ -22,11 +24,12 @@ def test_participant_grant_from_json():
     assert grant.name == "access_room"
     assert grant.scope == "read"
 
+
 def test_participant_token_to_json():
     token = ParticipantToken(name="John Doe")
     token.grants = [
         ParticipantGrant(name="access_room", scope="read"),
-        ParticipantGrant(name="access_chat", scope="write")
+        ParticipantGrant(name="access_chat", scope="write"),
     ]
     json_data = token.to_json()
     assert json_data["name"] == "John Doe"
@@ -34,13 +37,14 @@ def test_participant_token_to_json():
     assert json_data["grants"][0] == {"name": "access_room", "scope": "read"}
     assert json_data["grants"][1] == {"name": "access_chat", "scope": "write"}
 
+
 def test_participant_token_from_json():
     data = {
         "name": "Jane Doe",
         "grants": [
             {"name": "access_room", "scope": "read"},
-            {"name": "access_chat", "scope": "write"}
-        ]
+            {"name": "access_chat", "scope": "write"},
+        ],
     }
     token = ParticipantToken.from_json(data)
     assert token.name == "Jane Doe"
@@ -49,6 +53,7 @@ def test_participant_token_from_json():
     assert token.grants[0].scope == "read"
     assert token.grants[1].name == "access_chat"
     assert token.grants[1].scope == "write"
+
 
 @pytest.mark.usefixtures("setup_env")
 def test_participant_token_to_jwt():
@@ -65,13 +70,14 @@ def test_participant_token_to_jwt():
     assert len(decoded["grants"]) == 1
     assert decoded["grants"][0] == {"name": "access_room", "scope": "read"}
 
+
 @pytest.mark.usefixtures("setup_env")
 def test_participant_token_from_jwt():
     # First create a token and encode it
     original_token = ParticipantToken(name="Alice")
     original_token.grants = [
         ParticipantGrant(name="access_room", scope="read"),
-        ParticipantGrant(name="access_chat", scope="write")
+        ParticipantGrant(name="access_chat", scope="write"),
     ]
     encoded = original_token.to_jwt()
 
@@ -83,6 +89,7 @@ def test_participant_token_from_jwt():
     assert decoded_token.grants[0].scope == "read"
     assert decoded_token.grants[1].name == "access_chat"
     assert decoded_token.grants[1].scope == "write"
+
 
 @pytest.mark.usefixtures("setup_env")
 def test_participant_token_jwt_roundtrip():
