@@ -96,7 +96,7 @@ class WebhookServer:
 
     def add_routes(self, app: web.Application) -> None:
         # add a root request handler, many serverless servers will require this
-        if self._shared == False:
+        if not self._shared:
             app.router.add_get("/", self._liveness_check_request)
 
         app.router.add_post(self._path, self._webhook_request)
@@ -107,7 +107,7 @@ class WebhookServer:
     async def _webhook_request(self, request: web.Request):
         req: dict = await request.json()
 
-        if isinstance(req, dict) == False:
+        if not isinstance(req, dict):
             raise web.HTTPBadRequest(reason="invalid request body")
 
         event = req.get("event", None)
@@ -118,7 +118,7 @@ class WebhookServer:
             if authorization is None:
                 raise web.HTTPUnauthorized(reason="missing signature")
 
-            if authorization.startswith("Bearer ") == False:
+            if not authorization.startswith("Bearer "):
                 raise web.HTTPUnauthorized(reason="missing signature")
 
             raw_jwt = authorization.removeprefix("Bearer ")
@@ -178,7 +178,7 @@ class WebhookServer:
         pass
 
     async def __aenter__(self):
-        if self._shared == False:
+        if not self._shared:
             self._runner = web.AppRunner(self._app, access_log=None)
 
             await self._runner.setup()
@@ -191,7 +191,7 @@ class WebhookServer:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        if self._shared == False:
+        if not self._shared:
             await self._site.stop()
             await self._runner.cleanup()
 

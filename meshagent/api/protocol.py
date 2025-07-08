@@ -58,10 +58,10 @@ class Protocol:
     def close(self):
         self._open = False
 
-        if self._send_ch.closed == False:
+        if not self._send_ch.closed:
             self._send_ch.close()
 
-        if self._recv_ch.closed == False:
+        if not self._recv_ch.closed:
             self._recv_ch.close()
 
     async def __aexit__(self, exc_type, exc, tb):

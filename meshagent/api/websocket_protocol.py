@@ -66,7 +66,7 @@ class WebSocketClientProtocol(ClientProtocol):
         self.close()
 
     async def __aexit__(self, exc_type, exc, tb):
-        if self._ws.closed == False:
+        if not self._ws.closed:
             await self._ws.close()
 
         self._ws_recv_task.cancel()
@@ -106,7 +106,7 @@ class WebSocketServerProtocol(Protocol):
         self.close()
 
     async def __aexit__(self, exc_type, exc, tb):
-        if self.socket.closed == False:
+        if not self.socket.closed:
             await self.socket.close()
 
         self._ws_recv_task.cancel()

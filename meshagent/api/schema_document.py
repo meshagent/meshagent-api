@@ -150,7 +150,7 @@ class Element(EventEmitter):
         child_schema = self._schema.property(self._schema.child_property_name)
         cp: ChildProperty = child_schema
 
-        if cp.is_tag_allowed(tag_name=tag_name) == False:
+        if not cp.is_tag_allowed(tag_name=tag_name):
             raise Exception(
                 "cannot add {tag_name} to {self_tag_name}".format(
                     tag_name=tag_name, self_tag_name=self.tag_name
@@ -183,7 +183,7 @@ class Element(EventEmitter):
         child_type = self._ensure_child_valid(tag_name=tag_name)
 
         for k, v in attributes.items():
-            prop = child_type.property(k)
+            child_type.property(k)
 
         elementData = {
             "name": tag_name,
@@ -210,7 +210,7 @@ class Element(EventEmitter):
         child_type = self._ensure_child_valid(tag_name=tag_name)
 
         for k, v in attributes.items():
-            prop = child_type.property(k)
+            child_type.property(k)
 
         elementData = {
             "name": tag_name,
@@ -246,7 +246,7 @@ class Element(EventEmitter):
         child_type = self._ensure_child_valid(tag_name=tag_name)
 
         for k, v in attributes.items():
-            prop = child_type.property(k)
+            child_type.property(k)
 
         if element.parent is not None:
             if element.parent.id != self.id:
@@ -368,13 +368,13 @@ def str_slice(s: str, start: int, end: int | None = None) -> str:
     return s[start:end]
 
 
-def splice(l: list, start: int, count: int, item=None) -> list:
+def splice(source: list, start: int, count: int, item=None) -> list:
     removed = []
     for i in range(count):
-        removed.append(l.pop(start))
+        removed.append(source.pop(start))
 
     if item is not None:
-        l.insert(start, item)
+        source.insert(start, item)
 
     return removed
 
@@ -424,7 +424,6 @@ class Document(EventEmitter):
         return self._root.to_json()
 
     def _createNode(self, parent: Element, data: dict) -> None:
-        parent_schema = parent.schema
         if "element" in data:
             tag_name = data["element"]["tagName"]
             element_type = self._schema.element(tag_name)

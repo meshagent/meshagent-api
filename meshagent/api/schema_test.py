@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def test_schema_validates_tag_names():
     try:
-        s = MeshSchema(
+        MeshSchema(
             root_tag_name="sample2",
             elements=[
                 ElementType(tag_name="sample", description="test", properties=[])
@@ -29,7 +29,7 @@ def test_schema_validates_tag_names():
 
 def test_schema_validates_value_names():
     try:
-        s = MeshSchema(
+        MeshSchema(
             root_tag_name="sample2",
             elements=[
                 ElementType(
@@ -49,7 +49,7 @@ def test_schema_validates_value_names():
 
 def test_schema_validates_child_tag_names():
     try:
-        s = MeshSchema(
+        MeshSchema(
             root_tag_name="sample2",
             elements=[
                 ElementType(
