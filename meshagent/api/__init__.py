@@ -1,4 +1,3 @@
-
 from .websocket_protocol import WebSocketClientProtocol
 from .room_server_client import (
     RequiredToolkit,
@@ -27,9 +26,7 @@ from .schema import (
     ChildProperty,
     ValueProperty,
 )
-from .schema_document import (
-    Element
-)
+from .schema_document import Element
 from .messaging import (
     JsonResponse,
     TextResponse,
@@ -87,6 +84,9 @@ __all__ = [
     participant_token,
     websocket_protocol,
     meshagent_base_url,
-    WebhookServer, RoomStartedEvent, RoomEndedEvent, CallEvent,
-    __version__
+    WebhookServer,
+    RoomStartedEvent,
+    RoomEndedEvent,
+    CallEvent,
+    __version__,
 ]
