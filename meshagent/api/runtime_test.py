@@ -71,8 +71,8 @@ def test_insert_and_delete_element():
         client = rt.new_document(schema=schema)
         child = client.root.append_child("child", {"hello": "world"})
 
-        assert isinstance(child, Element) == True
-        assert isinstance(child, Element) == True
+        assert isinstance(child, Element)
+        assert isinstance(child, Element)
         assert child.tag_name == "child"
         assert child["hello"] == "world"
 
@@ -109,7 +109,7 @@ def test_insert_extend_and_shrink_text_delta():
 
         # Can insert text
         child = client.root.append_child("text", {"hello": "world"})
-        assert isinstance(child, Element) == True
+        assert isinstance(child, Element)
 
         text = child.get_children()[0]
 
@@ -141,10 +141,10 @@ def test_format_text_deltas():
 
         # Can insert text
         child = client.root.append_child("text", {"hello": "world"})
-        assert isinstance(child, Element) == True
+        assert isinstance(child, Element)
 
         text = child.get_children()[0]
-        assert isinstance(text, Text) == True
+        assert isinstance(text, Text)
         assert child.tag_name == "text"
         assert child["hello"] == "world"
 
@@ -155,7 +155,7 @@ def test_format_text_deltas():
 
         assert len(text.delta) == 1
         assert text.delta[0]["insert"] == "hello world"
-        assert text.delta[0]["attributes"]["bold"] == True
+        assert text.delta[0]["attributes"]["bold"]
 
         # format start
         text.format(0, len("hello"), {"italic": True})
@@ -163,9 +163,9 @@ def test_format_text_deltas():
         assert len(text.delta) == 2
         assert text.delta[0]["insert"] == "hello"
         assert text.delta[1]["insert"] == " world"
-        assert text.delta[0]["attributes"]["bold"] == True
-        assert text.delta[0]["attributes"]["italic"] == True
-        assert text.delta[1]["attributes"]["bold"] == True
+        assert text.delta[0]["attributes"]["bold"]
+        assert text.delta[0]["attributes"]["italic"]
+        assert text.delta[1]["attributes"]["bold"]
         assert "italic" not in text.delta[1]["attributes"]
 
         # format end
@@ -176,15 +176,15 @@ def test_format_text_deltas():
         assert text.delta[1]["insert"] == "lo"
         assert text.delta[2]["insert"] == " world"
 
-        assert text.delta[0]["attributes"]["bold"] == True
-        assert text.delta[0]["attributes"]["italic"] == True
+        assert text.delta[0]["attributes"]["bold"]
+        assert text.delta[0]["attributes"]["italic"]
         assert "underline" not in text.delta[0]["attributes"]
 
-        assert text.delta[1]["attributes"]["bold"] == True
-        assert text.delta[1]["attributes"]["italic"] == True
-        assert text.delta[1]["attributes"]["underline"] == True
+        assert text.delta[1]["attributes"]["bold"]
+        assert text.delta[1]["attributes"]["italic"]
+        assert text.delta[1]["attributes"]["underline"]
 
-        assert text.delta[2]["attributes"]["bold"] == True
+        assert text.delta[2]["attributes"]["bold"]
         assert "italic" not in text.delta[2]["attributes"]
         assert "underline" not in text.delta[2]["attributes"]
 
@@ -196,20 +196,20 @@ def test_format_text_deltas():
         assert text.delta[1]["insert"] == "lo"
         assert text.delta[2]["insert"] == " world"
 
-        assert text.delta[0]["attributes"]["bold"] == True
-        assert text.delta[0]["attributes"]["italic"] == True
+        assert text.delta[0]["attributes"]["bold"]
+        assert text.delta[0]["attributes"]["italic"]
         assert "underline" not in text.delta[0]["attributes"]
-        assert text.delta[0]["attributes"]["strikethrough"] == True
+        assert text.delta[0]["attributes"]["strikethrough"]
 
-        assert text.delta[1]["attributes"]["bold"] == True
-        assert text.delta[1]["attributes"]["italic"] == True
-        assert text.delta[1]["attributes"]["underline"] == True
-        assert text.delta[1]["attributes"]["strikethrough"] == True
+        assert text.delta[1]["attributes"]["bold"]
+        assert text.delta[1]["attributes"]["italic"]
+        assert text.delta[1]["attributes"]["underline"]
+        assert text.delta[1]["attributes"]["strikethrough"]
 
-        assert text.delta[2]["attributes"]["bold"] == True
+        assert text.delta[2]["attributes"]["bold"]
         assert "italic" not in text.delta[2]["attributes"]
         assert "underline" not in text.delta[2]["attributes"]
-        assert text.delta[2]["attributes"]["strikethrough"] == True
+        assert text.delta[2]["attributes"]["strikethrough"]
 
         # format across items
         text.format(1, 1, {"dot": True})
@@ -230,9 +230,9 @@ def test_delete_start_of_delta_text():
         child = client.root.get_children()[0]
 
         # Delete start
-        assert isinstance(child, Element) == True
+        assert isinstance(child, Element)
         text = child.get_children()[0]
-        assert isinstance(text, Text) == True
+        assert isinstance(text, Text)
         text.insert(0, "hello world")
         assert len(text.delta) == 1
         assert text.delta[0]["insert"] == "hello world"
