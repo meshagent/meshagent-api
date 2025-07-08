@@ -130,7 +130,7 @@ try:
 
         def on_document_sync(self, document_id: str, base64: str):
             doc = self.get_doc(document_id)
-            if doc.on_document_sync != None:
+            if doc.on_document_sync is not None:
                 logger.debug(
                     "publishing backend changes to document %s: %s", document_id, base64
                 )
@@ -150,7 +150,7 @@ try:
             self, doc: "RuntimeDocument", data: bytes | None = None
         ) -> None:
             self._docs[doc.id] = doc
-            if data == None:
+            if data is None:
                 self.execute(
                     "meshagent.registerDocument({id}, null, false)".format(
                         id=json.dumps(doc.id)
@@ -195,7 +195,7 @@ class RuntimeDocument(Document):
         data: bytes | None = None,
         json: dict | None = None,
     ):
-        if id == None:
+        if id is None:
             self._id = str(uuid.uuid4())
         else:
             self._id = id
@@ -204,13 +204,13 @@ class RuntimeDocument(Document):
 
         runtime._register_document(self)
         super().__init__(schema=schema, broadcast_changes=self.send_changes, json=json)
-        if data != None:
+        if data is not None:
             runtime.apply_backend_changes(
                 self.id, base64.standard_b64encode(data).decode("utf-8")
             )
 
     def get_state(self, vector: bytes | None = None) -> bytes:
-        if vector == None:
+        if vector is None:
             base64_state = runtime.execute(
                 """
                 meshagent.getState({id});

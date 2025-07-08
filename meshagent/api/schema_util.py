@@ -42,7 +42,7 @@ def no_arguments_schema(description: Optional[str] = None):
         "properties": {},
     }
 
-    if description != None:
+    if description is not None:
         schema["description"] = description
 
     return schema

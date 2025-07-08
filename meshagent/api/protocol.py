@@ -40,7 +40,7 @@ class Protocol:
         self.recv_packets = list[bytes]()
 
     async def __aenter__(self):
-        if self._main_task != None:
+        if self._main_task is not None:
             raise Exception("protocol already started")
 
         self._main_task = asyncio.create_task(self._main())
@@ -243,7 +243,7 @@ class Protocol:
     async def send(
         self, type: str, data: bytes | str, message_id: int | None = None
     ) -> int:
-        if message_id == None:
+        if message_id is None:
             message_id = self.next_message_id()
             logger.debug("sending message %d", message_id)
 

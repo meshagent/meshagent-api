@@ -99,10 +99,10 @@ class RemoteParticipant(Participant):
     def __init__(
         self, *, id: str, role: Optional[str] = None, attributes: Optional[dict] = None
     ):
-        if attributes == None:
+        if attributes is None:
             attributes = {}
 
-        if role == None:
+        if role is None:
             role = "unknown"
 
         self._role = role
@@ -230,21 +230,21 @@ class RoomClient:
 
     @property
     def session_id(self) -> str:
-        if self._session_id == None:
+        if self._session_id is None:
             raise RoomException("session_id is not available before the room is ready")
 
         return self._session_id
 
     @property
     def room_url(self) -> str:
-        if self._room_url == None:
+        if self._room_url is None:
             raise RoomException("room url is not available before the room is ready")
 
         return self._room_url
 
     @property
     def room_name(self) -> str:
-        if self._room_name == None:
+        if self._room_name is None:
             raise RoomException("room name is not available before the room is ready")
 
         return self._room_name
@@ -353,7 +353,7 @@ class SyncClient:
             )
 
     async def start(self):
-        if self._main_task != None:
+        if self._main_task is not None:
             raise Exception("client already started")
 
         self._main_task = asyncio.create_task(self._main())
@@ -465,10 +465,10 @@ class AgentDescription:
         supports_tools: bool = False,
         labels: Optional[list[str]] = None,
     ):
-        if labels == None:
+        if labels is None:
             labels = []
 
-        if requires == None:
+        if requires is None:
             requires = []
 
         self.name = name
@@ -501,7 +501,7 @@ class ToolDescription:
         self.thumbnail_url = thumbnail_url
         self.defs = defs
         self.pricing = pricing
-        if supports_context == None:
+        if supports_context is None:
             supports_context = False
         self.supports_context = supports_context
 
@@ -574,10 +574,10 @@ class AgentsClient:
             "arguments": arguments,
         }
 
-        if on_behalf_of != None:
+        if on_behalf_of is not None:
             request["on_behalf_of_id"] = on_behalf_of.id
 
-        if requires != None:
+        if requires is not None:
             request["requires"] = [*map(lambda x: x.to_json(), requires)]
 
         response = await self.room.send_request("agent.ask", request)
@@ -1100,7 +1100,7 @@ class MessagingClient:
         message: dict,
         attachment: Optional[bytes] = None,
     ):
-        if self._send_task == None:
+        if self._send_task is None:
             raise RoomException(
                 "Cannot send messages because messaging has not been started"
             )
@@ -1123,7 +1123,7 @@ class MessagingClient:
         message: dict,
         attachment: Optional[bytes] = None,
     ):
-        if self._send_task == None:
+        if self._send_task is None:
             raise RoomException(
                 "Cannot send messages because messaging has not been started"
             )
@@ -1168,7 +1168,7 @@ class MessagingClient:
 
     def _on_participant_disabled(self, message: RoomMessage):
         part = self._participants.pop(message.message["id"], None)
-        if part != None:
+        if part is not None:
             self.emit("participant_removed", participant=part)
 
     def _on_messaging_enabled(self, message: RoomMessage):
@@ -1609,7 +1609,7 @@ class DatabaseClient:
 
         schema_dict = None
 
-        if schema != None:
+        if schema is not None:
             schema_dict = {}
             for k in schema.keys():
                 schema_dict[k] = schema[k].to_json()

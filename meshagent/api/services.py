@@ -37,14 +37,14 @@ class ServiceHost:
         webhook_secret: Optional[str] = None,
         port: Optional[int] = None,
     ):
-        if host == None:
+        if host is None:
             host = os.getenv("MESHAGENT_HOST", "0.0.0.0")
 
         self.host = host
         self.webhook_secret = webhook_secret
-        if port == None:
+        if port is None:
             port = os.getenv("MESHAGENT_PORT", 8081)
-            if port != None:
+            if port is not None:
                 port = int(port)
 
         self.port = port
@@ -168,14 +168,14 @@ class ServiceHost:
                 )
 
         host = ServiceWebhookServer(
-            validate_webhook_secret=self.webhook_secret != None,
+            validate_webhook_secret=self.webhook_secret is not None,
             path=p.path,
             app=self._app,
         )
         return host
 
     async def start(self):
-        if self._app != None:
+        if self._app is not None:
             raise Exception("App is already started")
 
         self._app = web.Application()
@@ -228,7 +228,7 @@ async def send_webhook(
     payload = json.dumps(payload_body)
     hash = hashlib.sha256(payload.encode())
 
-    if headers == None:
+    if headers is None:
         headers = {}
 
     headers = {
@@ -236,7 +236,7 @@ async def send_webhook(
         "Content-Type": "application/json",
     }
 
-    if secret != None:
+    if secret is not None:
         headers["Meshagent-Signature"] = "Bearer " + jwt.encode(
             {"sha256": hash.hexdigest()}, key=secret, algorithm="HS256"
         )

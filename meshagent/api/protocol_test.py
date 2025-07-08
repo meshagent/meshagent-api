@@ -46,7 +46,7 @@ async def test_protocol():
 
             await fut
 
-            assert last_data != None
+            assert last_data is not None
             assert last_type == "hello"
             assert last_message_id == 2
 

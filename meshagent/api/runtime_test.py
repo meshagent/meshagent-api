@@ -100,7 +100,7 @@ def test_remove_attribute():
 
         # Can remove attribute
         child._remove_attribute("hello")
-        assert child["hello"] == None
+        assert child["hello"] is None
 
 
 def test_insert_extend_and_shrink_text_delta():

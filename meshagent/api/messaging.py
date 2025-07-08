@@ -23,11 +23,11 @@ def unpack_message(data: bytes) -> tuple[dict, bytes]:
     payload = split_message_payload(data=data)
 
     meshagent_data: dict = header.get("__meshagent__")
-    if meshagent_data != None:
+    if meshagent_data is not None:
         del header["__meshagent__"]
         otel = meshagent_data.get("otel")
 
-        if otel != None:
+        if otel is not None:
             extract(otel)
 
     return header, payload
@@ -44,7 +44,7 @@ def pack_message(header: dict, data: bytes | None = None) -> bytes:
     message = bytearray()
     message.extend(len(json_message).to_bytes(8))
     message.extend(json_message)
-    if data != None:
+    if data is not None:
         message.extend(data)
     return message
 
@@ -304,7 +304,7 @@ def ensure_response(response) -> Response:
         return JsonResponse(json=response)
     elif isinstance(response, str):
         return TextResponse(text=response)
-    elif response == None:
+    elif response is None:
         return EmptyResponse()
     else:
         raise Exception(f"Invalid return type from request handler {type(response)}")

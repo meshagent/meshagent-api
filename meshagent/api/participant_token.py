@@ -72,10 +72,10 @@ class ParticipantToken:
     def to_json(self) -> dict:
         j = {"name": self.name, "grants": [g.to_json() for g in self.grants]}
 
-        if self.project_id != None:
+        if self.project_id is not None:
             j["sub"] = self.project_id
 
-        if self.api_key_id != None:
+        if self.api_key_id is not None:
             j["kid"] = self.api_key_id
 
         return j
@@ -89,12 +89,12 @@ class ParticipantToken:
         else:
             extra_payload = extra_payload.copy()
 
-        if expiration != None:
+        if expiration is not None:
             extra_payload["exp"] = expiration
 
         payload = self.to_json()
 
-        if token == None:
+        if token is None:
             token = os.getenv("MESHAGENT_SECRET")
             if "kid" in payload:
                 # We are exporting a token using the default secret, so we should remove the key id
@@ -135,7 +135,7 @@ class ParticipantToken:
     def from_jwt(
         jwt_str: str, *, token: Optional[str] = None, validate: Optional[bool] = True
     ) -> "ParticipantToken":
-        if token == None:
+        if token is None:
             token = os.getenv("MESHAGENT_SECRET")
 
         if validate:

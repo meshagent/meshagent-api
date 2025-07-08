@@ -50,15 +50,15 @@ class WebhookServer:
         path: Optional[str] = None,
         validate_webhook_secret: Optional[bool] = None,
     ):
-        if validate_webhook_secret == None:
+        if validate_webhook_secret is None:
             validate_webhook_secret = True
 
-        if host == None:
+        if host is None:
             host = "0.0.0.0"
 
-        if port == None:
+        if port is None:
             port_env = os.environ.get("MESHAGENT_PORT", None)
-            if port_env == None:
+            if port_env is None:
                 port = 8080
             else:
                 port = int(port_env)
@@ -66,13 +66,13 @@ class WebhookServer:
         self._host = host
         self._port = port
 
-        if app == None:
+        if app is None:
             self._shared = False
             app = web.Application()
         else:
             self._shared = True
 
-        if path == None:
+        if path is None:
             path = "/webhook"
 
         self._path = path
@@ -83,7 +83,7 @@ class WebhookServer:
 
         self._validate_webhook_secret = validate_webhook_secret
 
-        if webhook_secret == None:
+        if webhook_secret is None:
             webhook_secret = os.getenv("MESHAGENT_WEBHOOK_SECRET")
 
         self._webhook_secret = webhook_secret
@@ -115,7 +115,7 @@ class WebhookServer:
 
         if self._validate_webhook_secret:
             authorization = request.headers.get("Meshagent-Signature")
-            if authorization == None:
+            if authorization is None:
                 raise web.HTTPUnauthorized(reason="missing signature")
 
             if authorization.startswith("Bearer ") == False:

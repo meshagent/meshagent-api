@@ -27,9 +27,9 @@ def meshagent_base_url(base_url: Optional[str] = None):
 
 
 def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str:
-    if base_url == None:
+    if base_url is None:
         api_url = os.getenv("MESHAGENT_API_URL")
-        if api_url == None:
+        if api_url is None:
             base_url = "wss://api.meshagent.com"
         else:
             if api_url.startswith("https:"):
@@ -65,7 +65,7 @@ def participant_token(
         api_key_id=os.getenv("MESHAGENT_KEY_ID"),
     )
     token.add_room_grant(room_name=room_name)
-    if role != None:
+    if role is not None:
         token.add_role_grant(role=role)
 
     return token

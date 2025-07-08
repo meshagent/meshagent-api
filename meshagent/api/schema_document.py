@@ -82,7 +82,7 @@ class Element(EventEmitter):
         for child in self.get_children():
             if isinstance(child, Element):
                 n = child.get_node_by_id(id)
-                if n != None:
+                if n is not None:
                     return n
 
         return None
@@ -144,7 +144,7 @@ class Element(EventEmitter):
         )
 
     def _ensure_child_valid(self, tag_name: str) -> ElementType:
-        if self._schema.child_property_name == None:
+        if self._schema.child_property_name is None:
             raise Exception("children are not allowed on this element")
 
         child_schema = self._schema.property(self._schema.child_property_name)
@@ -166,7 +166,7 @@ class Element(EventEmitter):
 
         element_type = self.doc.schema.element(tag_name)
 
-        if element_type.child_property_name != None:
+        if element_type.child_property_name is not None:
             if element_type.child_property_name in attributes:
                 children = attributes.pop(element_type.child_property_name)
                 element = self.append_child(tag_name=tag_name, attributes=attributes)
@@ -248,7 +248,7 @@ class Element(EventEmitter):
         for k, v in attributes.items():
             prop = child_type.property(k)
 
-        if element.parent != None:
+        if element.parent is not None:
             if element.parent.id != self.id:
                 raise (Exception("Element does not belong to this node"))
 
@@ -299,7 +299,7 @@ class Element(EventEmitter):
             if k != "$id" or include_ids:
                 props[k] = v
 
-        if self._schema.child_property_name != None:
+        if self._schema.child_property_name is not None:
             props[self._schema.child_property_name] = list(
                 map(lambda x: x.to_json(include_ids=include_ids), self.get_children())
             )
@@ -362,7 +362,7 @@ class Text(EventEmitter):
 
 
 def str_slice(s: str, start: int, end: int | None = None) -> str:
-    if end == None:
+    if end is None:
         return s[start:]
 
     return s[start:end]
@@ -373,7 +373,7 @@ def splice(l: list, start: int, count: int, item=None) -> list:
     for i in range(count):
         removed.append(l.pop(start))
 
-    if item != None:
+    if item is not None:
         l.insert(start, item)
 
     return removed
@@ -388,7 +388,7 @@ class Document(EventEmitter):
         self._schema = schema
         self._broadcast_changes = broadcast_changes
 
-        if json != None:
+        if json is not None:
             self._root = Element(
                 None,
                 {"tagName": schema.root.tag_name, "attributes": {}, "children": []},

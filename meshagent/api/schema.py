@@ -146,7 +146,7 @@ class ValueProperty(ElementProperty):
         return self._type
 
     def to_json(self) -> dict:
-        if self._enum != None:
+        if self._enum is not None:
             prop = {
                 "type": self.type,
                 "enum": self._enum,
@@ -156,7 +156,7 @@ class ValueProperty(ElementProperty):
                 "type": self.type,
             }
 
-        if self.description != None:
+        if self.description is not None:
             prop["description"] = self.description
 
         return {self.name: prop}
@@ -217,7 +217,7 @@ class ChildProperty(ElementProperty):
                 },
             }
 
-        if self.description != None:
+        if self.description is not None:
             prop["description"] = self.description
 
         return {self.name: prop}
@@ -240,7 +240,7 @@ class ElementType:
         self._child_property_name = None
         for p in properties:
             if isinstance(p, ChildProperty):
-                if self._child_property_name != None:
+                if self._child_property_name is not None:
                     raise MeshSchemaValidationException(
                         "Only one child property is allowed"
                     )
@@ -341,7 +341,7 @@ class ElementType:
             },
         }
 
-        if self.description != None:
+        if self.description is not None:
             type["description"] = self.description
 
         return type
