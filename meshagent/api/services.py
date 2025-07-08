@@ -150,7 +150,7 @@ class ServiceHost:
 
                 def on_done(task: asyncio.Task):
                     try:
-                        result = task.result()
+                        task.result()
                     except Exception as e:
                         logger.error(
                             f"Unable to call service endpoint: {e}", exc_info=e

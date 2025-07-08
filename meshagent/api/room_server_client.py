@@ -425,7 +425,7 @@ class SyncClient:
         ref.count = ref.count - 1
         if ref.count == 0:
             doc = self._connected_documents.pop(path)
-            response = await self.room.send_request("room.disconnect", {"path": path})
+            await self.room.send_request("room.disconnect", {"path": path})
             runtime._unregister_document(doc=doc.ref)
 
     async def sync(self, *, path: str, data: bytes) -> None:
@@ -445,7 +445,7 @@ class SyncClient:
             doc = self._connected_documents[path]
 
             runtime.apply_backend_changes(doc.ref.id, payload.decode("utf-8"))
-            if doc.ref.synchronized.done() == False:
+            if not doc.ref.synchronized.done():
                 doc.ref.synchronized.set_result(True)
         else:
             raise RoomException(
@@ -960,9 +960,6 @@ class QueuesClient:
                 "queues.send", {"name": name, "create": create, "message": message}
             )
         )
-
-    async def drain(self, *, name: str) -> None:
-        (await self.room.send_request("queues.open", {"name": name}))
 
     async def drain(self, *, name: str) -> None:
         (await self.room.send_request("queues.drain", {"name": name}))
