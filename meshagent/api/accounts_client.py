@@ -105,16 +105,17 @@ class Port(BaseModel):
 
 
 class Service(BaseModel):
-    id: str
+    id: Optional[str] = None
     image: str
     name: str
     environment: Optional[Dict[str, str]] = None
     command: Optional[str] = None
     room_storage_path: Optional[str] = None
+    room_storage_subpath: Optional[str] = None
     pull_secret: Optional[str] = None
     runtime_secrets: Optional[Dict[str, str]] = None
     environment_secrets: Optional[list[str]] = None
-    created_at: str
+    created_at: Optional[str] = None
     ports: Optional[Dict[int, Port]] = (None,)
     role: Optional[Literal["user", "tool", "agent"]] = None
     builtin: bool = Field(exclude=True, default=False)
@@ -601,7 +602,9 @@ class AccountsClient:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services"
         async with self._session.post(
-            url, headers=self._get_headers(), json=service.model_dump(mode="json")
+            url,
+            headers=self._get_headers(),
+            json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -611,13 +614,17 @@ class AccountsClient:
         *,
         project_id: str,
         service_id: str,
-        service: Dict[str, Any],
+        service: Dict[str, Any] | Service,
     ) -> Dict[str, Any]:
         """
         PUT /accounts/projects/{project_id}/services/{service_id}
         Body: same structure as create_service (fields you wish to change).
         Returns: {} on success.
         """
+
+        if isinstance(service, Service):
+            service = service.model_dump(mode="json", exclude_unset=True)
+
         url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.put(
             url, headers=self._get_headers(), json=service
