@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import Optional, Callable, Dict, List, Any, Literal, Generic, TypeVar
 
+from meshagent.api.messaging import Request
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
 from meshagent.api.messaging import pack_message, unpack_message
@@ -488,7 +489,7 @@ class ToolDescription:
         name: str,
         title: str,
         description: str,
-        input_schema: dict,
+        input_schema: dict | None,
         thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
         pricing: Optional[str] = None,
@@ -606,6 +607,30 @@ class AgentsClient:
         )
         return response
 
+    async def invoke_request_tool(
+        self,
+        *,
+        toolkit: str,
+        tool: str,
+        request: Request,
+        participant_id: Optional[str] = None,
+        on_behalf_of_id: Optional[str] = None,
+        caller_context: Optional[Dict[str, Any]] = None,
+    ) -> Response:
+        response = await self.room.send_request(
+            "agent.invoke_tool",
+            {
+                "toolkit": toolkit,
+                "tool": tool,
+                "participant_id": participant_id,
+                "on_behalf_of_id": on_behalf_of_id,
+                "arguments": request.to_json(),
+                "caller_context": caller_context,
+            },
+            request.get_data()
+        )
+        return response
+    
     async def list_agents(self) -> List[AgentDescription]:
         """
         Fetch a list of available agents and parse into `AgentDescription` objects.

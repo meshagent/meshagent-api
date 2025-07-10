@@ -5,7 +5,6 @@ from typing import Optional, Any, Dict
 
 from opentelemetry.propagate import extract, inject
 
-
 def split_message_payload(data: bytes):
     header_size = int.from_bytes(data[0:8], "big")
     payload = data[8 + header_size :]
@@ -49,7 +48,7 @@ def pack_message(header: dict, data: bytes | None = None) -> bytes:
     return message
 
 
-class Response(ABC):
+class Body(ABC):
     def __init__(
         self,
         *,
@@ -59,6 +58,9 @@ class Response(ABC):
         self.usage = usage
         self.caller_context = caller_context
 
+    def get_data(self) -> bytes | None:
+        return None
+    
     @abstractmethod
     def to_json(self) -> dict:
         pass
@@ -67,11 +69,12 @@ class Response(ABC):
     def pack(self) -> bytes:
         pass
 
+Response = Body
+Request = Body
 
-response_types = dict[str, type]()
+body_types = dict[str, type]()
 
-
-class LinkResponse(Response):
+class LinkBody(Body):
     def __init__(
         self,
         *,
@@ -89,7 +92,7 @@ class LinkResponse(Response):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return LinkResponse(
+        return LinkBody(
             name=header["name"], url=header["url"], usage=header.get("usage", None)
         )
 
@@ -97,13 +100,15 @@ class LinkResponse(Response):
         return pack_message(header=self.to_json())
 
     def __str__(self):
-        return f"LinkResponse name={self.name}, type={self.url} usage={self.usage}"
+        return f"Link: name={self.name}, type={self.url} usage={self.usage}"
 
 
-response_types["link"] = LinkResponse
+body_types["link"] = LinkBody
 
+LinkRequest = LinkBody
+LinkResponse = LinkBody
 
-class FileResponse(Response):
+class FileBody(Body):
     def __init__(
         self,
         *,
@@ -128,24 +133,29 @@ class FileResponse(Response):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return FileResponse(
+        return FileBody(
             data=payload,
             name=header["name"],
             mime_type=header["mime_type"],
             usage=header.get("usage", None),
         )
+    
+    def get_data(self) -> bytes:
+        return self.data
 
     def pack(self):
         return pack_message(header=self.to_json(), data=self.data)
 
     def __str__(self):
-        return f"FileResponse name={self.name}, type={self.mime_type}, length={len(self.data)} usage={self.usage}"
+        return f"File: name={self.name}, type={self.mime_type}, length={len(self.data)} usage={self.usage}"
 
 
-response_types["file"] = FileResponse
+body_types["file"] = FileBody
 
+FileRequest = FileBody
+FileResponse = FileBody
 
-class TextResponse(Response):
+class TextBody(Body):
     def __init__(
         self,
         *,
@@ -158,7 +168,7 @@ class TextResponse(Response):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return TextResponse(text=header["text"], usage=header.get("usage", None))
+        return TextBody(text=header["text"], usage=header.get("usage", None))
 
     def to_json(self):
         return {"type": "text", "text": self.text, "usage": self.usage}
@@ -167,13 +177,15 @@ class TextResponse(Response):
         return pack_message(header=self.to_json())
 
     def __str__(self):
-        return f"TextResponse text={self.text} usage={self.usage}"
+        return f"Text: text={self.text} usage={self.usage}"
 
 
-response_types["text"] = TextResponse
+body_types["text"] = TextBody
 
+TextResponse = TextBody
+TextRequest = TextBody
 
-class EmptyResponse(Response):
+class EmptyBody(Body):
     def __init__(
         self,
         *,
@@ -187,19 +199,21 @@ class EmptyResponse(Response):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return EmptyResponse(usage=header.get("usage", None))
+        return EmptyBody(usage=header.get("usage", None))
 
     def pack(self):
         return pack_message(header=self.to_json())
 
     def __str__(self):
-        return f"EmptyResponse usage={self.usage}"
+        return f"Empty: usage={self.usage}"
 
 
-response_types["empty"] = EmptyResponse
+body_types["empty"] = EmptyBody
 
+EmptyResponse = EmptyBody
+EmptyRequest = EmptyBody
 
-class ErrorResponse(Response):
+class ErrorBody(Body):
     def __init__(
         self,
         *,
@@ -219,19 +233,21 @@ class ErrorResponse(Response):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return ErrorResponse(text=header["text"], usage=header.get("usage", None))
+        return ErrorBody(text=header["text"], usage=header.get("usage", None))
 
     def pack(self):
         return pack_message(header=self.to_json())
 
     def __str__(self):
-        return f"ErrorResponse: text={self.text} usage={self.usage}"
+        return f"Error: text={self.text} usage={self.usage}"
 
 
-response_types["error"] = ErrorResponse
+body_types["error"] = ErrorBody
 
+ErrorResponse = ErrorBody
+ErrorRequest = ErrorBody
 
-class RawOutputs(Response):
+class RawOutputs(Body):
     def __init__(
         self,
         *,
@@ -256,10 +272,10 @@ class RawOutputs(Response):
         return f"RawOutputs: outputs={json.dumps(self.outputs)} usage={self.usage}"
 
 
-response_types["raw"] = RawOutputs
+body_types["raw"] = RawOutputs
 
 
-class JsonResponse(Response):
+class JsonBody(Body):
     def __init__(
         self,
         *,
@@ -278,23 +294,35 @@ class JsonResponse(Response):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return JsonResponse(json=header["json"], usage=header.get("usage", None))
+        return JsonBody(json=header["json"], usage=header.get("usage", None))
 
     def pack(self):
         return pack_message(header=self.to_json())
 
     def __str__(self):
-        return f"JsonResponse: json={json.dumps(self.json)} usage={self.usage}"
+        return f"Json: json={json.dumps(self.json)} usage={self.usage}"
 
 
-response_types["json"] = JsonResponse
+body_types["json"] = JsonBody
 
+JsonResponse = JsonBody
+JsonRequest = JsonBody
+
+def unpack_request_parts(header: dict, payload: bytes) -> Request:
+    T = body_types[header["type"]]
+    return T.unpack(header=header, payload=payload)
+
+def unpack_request(data: bytes) -> Request:
+    header, payload = unpack_message(data)
+    return unpack_request_parts(header=header, payload=payload)
+
+def unpack_response_parts(header: dict, payload: bytes) -> Response:
+    T = body_types[header["type"]]
+    return T.unpack(header=header, payload=payload)
 
 def unpack_response(data: bytes) -> Response:
     header, payload = unpack_message(data)
-
-    T = response_types[header["type"]]
-    return T.unpack(header=header, payload=payload)
+    return unpack_response_parts(header=header, payload=payload)
 
 
 def ensure_response(response) -> Response:
