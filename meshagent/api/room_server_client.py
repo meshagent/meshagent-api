@@ -627,10 +627,10 @@ class AgentsClient:
                 "arguments": request.to_json(),
                 "caller_context": caller_context,
             },
-            request.get_data()
+            request.get_data(),
         )
         return response
-    
+
     async def list_agents(self) -> List[AgentDescription]:
         """
         Fetch a list of available agents and parse into `AgentDescription` objects.

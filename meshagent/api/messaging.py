@@ -5,6 +5,7 @@ from typing import Optional, Any, Dict
 
 from opentelemetry.propagate import extract, inject
 
+
 def split_message_payload(data: bytes):
     header_size = int.from_bytes(data[0:8], "big")
     payload = data[8 + header_size :]
@@ -60,7 +61,7 @@ class Body(ABC):
 
     def get_data(self) -> bytes | None:
         return None
-    
+
     @abstractmethod
     def to_json(self) -> dict:
         pass
@@ -69,10 +70,12 @@ class Body(ABC):
     def pack(self) -> bytes:
         pass
 
+
 Response = Body
 Request = Body
 
 body_types = dict[str, type]()
+
 
 class LinkBody(Body):
     def __init__(
@@ -108,6 +111,7 @@ body_types["link"] = LinkBody
 LinkRequest = LinkBody
 LinkResponse = LinkBody
 
+
 class FileBody(Body):
     def __init__(
         self,
@@ -139,7 +143,7 @@ class FileBody(Body):
             mime_type=header["mime_type"],
             usage=header.get("usage", None),
         )
-    
+
     def get_data(self) -> bytes:
         return self.data
 
@@ -154,6 +158,7 @@ body_types["file"] = FileBody
 
 FileRequest = FileBody
 FileResponse = FileBody
+
 
 class TextBody(Body):
     def __init__(
@@ -185,6 +190,7 @@ body_types["text"] = TextBody
 TextResponse = TextBody
 TextRequest = TextBody
 
+
 class EmptyBody(Body):
     def __init__(
         self,
@@ -212,6 +218,7 @@ body_types["empty"] = EmptyBody
 
 EmptyResponse = EmptyBody
 EmptyRequest = EmptyBody
+
 
 class ErrorBody(Body):
     def __init__(
@@ -246,6 +253,7 @@ body_types["error"] = ErrorBody
 
 ErrorResponse = ErrorBody
 ErrorRequest = ErrorBody
+
 
 class RawOutputs(Body):
     def __init__(
@@ -308,17 +316,21 @@ body_types["json"] = JsonBody
 JsonResponse = JsonBody
 JsonRequest = JsonBody
 
+
 def unpack_request_parts(header: dict, payload: bytes) -> Request:
     T = body_types[header["type"]]
     return T.unpack(header=header, payload=payload)
+
 
 def unpack_request(data: bytes) -> Request:
     header, payload = unpack_message(data)
     return unpack_request_parts(header=header, payload=payload)
 
+
 def unpack_response_parts(header: dict, payload: bytes) -> Response:
     T = body_types[header["type"]]
     return T.unpack(header=header, payload=payload)
+
 
 def unpack_response(data: bytes) -> Response:
     header, payload = unpack_message(data)
