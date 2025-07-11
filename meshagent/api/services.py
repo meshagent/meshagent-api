@@ -73,7 +73,7 @@ class ServiceHost:
         await self._runner.setup()
 
         for path in self.paths:
-            logger.info(f"starting -> {self.host}:{self.port}{path.path} -> {path.cls}")
+            logger.info(f"starting -> {self.host}:{self.port}{path.path} -> {path.cls.__name__}")
 
         self._site = web.TCPSite(self._runner, self.host, self.port)
         await self._site.start()
