@@ -47,7 +47,7 @@ try:
                 doc = runtime.get_doc(parsed["documentID"])
                 doc.receive_changes(parsed["data"])
 
-            def onGetRandomValues(width: int, length: int) -> list[int]:
+            def onGetRandomValues(self, width: int, length: int) -> list[int]:
                 """
                 Return `length` cryptographically-secure random integers whose bit-width
                 is `width` (1, 2, 4 or 8 bytes).
