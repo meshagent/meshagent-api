@@ -10,8 +10,6 @@ from meshagent.api.schema import MeshSchema
 from meshagent.api.schema_document import Document
 from importlib import resources
 
-import secrets
-
 _js: str
 
 with resources.files("meshagent.api").joinpath("entrypoint.js").open("r") as f:
