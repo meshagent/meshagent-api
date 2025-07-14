@@ -10,6 +10,7 @@ from meshagent.api.schema import MeshSchema
 from meshagent.api.schema_document import Document
 from importlib import resources
 
+import secrets
 
 _js: str
 
@@ -48,26 +49,24 @@ try:
                 doc = runtime.get_doc(parsed["documentID"])
                 doc.receive_changes(parsed["data"])
 
-            def onGetRandomValues(self, width: int, length: int):
-                if width == 1:
-                    vals = [*map(lambda _: random.randrange(0, 0xFF), range(length))]
-                elif width == 2:
-                    vals = [*map(lambda _: random.randrange(0, 0xFFFF), range(length))]
-                elif width == 4:
-                    vals = [
-                        *map(lambda _: random.randrange(0, 0xFFFFFFFF), range(length))
-                    ]
-                elif width == 8:
-                    vals = [
-                        *map(
-                            lambda _: random.randrange(0, 0xFFFFFFFFFFFFFFFF),
-                            range(length),
-                        )
-                    ]
-                else:
-                    raise Exception("Unexpected width {width}".format(width=width))
+        def onGetRandomValues(width: int, length: int) -> list[int]:
+            """
+            Return `length` cryptographically-secure random integers whose bit-width
+            is `width` (1, 2, 4 or 8 bytes).
 
-                return vals
+            Example:
+                >>> onGetRandomValues(2, 3)   # three uint16 values
+                [13337, 65535, 0]
+            """
+            # Mapping: bytes → exclusive upper bound for randbelow()
+            upper_bounds = {1: 1 << 8, 2: 1 << 16, 4: 1 << 32, 8: 1 << 64}
+
+            try:
+                upper = upper_bounds[width]
+            except KeyError:
+                raise ValueError(f"Unexpected width {width!r}; must be 1, 2, 4 or 8")
+
+            return [secrets.randbelow(upper) for _ in range(length)]
 
         def __init__(self):
             self._docs = dict[str, Document]()
