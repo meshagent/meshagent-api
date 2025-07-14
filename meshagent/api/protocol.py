@@ -23,7 +23,7 @@ class Message:
 
 
 class Protocol:
-    def __init__(self):
+    def __init__(self, *, read: bool = True, write: bool = True):
         self._message_id = 0
         self._send_ch = Chan[Message]()
         self._recv_ch = Chan[Message]()
@@ -38,6 +38,9 @@ class Protocol:
         self.recv_packet_id = 0
         self.recv_packet_total = 0
         self.recv_packets = list[bytes]()
+
+        self._read = read
+        self._write = write
 
     async def __aenter__(self):
         if self._main_task is not None:
@@ -253,11 +256,18 @@ class Protocol:
         return message_id
 
     async def _main(self) -> None:
+        if not self._read and not self._write:
+            logger.warning("protocol started without read or write enabled")
+
         try:
-            await asyncio.gather(
-                asyncio.create_task(self._recv_task()),
-                asyncio.create_task(self._send_task()),
-            )
+            tasks = []
+
+            if self._read:
+                tasks.append(asyncio.create_task(self._recv_task()))
+            if self._write:
+                tasks.append(asyncio.create_task(self._send_task()))
+
+            await asyncio.gather(*tasks)
         finally:
             self._done_fut.set_result(True)
 
