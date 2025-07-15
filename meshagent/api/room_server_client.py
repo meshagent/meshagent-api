@@ -12,6 +12,7 @@ from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
 from meshagent.api.messaging import (
     unpack_response,
+    TextResponse,
     ErrorResponse,
     JsonResponse,
     EmptyResponse,
@@ -1010,7 +1011,8 @@ class QueuesClient:
             return None
         elif isinstance(response, JsonResponse):
             return response.json
-
+        elif isinstance(response, TextResponse):
+            return response.text
         else:
             raise RoomException("Unexpected response")
 
