@@ -176,6 +176,7 @@ class RoomClient:
     def __init__(self, *, protocol: ClientProtocol):
         self.protocol = protocol
         self.protocol.register_handler("room_ready", self._handle_ready)
+        self.protocol.register_handler("room.status", self._handle_status)
         self.protocol.register_handler("connected", self._handle_participant)
         self.protocol.register_handler("__response__", self._handle_response)
 
@@ -264,6 +265,13 @@ class RoomClient:
 
         await self.protocol.send(type=type, data=message, message_id=request_id)
         return await pr.fut
+
+    async def _handle_status(
+        self, protocol: Protocol, message_id: int, type: str, data: bytes
+    ) -> None:
+        init, _ = unpack_message(data)
+
+        self.emit("room.status", **init)
 
     async def _handle_ready(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
