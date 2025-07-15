@@ -3,7 +3,7 @@ from aiohttp import ClientSession, WSMsgType, web
 import asyncio
 import logging
 import urllib
-from meshagent.api import __version__
+from meshagent.api.version import __version__
 
 from meshagent.api.protocol import Protocol, ClientProtocol
 
