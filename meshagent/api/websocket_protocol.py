@@ -3,6 +3,7 @@ from aiohttp import ClientSession, WSMsgType, web
 import asyncio
 import logging
 import urllib
+from meshagent.api import __version__
 
 from meshagent.api.protocol import Protocol, ClientProtocol
 
@@ -27,6 +28,7 @@ class WebSocketClientProtocol(ClientProtocol):
         url_parts = urllib.parse.urlparse(self._url)
         query_dict = urllib.parse.parse_qs(url_parts.query)
         query_dict.update({"token": self.token})
+        query_dict.update({"v": __version__})
         new_query_string = urllib.parse.urlencode(query_dict, doseq=True)
         url_with_params = urllib.parse.urlunparse(
             (
