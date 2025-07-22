@@ -345,7 +345,9 @@ class ServerXmlDocument:
                 for k, c in ev.keys.items():
                     if c["action"] in ("add", "update"):
                         msg.attributes.set.append(
-                            DeltaAttrSet(name=k, value=ev.target.attributes.get(k, None))  # type: ignore[attr-defined]
+                            DeltaAttrSet(
+                                name=k, value=ev.target.attributes.get(k, None)
+                            )  # type: ignore[attr-defined]
                         )
                     elif c["action"] == "delete":
                         msg.attributes.delete.append(k)
