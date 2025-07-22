@@ -13,8 +13,8 @@ async def test_protocol():
     input = Chan[bytes]()
     output = Chan[bytes]()
 
-    async with MemoryClientProtocol(input=input, output=output) as client:
-        async with MemoryServerProtocol(input=output, output=input, token="") as server:
+    async with MemoryClientProtocol(input=input, output=output, token="") as client:
+        async with MemoryServerProtocol(input=output, output=input) as server:
             last_data = None
             last_type = None
             last_message_id = None

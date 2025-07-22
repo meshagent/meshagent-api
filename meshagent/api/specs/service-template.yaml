@@ -1,9 +1,15 @@
 kind: ServiceTemplate
 version: v1
 service:
+
   kind: Service
   image: meshagent/cli
-  command: git clone --depth=1 {git_repo} /tmp/repo && cd /temp/repo && python3 main.py
+  command: git clone --depth=1 {git_url} /tmp/repo && cd /tmp/repo && {command}
+
 variables:
-  - name: git_repo
+
+  - name: git_url
     description: a git repository containing a meshagent service
+
+  - name: command
+    description: a command to run inside the repo to start the service

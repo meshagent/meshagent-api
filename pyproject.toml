@@ -20,10 +20,14 @@ classifiers = [
 
 [project.optional-dependencies]
 all = [
-  "stpyv8~=13.1"
+  "pycrdt~=0.12.26"
 ]
 
 sync = [
+  "pycrdt~=0.12.26"
+]
+
+stpyv8 = [
   "stpyv8~=13.1"
 ]
 

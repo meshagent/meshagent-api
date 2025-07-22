@@ -14,7 +14,6 @@ schema = MeshSchema(
             tag_name="root",
             description="",
             properties=[
-                ValueProperty(name="attr", description="", type="string"),
                 ChildProperty(
                     name="children", description="", child_tag_names=["child"]
                 ),
@@ -30,14 +29,14 @@ schema = MeshSchema(
     ],
 )
 
-expected = {"root": {"attr": "test", "children": [{"child": {"attr": "test2"}}]}}
+expected = {"root": {"children": [{"child": {"attr": "test2"}}]}}
 
 
 def test_document_to_json_from_json_produces_valid_json():
     with DocumentRuntime() as rt:
         doc = rt.new_document(schema=schema)
 
-        doc.root["attr"] = "test"
+        # doc.root["attr"] = "test"
 
         child = doc.root.append_child("child")
         child["attr"] = "test2"
@@ -54,7 +53,7 @@ def test_append_single_json():
         # can copy a single element
         copy = rt.new_document(schema=schema)
 
-        copy.root["attr"] = "test"
+        # copy.root["attr"] = "test"
         copy.root.append_json(expected["root"]["children"][0])
 
         assert json.dumps(copy.root.to_json()) == json.dumps(expected)

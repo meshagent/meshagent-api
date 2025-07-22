@@ -360,6 +360,9 @@ class Text(EventEmitter):
             ]
         )
 
+    def to_json(self, **extra):
+        return {"text": {"delta": self._data["delta"]}}
+
 
 def str_slice(s: str, start: int, end: int | None = None) -> str:
     if end is None:
@@ -442,6 +445,7 @@ class Document(EventEmitter):
             raise Exception("Unsupported " + json.dumps(data))
 
     def receive_changes(self, message: dict) -> None:
+        print(f"[JE] receiving changes {message} in doc {self.to_json()}")
         nodeID = None
         if "target" in message:
             nodeID = message["target"]
@@ -457,18 +461,18 @@ class Document(EventEmitter):
         retain = 0
         if "elements" in message:
             for delta in message["elements"]:
-                if "retain" in delta:
+                if "retain" in delta and delta["retain"] is not None:
                     retain += delta["retain"]
 
-                if "insert" in delta:
+                if "insert" in delta and delta["insert"] is not None:
                     for insert in delta["insert"]:
-                        if "element" in insert:
+                        if "element" in insert and insert["element"] is not None:
                             node = self._createNode(target, insert)
                             splice(target._data["children"], retain, 0, node)
                             target.emit("inserted", node)
                             self.emit("inserted", node)
                             retain += 1
-                        elif "text" in insert:
+                        elif "text" in insert and insert["text"] is not None:
                             node = self._createNode(target, insert)
                             splice(target._data["children"], retain, 0, node)
                             target.emit("inserted", node)
@@ -477,7 +481,7 @@ class Document(EventEmitter):
                         else:
                             raise Exception("Unsupported element delta")
 
-                elif "delete" in delta:
+                elif "delete" in delta and delta["delete"] is not None:
                     removed = splice(target._data["children"], retain, delta["delete"])
                     for r in removed:
                         target.emit("deleted", r)
@@ -485,7 +489,11 @@ class Document(EventEmitter):
                     retain -= delta["delete"]
 
         # process text deltas
-        if "text" in message and len(message["text"]) != 0:
+        if (
+            "text" in message
+            and message["text"] is not None
+            and len(message["text"]) != 0
+        ):
             if target.tag_name != "text":
                 raise Exception("Node is not a text node: " + target.tag_name)
 
@@ -494,14 +502,18 @@ class Document(EventEmitter):
             i = 0
             offset = 0
 
+            print(
+                f"[JE] text delta:\n{textNode.to_json()}\n{textNode._data}\n{self.to_json()}"
+            )
             if "delta" not in textNode._data:
                 raise (Exception("Text node is missing delta"))
 
             targetDelta: list = textNode._data["delta"]
 
             for delta in message["text"]:
-                if "insert" in delta:
+                if "insert" in delta and delta["insert"] is not None:
                     if i == len(targetDelta):
+                        print("[JE] -> inserting (1)")
                         attr = {}
                         if "attributes" in delta:
                             attr = delta["attributes"]
@@ -515,14 +527,16 @@ class Document(EventEmitter):
                         retain += len(delta["insert"])
                     else:
                         str_insert = targetDelta[i]["insert"]
+                        print(f"[JE] -> inserting (2) {str_insert} {i}")
                         targetDelta[i]["insert"] = (
                             str_slice(str_insert, 0, retain - offset)
                             + delta["insert"]
                             + str_slice(str_insert, retain - offset)
                         )
+                        print(f"[JE] -> inserted (2) {targetDelta[i]['insert']}")
                         retain += len(delta["insert"])
 
-                elif "delete" in delta:
+                elif "delete" in delta and delta["delete"] is not None:
                     deleted = 0
                     while delta["delete"] > deleted:
                         remaining = delta["delete"] - deleted
@@ -556,7 +570,7 @@ class Document(EventEmitter):
                             end = str_slice(str_insert, remaining)
                             targetDelta[i]["insert"] = end
                             deleted += len(start)
-                elif "attributes" in delta:
+                elif "attributes" in delta and delta["attributes"] is not None:
                     formatted = 0
                     while delta["retain"] > formatted:
                         # format ends after item
@@ -665,7 +679,11 @@ class Document(EventEmitter):
                             i += 1
 
         for change in message["attributes"]["set"]:
+            print(
+                f"[JE] setting attribute {target.id} {change['name']}={change['value']}"
+            )
             target._data["attributes"][change["name"]] = change["value"]
+
             target.emit("updated", target, change["name"])
             self.emit("updated", target, change["name"])
 
@@ -673,3 +691,9 @@ class Document(EventEmitter):
             target._data["attributes"].pop(name)
             target.emit("updated", target, name)
             self.emit("updated", target, name)
+
+        try:
+            print(f"[JE] JSON-> {self.to_json()}")
+
+        except Exception as ex:
+            print(ex)
