@@ -13,6 +13,7 @@ dependencies = [
   "pyjwt~=2.10",
   "aiohttp~=3.10",
   "jsonschema~=4.23",
+  "pycrdt~=0.12.26"
 ]
 classifiers = [
   # You can add your classifiers here if needed.
@@ -20,11 +21,9 @@ classifiers = [
 
 [project.optional-dependencies]
 all = [
-  "pycrdt~=0.12.26"
 ]
 
 sync = [
-  "pycrdt~=0.12.26"
 ]
 
 stpyv8 = [
