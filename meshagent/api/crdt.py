@@ -225,8 +225,6 @@ class ServerXmlDocument:
     # 2.4  Public high‑level change API                                    #
     # --------------------------------------------------------------------- #
     def apply_changes(self, changes: List[Dict[str, Any]]) -> None:
-        print(f"[JE] APPLY CHANGE {changes}")
-
         """
         Apply a sequence of JSON‑serialisable change descriptions
         (the `AppliedChange[]` structure from the TS code).
