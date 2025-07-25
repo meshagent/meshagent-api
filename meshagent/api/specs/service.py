@@ -12,7 +12,7 @@ class ServicePortEndpointSpec(BaseModel):
 
 class ServicePortSpec(BaseModel):
     num: Literal["*"] | PositiveInt
-    type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
+    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
     endpoints: list[ServicePortEndpointSpec] = []
     liveness: Optional[str] = None
 
@@ -67,35 +67,41 @@ class ServiceSpec(BaseModel):
 
 class ServiceTemplateVariable(BaseModel):
     name: str
-    description: Optional[str]
+    description: Optional[str] = None
 
 
 class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
-    service: ServiceSpec
     variables: Optional[list[ServiceTemplateVariable]] = None
+    environment: dict[str, str] = {}
     name: str
-    description: Optional[str]
+    image: str
+    description: Optional[str] = None
+    ports: list[ServicePortSpec] = []
+    command: str
+    role: str = "agent"
+    secrets: list[str] = []
+    room_storage_path: Optional[str] = None
+    room_storage_subpath: Optional[str] = None
 
     def to_service_spec(self, *, values: dict[str, str]) -> ServiceSpec:
-        env = self.service.environment if self.service.environment is not None else {}
+        env = self.environment if self.environment is not None else {}
         env = env.copy()
         for k, v in env.items():
             env[k] = v.format_map(v, values)
 
         return ServiceSpec(
             version=self.version,
-            kind=self.service.kind,
-            id=self.service.id,
-            name=self.service.name,
-            command=self.service.command,
-            image=self.service.image,
-            ports=self.service.ports,
-            role=self.service.role,
+            kind="Service",
+            name=self.name,
+            command=self.command,
+            image=self.image,
+            ports=self.ports,
+            role=self.role,
             environment=env,
-            secrets=self.service.secrets,
-            pull_secret=self.service.pull_secret,
-            room_storage_path=self.service.room_storage_path,
-            room_storage_subpath=self.service.room_storage_subpath,
+            secrets=self.secrets,
+            # pull_secret=self.pull_secret,
+            room_storage_path=self.room_storage_path,
+            room_storage_subpath=self.room_storage_subpath,
         )
