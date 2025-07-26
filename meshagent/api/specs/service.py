@@ -48,7 +48,7 @@ class ServiceSpec(BaseModel):
                         path=endpoint.path,
                     )
                 )
-            ports[p.num] = port
+            ports[str(p.num)] = port
         return Service(
             id="",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -76,10 +76,10 @@ class ServiceTemplateSpec(BaseModel):
     variables: Optional[list[ServiceTemplateVariable]] = None
     environment: dict[str, str] = {}
     name: str
-    image: str
+    image: Optional[str] = None
     description: Optional[str] = None
     ports: list[ServicePortSpec] = []
-    command: str
+    command: Optional[str] = None
     role: str = "agent"
     secrets: list[str] = []
     room_storage_path: Optional[str] = None
