@@ -4,19 +4,6 @@ from datetime import datetime, timezone
 from meshagent.api.accounts_client import Port, Service, Endpoint
 
 
-class ServicePortEndpointSpec(BaseModel):
-    path: str
-    identity: str
-    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
-
-
-class ServicePortSpec(BaseModel):
-    num: Literal["*"] | PositiveInt
-    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
-    endpoints: list[ServicePortEndpointSpec] = []
-    liveness: Optional[str] = None
-
-
 class ServiceSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["Service"]
@@ -24,7 +11,7 @@ class ServiceSpec(BaseModel):
     name: str
     command: Optional[str] = None
     image: str
-    ports: Optional[list[ServicePortSpec]] = []
+    ports: Optional[list['ServicePortSpec']] = []
     role: Optional[Literal["user", "tool", "agent"]] = None
     environment: Optional[dict[str, str]] = {}
     secrets: list[str] = []
@@ -63,6 +50,20 @@ class ServiceSpec(BaseModel):
             room_storage_path=self.room_storage_path,
             room_storage_subpath=self.room_storage_subpath,
         )
+
+
+
+class ServicePortEndpointSpec(BaseModel):
+    path: str
+    identity: str
+    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
+
+
+class ServicePortSpec(BaseModel):
+    num: Literal["*"] | PositiveInt
+    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
+    endpoints: list[ServicePortEndpointSpec] = []
+    liveness: Optional[str] = None
 
 
 class ServiceTemplateVariable(BaseModel):
