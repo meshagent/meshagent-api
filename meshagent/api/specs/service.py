@@ -11,7 +11,7 @@ class ServiceSpec(BaseModel):
     name: str
     command: Optional[str] = None
     image: str
-    ports: Optional[list['ServicePortSpec']] = []
+    ports: Optional[list["ServicePortSpec"]] = []
     role: Optional[Literal["user", "tool", "agent"]] = None
     environment: Optional[dict[str, str]] = {}
     secrets: list[str] = []
@@ -50,7 +50,6 @@ class ServiceSpec(BaseModel):
             room_storage_path=self.room_storage_path,
             room_storage_subpath=self.room_storage_subpath,
         )
-
 
 
 class ServicePortEndpointSpec(BaseModel):
