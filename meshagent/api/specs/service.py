@@ -70,11 +70,16 @@ class ServiceTemplateVariable(BaseModel):
     description: Optional[str] = None
 
 
+class ServiceTemplateEnvironmentVariable(BaseModel):
+    name: str
+    value: str
+
+
 class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
     variables: Optional[list[ServiceTemplateVariable]] = None
-    environment: dict[str, str] = {}
+    environment: Optional[list[ServiceTemplateEnvironmentVariable]] = None
     name: str
     image: Optional[str] = None
     description: Optional[str] = None
@@ -86,10 +91,10 @@ class ServiceTemplateSpec(BaseModel):
     room_storage_subpath: Optional[str] = None
 
     def to_service_spec(self, *, values: dict[str, str]) -> ServiceSpec:
-        env = self.environment if self.environment is not None else {}
-        env = env.copy()
-        for k, v in env.items():
-            env[k] = v.format_map(v, values)
+        env = {}
+        if self.environment is not None:
+            for e in self.environment:
+                env[e.name] = e.value.format_map(values)
 
         return ServiceSpec(
             version=self.version,
