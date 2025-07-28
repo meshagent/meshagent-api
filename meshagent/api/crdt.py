@@ -225,8 +225,6 @@ class ServerXmlDocument:
     # 2.4  Public high‑level change API                                    #
     # --------------------------------------------------------------------- #
     def apply_changes(self, changes: List[Dict[str, Any]]) -> None:
-        print(f"[JE] APPLY CHANGE {changes}")
-
         """
         Apply a sequence of JSON‑serialisable change descriptions
         (the `AppliedChange[]` structure from the TS code).
@@ -345,9 +343,7 @@ class ServerXmlDocument:
                 for k, c in ev.keys.items():
                     if c["action"] in ("add", "update"):
                         msg.attributes.set.append(
-                            DeltaAttrSet(
-                                name=k, value=ev.target.attributes.get(k)
-                            )  # type: ignore[attr-defined]
+                            DeltaAttrSet(name=k, value=ev.target.attributes.get(k))  # type: ignore[attr-defined]
                         )
                     elif c["action"] == "delete":
                         msg.attributes.delete.append(k)

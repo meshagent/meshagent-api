@@ -445,7 +445,6 @@ class Document(EventEmitter):
             raise Exception("Unsupported " + json.dumps(data))
 
     def receive_changes(self, message: dict) -> None:
-        print(f"[JE] receiving changes {message} in doc {self.to_json()}")
         nodeID = None
         if "target" in message:
             nodeID = message["target"]
@@ -502,9 +501,6 @@ class Document(EventEmitter):
             i = 0
             offset = 0
 
-            print(
-                f"[JE] text delta:\n{textNode.to_json()}\n{textNode._data}\n{self.to_json()}"
-            )
             if "delta" not in textNode._data:
                 raise (Exception("Text node is missing delta"))
 
@@ -513,7 +509,6 @@ class Document(EventEmitter):
             for delta in message["text"]:
                 if "insert" in delta and delta["insert"] is not None:
                     if i == len(targetDelta):
-                        print("[JE] -> inserting (1)")
                         attr = {}
                         if "attributes" in delta:
                             attr = delta["attributes"]
@@ -527,13 +522,11 @@ class Document(EventEmitter):
                         retain += len(delta["insert"])
                     else:
                         str_insert = targetDelta[i]["insert"]
-                        print(f"[JE] -> inserting (2) {str_insert} {i}")
                         targetDelta[i]["insert"] = (
                             str_slice(str_insert, 0, retain - offset)
                             + delta["insert"]
                             + str_slice(str_insert, retain - offset)
                         )
-                        print(f"[JE] -> inserted (2) {targetDelta[i]['insert']}")
                         retain += len(delta["insert"])
 
                 elif "delete" in delta and delta["delete"] is not None:
@@ -679,9 +672,6 @@ class Document(EventEmitter):
                             i += 1
 
         for change in message["attributes"]["set"]:
-            print(
-                f"[JE] setting attribute {target.id} {change['name']}={change['value']}"
-            )
             target._data["attributes"][change["name"]] = change["value"]
 
             target.emit("updated", target, change["name"])
@@ -691,9 +681,3 @@ class Document(EventEmitter):
             target._data["attributes"].pop(name)
             target.emit("updated", target, name)
             self.emit("updated", target, name)
-
-        try:
-            print(f"[JE] JSON-> {self.to_json()}")
-
-        except Exception as ex:
-            print(ex)
