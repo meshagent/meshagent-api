@@ -68,6 +68,9 @@ class ServicePortSpec(BaseModel):
 class ServiceTemplateVariable(BaseModel):
     name: str
     description: Optional[str] = None
+    obscure: bool = False
+    enum: Optional[list[str]] = None
+    optional: bool = False
 
 
 class ServiceTemplateEnvironmentVariable(BaseModel):
@@ -85,8 +88,7 @@ class ServiceTemplateSpec(BaseModel):
     description: Optional[str] = None
     ports: list[ServicePortSpec] = []
     command: Optional[str] = None
-    role: str = "agent"
-    secrets: list[str] = []
+    role: Optional[Literal["user", "tool", "agent"]] = None
     room_storage_path: Optional[str] = None
     room_storage_subpath: Optional[str] = None
 
@@ -105,7 +107,6 @@ class ServiceTemplateSpec(BaseModel):
             ports=self.ports,
             role=self.role,
             environment=env,
-            secrets=self.secrets,
             # pull_secret=self.pull_secret,
             room_storage_path=self.room_storage_path,
             room_storage_subpath=self.room_storage_subpath,
