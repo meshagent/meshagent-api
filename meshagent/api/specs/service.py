@@ -33,6 +33,7 @@ class ServiceSpec(BaseModel):
                         type=type,
                         participant_name=endpoint.identity,
                         path=endpoint.path,
+                        role=endpoint.role,
                     )
                 )
             ports[str(p.num)] = port
@@ -55,6 +56,7 @@ class ServiceSpec(BaseModel):
 class ServicePortEndpointSpec(BaseModel):
     path: str
     identity: str
+    role: Optional[Literal["user", "tool", "agent"]] = None
     type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
 
 
