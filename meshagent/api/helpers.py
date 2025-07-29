@@ -75,9 +75,13 @@ def websocket_protocol(
     *, participant_name: str, room_name: str, role: Optional[str] = None
 ):
     url = websocket_room_url(room_name=room_name)
-    token = participant_token(
-        participant_name=participant_name, room_name=room_name, role=role
-    )
+    token_jwt = os.getenv("MESHAGENT_TOKEN", None)
+    if token_jwt is None:
+        token = participant_token(
+            participant_name=participant_name, room_name=room_name, role=role
+        )
+        token_jwt = token.to_jwt(token=os.getenv("MESHAGENT_SECRET"))
+    
     return WebSocketClientProtocol(
-        url=url, token=token.to_jwt(token=os.getenv("MESHAGENT_SECRET"))
+        url=url, token=token_jwt
     )
