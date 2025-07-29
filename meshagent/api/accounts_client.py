@@ -92,6 +92,7 @@ class Endpoint(BaseModel):
     type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
     path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
+    role: Optional[Literal["user", "tool", "agent"]] = None
 
 
 class Port(BaseModel):
