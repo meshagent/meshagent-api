@@ -81,7 +81,5 @@ def websocket_protocol(
             participant_name=participant_name, room_name=room_name, role=role
         )
         token_jwt = token.to_jwt(token=os.getenv("MESHAGENT_SECRET"))
-    
-    return WebSocketClientProtocol(
-        url=url, token=token_jwt
-    )
+
+    return WebSocketClientProtocol(url=url, token=token_jwt)
