@@ -113,75 +113,88 @@ class WebhookServer:
         return web.json_response({"ok": True})
 
     async def _webhook_request(self, request: web.Request):
-        req: dict = (
-            await request.json()
-            if request.headers.get("Meshagent-Webhook", None) is None
-            else json.loads(request.headers.get("Meshagent-Webhook"))
-        )
+        try:
+            req: dict = {}
 
-        if not isinstance(req, dict):
-            raise web.HTTPBadRequest(reason="invalid request body")
+            if request.headers.get("Meshagent-Webhook", None) is None:
+                if request.headers.get("Content-Type", "").startswith(
+                    "application/json"
+                ):
+                    req = await request.json()
 
-        event = req.get("event", None)
-        data = req.get("data", None)
+            else:
+                req = json.loads(request.headers.get("Meshagent-Webhook"))
 
-        if self._validate_webhook_secret:
-            authorization = request.headers.get("Meshagent-Signature")
-            if authorization is None:
-                logger.debug("missing authorization header")
-                raise web.HTTPUnauthorized(reason="missing signature")
+            if not isinstance(req, dict):
+                raise web.HTTPBadRequest(reason="invalid request body")
 
-            if not authorization.startswith("Bearer "):
-                logger.debug("authorization header missing bearer")
-                raise web.HTTPUnauthorized(reason="missing signature")
+            event = req.get("event", None)
+            data = req.get("data", None)
 
-            raw_jwt = authorization.removeprefix("Bearer ")
+            if self._validate_webhook_secret:
+                authorization = request.headers.get("Meshagent-Signature")
+                if authorization is None:
+                    logger.debug("missing authorization header")
+                    raise web.HTTPUnauthorized(reason="missing signature")
 
-            try:
-                decoded_jwt: dict = jwt.decode(
-                    raw_jwt, key=self._webhook_secret, algorithms=["HS256"]
-                )
-            except Exception as e:
-                logger.warning("invalid jwt", exc_info=e)
-                raise web.HTTPUnauthorized(reason="invalid jwt")
+                if not authorization.startswith("Bearer "):
+                    logger.debug("authorization header missing bearer")
+                    raise web.HTTPUnauthorized(reason="missing signature")
 
-            sha256 = decoded_jwt["sha256"]
+                raw_jwt = authorization.removeprefix("Bearer ")
 
-            payload = json.dumps(req)
-            hash = hashlib.sha256(payload.encode())
+                try:
+                    decoded_jwt: dict = jwt.decode(
+                        raw_jwt, key=self._webhook_secret, algorithms=["HS256"]
+                    )
+                except Exception as e:
+                    logger.warning("invalid jwt", exc_info=e)
+                    raise web.HTTPUnauthorized(reason="invalid jwt")
 
-            if hash.hexdigest() != sha256:
-                logger.debug("bad digest")
-                raise web.HTTPUnauthorized(reason="signature does not match payload")
+                sha256 = decoded_jwt["sha256"]
 
-        if (
-            request.headers.get("Upgrade", None) is not None
-            and self._supports_websockets
-        ):
-            if event != "room.call":
-                logger.warning(f"received invalid event on websocket {req}")
+                payload = json.dumps(req)
+                hash = hashlib.sha256(payload.encode())
 
-                raise web.HTTPBadRequest()
+                if hash.hexdigest() != sha256:
+                    logger.debug("bad digest")
+                    raise web.HTTPUnauthorized(
+                        reason="signature does not match payload"
+                    )
 
-            logger.debug("upgrading websocket request")
-            ws = web.WebSocketResponse()
-            await ws.prepare(request)
+            if (
+                request.headers.get("Upgrade", None) is not None
+                and self._supports_websockets
+            ):
+                if event != "room.call":
+                    logger.warning(f"received invalid event on websocket {req}")
 
-            async with WebSocketServerProtocol(
-                socket=ws, token=req["data"]["token"]
-            ) as protocol:
-                await self.on_call_answered(RoomClient(protocol=protocol))
+                    raise web.HTTPBadRequest()
 
-                logger.debug("waiting for server to close")
-                await protocol.wait_for_close()
+                logger.info("upgrading websocket request")
 
-            return ws
+                ws = web.WebSocketResponse()
+                await ws.prepare(request)
 
-        else:
-            logger.debug(f"received webhook event={event} data={data}")
-            await self.on_webhook(payload=req)
+                async with WebSocketServerProtocol(
+                    socket=ws, token=req["data"]["token"]
+                ) as protocol:
+                    await self.on_call_answered(RoomClient(protocol=protocol))
 
-            return web.json_response({"ok": True})
+                    logger.info("waiting for server to close")
+                    await protocol.wait_for_close()
+
+                return ws
+
+            else:
+                logger.debug(f"received webhook event={event} data={data}")
+                await self.on_webhook(payload=req)
+
+                return web.json_response({"ok": True})
+
+        except Exception as ex:
+            logger.error("unable to establish connection to agent %s", ex, exc_info=ex)
+            raise
 
     async def on_webhook(self, *, payload: dict):
         event = payload["event"]
