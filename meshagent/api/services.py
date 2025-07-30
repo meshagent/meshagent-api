@@ -4,6 +4,13 @@ import logging
 from aiohttp import web
 import os
 import signal
+import json
+
+import jwt
+import hashlib
+import aiohttp
+
+from meshagent.api import RoomException
 from meshagent.api.webhooks import WebhookServer
 from meshagent.api import WebSocketClientProtocol, RoomMessage
 from meshagent.api.room_server_client import RoomClient
@@ -207,3 +214,42 @@ class ServiceHost:
 
         finally:
             await self.stop()
+
+
+async def send_webhook(
+    session: aiohttp.ClientSession,
+    *,
+    url: str,
+    event: str,
+    data: dict,
+    secret: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+):
+    payload_body = {"event": event, "data": data}
+
+    payload = json.dumps(payload_body)
+    hash = hashlib.sha256(payload.encode())
+
+    if headers is None:
+        headers = {}
+
+    headers = {
+        **headers,
+        "Content-Type": "application/json",
+    }
+
+    if secret is not None:
+        headers["Meshagent-Signature"] = "Bearer " + jwt.encode(
+            {"sha256": hash.hexdigest()}, key=secret, algorithm="HS256"
+        )
+
+    else:
+        async with session.post(url, headers=headers, data=payload) as resp:
+            try:
+                resp.raise_for_status()
+
+            except Exception as e:
+                logger.warning("webhook call failed %s %s", event, url, exc_info=e)
+                raise RoomException(
+                    f"error status returned from webhook call {url}, http status code: {resp.status}"
+                )
