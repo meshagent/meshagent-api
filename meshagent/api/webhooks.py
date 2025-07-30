@@ -113,6 +113,9 @@ class WebhookServer:
         return web.json_response({"ok": True})
 
     async def _webhook_request(self, request: web.Request):
+        logger.info(
+            f"received request {request.url} {request.method}, upgrade: {request.headers.get('Upgrade', None)}"
+        )
         try:
             req: dict = {}
 
@@ -166,6 +169,7 @@ class WebhookServer:
                 request.headers.get("Upgrade", None) is not None
                 and self._supports_websockets
             ):
+                logger.info("upgrading to websocket")
                 if event != "room.call":
                     logger.warning(f"received invalid event on websocket {req}")
 
