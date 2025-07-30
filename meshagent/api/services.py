@@ -118,37 +118,12 @@ class ServiceHost:
                 token: str,
                 arguments: Optional[dict] = None,
             ):
-                agent = p.cls()
-                logger.info(
-                    f"{getattr(agent, 'name', '')} answering call and joining room at url {room_url}"
-                )
-
+        
                 async def run():
                     async with RoomClient(
                         protocol=WebSocketClientProtocol(url=room_url, token=token)
                     ) as room:
-                        dismissed = asyncio.Future()
-
-                        def on_message(message: RoomMessage):
-                            if message.type == "dismiss":
-                                logger.info(
-                                    f"dismissed by {message.from_participant_id}"
-                                )
-                                dismissed.set_result(True)
-
-                        room.messaging.on("message", on_message)
-
-                        await agent.start(room=room)
-
-                        done, pending = await asyncio.wait(
-                            [
-                                dismissed,
-                                asyncio.ensure_future(room.protocol.wait_for_close()),
-                            ],
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-
-                        await agent.stop()
+                        await self.on_call_answered(room=room)
 
                 def on_done(task: asyncio.Task):
                     try:
@@ -160,6 +135,36 @@ class ServiceHost:
 
                 task = asyncio.create_task(run())
                 task.add_done_callback(on_done)
+
+            async def on_call_answered(self, room: RoomClient):
+        
+                dismissed = asyncio.Future()
+
+                def on_message(message: RoomMessage):
+                    if message.type == "dismiss":
+                        logger.info(
+                            f"dismissed by {message.from_participant_id}"
+                        )
+                        dismissed.set_result(True)
+
+                room.messaging.on("message", on_message)
+
+                agent = p.cls()
+                logger.info(
+                    f"{getattr(agent, 'name', '')} answering call and joining room"
+                )
+
+                await agent.start(room=room)
+
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.wrap_future(dismissed),
+                        asyncio.create_task(room.protocol.wait_for_close()),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                await agent.stop()
 
             async def on_call(self, event):
                 await self._spawn(

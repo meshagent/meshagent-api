@@ -10,6 +10,8 @@ import os
 import hashlib
 import jwt
 
+from meshagent.api.room_server_client import RoomClient
+
 from meshagent.api.websocket_protocol import WebSocketServerProtocol
 
 logger = logging.getLogger("webhooks")
@@ -155,12 +157,16 @@ class WebhookServer:
 
                 raise web.HTTPBadRequest()
 
+            logger.debug("upgrading websocket request")
             ws = web.WebSocketResponse()
             await ws.prepare(request)
 
             async with WebSocketServerProtocol(
                 socket=ws, token=req["data"]["token"]
             ) as protocol:
+                await self.on_call_answered(RoomClient(protocol=protocol))
+
+                logger.debug("waiting for server to close")
                 await protocol.wait_for_close()
 
             return ws
@@ -195,6 +201,7 @@ class WebhookServer:
                 )
             )
 
+
     async def on_room_started(self, event: RoomStartedEvent):
         pass
 
@@ -203,6 +210,10 @@ class WebhookServer:
 
     async def on_call(self, event: CallEvent):
         pass
+
+    async def on_call_answered(self, room: RoomClient):
+        pass
+
 
     async def __aenter__(self):
         if not self._shared:
