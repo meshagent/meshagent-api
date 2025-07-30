@@ -10,6 +10,8 @@ import os
 import hashlib
 import jwt
 
+from meshagent.api.websocket_protocol import WebSocketServerProtocol
+
 logger = logging.getLogger("webhooks")
 
 
@@ -99,13 +101,15 @@ class WebhookServer:
         if not self._shared:
             app.router.add_get("/", self._liveness_check_request)
 
+        app.router.add_get(self._path, self._webhook_request)
         app.router.add_post(self._path, self._webhook_request)
 
     async def _liveness_check_request(self, request: web.Request):
         return web.json_response({"ok": True})
 
     async def _webhook_request(self, request: web.Request):
-        req: dict = await request.json()
+
+        req: dict = await request.json() if request.headers.get("Meshagent-Webhook", None) is None else json.loads(request.headers.get("Meshagent-Webhook"))
 
         if not isinstance(req, dict):
             raise web.HTTPBadRequest(reason="invalid request body")
@@ -116,9 +120,11 @@ class WebhookServer:
         if self._validate_webhook_secret:
             authorization = request.headers.get("Meshagent-Signature")
             if authorization is None:
+                logger.debug("missing authorization header")
                 raise web.HTTPUnauthorized(reason="missing signature")
 
             if not authorization.startswith("Bearer "):
+                logger.debug("authorization header missing bearer")
                 raise web.HTTPUnauthorized(reason="missing signature")
 
             raw_jwt = authorization.removeprefix("Bearer ")
@@ -137,12 +143,32 @@ class WebhookServer:
             hash = hashlib.sha256(payload.encode())
 
             if hash.hexdigest() != sha256:
+                logger.debug("bad digest")
                 raise web.HTTPUnauthorized(reason="signature does not match payload")
 
-        logger.debug(f"received webhook event={event} data={data}")
-        await self.on_webhook(payload=req)
+        if request.headers.get("Upgrade", None) is not None:
 
-        return web.json_response({"ok": True})
+            if event != "room.call":
+
+                logger.warning(f"received invalid event on websocket {req}")
+
+                raise web.HTTPBadRequest()
+
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+
+            async with WebSocketServerProtocol(socket=ws, token=req["data"]["token"]) as protocol:
+
+                await protocol.wait_for_close()
+
+            return ws
+        
+        else:
+            
+            logger.debug(f"received webhook event={event} data={data}")
+            await self.on_webhook(payload=req)
+
+            return web.json_response({"ok": True})
 
     async def on_webhook(self, *, payload: dict):
         event = payload["event"]

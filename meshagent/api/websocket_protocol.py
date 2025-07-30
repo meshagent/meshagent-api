@@ -1,9 +1,10 @@
 import urllib.parse
-from aiohttp import ClientSession, WSMsgType, web
+from aiohttp import ClientSession, WSMsgType, web, ClientWebSocketResponse
 import asyncio
 import logging
 import urllib
 from meshagent.api.version import __version__
+from typing import Optional
 
 from meshagent.api.protocol import Protocol, ClientProtocol
 
@@ -81,9 +82,10 @@ class WebSocketClientProtocol(ClientProtocol):
 
 
 class WebSocketServerProtocol(Protocol):
-    def __init__(self, socket: web.WebSocketResponse):
+    def __init__(self, socket: web.WebSocketResponse | ClientWebSocketResponse, token: Optional[str] = None):
         super().__init__()
         self.socket = socket
+        self.token = token
 
     async def __aenter__(self):
         self._ws_recv_task = asyncio.create_task(self._ws_recv())
