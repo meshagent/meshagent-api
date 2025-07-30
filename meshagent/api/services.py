@@ -52,6 +52,7 @@ class ServiceHost:
 
         self._hosts = None
         self._app = None
+        self._supports_websockets = True
 
     def path(self, path: str):
         def deco(cls: type[Portable]):
@@ -90,6 +91,8 @@ class ServiceHost:
         self._runner = None
 
     def _create_host(self, p: ServicePath):
+        supports_websockets = self._supports_websockets
+
         class ServiceWebhookServer(WebhookServer):
             def __init__(
                 self,
@@ -110,6 +113,8 @@ class ServiceHost:
                     validate_webhook_secret=validate_webhook_secret,
                 )
 
+                self._supports_websockets = supports_websockets
+
             async def _spawn(
                 self,
                 *,
@@ -118,7 +123,6 @@ class ServiceHost:
                 token: str,
                 arguments: Optional[dict] = None,
             ):
-        
                 async def run():
                     async with RoomClient(
                         protocol=WebSocketClientProtocol(url=room_url, token=token)
@@ -137,14 +141,11 @@ class ServiceHost:
                 task.add_done_callback(on_done)
 
             async def on_call_answered(self, room: RoomClient):
-        
                 dismissed = asyncio.Future()
 
                 def on_message(message: RoomMessage):
                     if message.type == "dismiss":
-                        logger.info(
-                            f"dismissed by {message.from_participant_id}"
-                        )
+                        logger.info(f"dismissed by {message.from_participant_id}")
                         dismissed.set_result(True)
 
                 room.messaging.on("message", on_message)

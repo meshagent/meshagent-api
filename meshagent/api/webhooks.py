@@ -54,6 +54,7 @@ class WebhookServer:
         path: Optional[str] = None,
         validate_webhook_secret: Optional[bool] = None,
     ):
+        self._supports_websockets = True
         if validate_webhook_secret is None:
             validate_webhook_secret = True
 
@@ -103,7 +104,9 @@ class WebhookServer:
         if not self._shared:
             app.router.add_get("/", self._liveness_check_request)
 
-        app.router.add_get(self._path, self._webhook_request)
+        if self._supports_websockets:
+            app.router.add_get(self._path, self._webhook_request)
+
         app.router.add_post(self._path, self._webhook_request)
 
     async def _liveness_check_request(self, request: web.Request):
@@ -151,7 +154,10 @@ class WebhookServer:
                 logger.debug("bad digest")
                 raise web.HTTPUnauthorized(reason="signature does not match payload")
 
-        if request.headers.get("Upgrade", None) is not None:
+        if (
+            request.headers.get("Upgrade", None) is not None
+            and self._supports_websockets
+        ):
             if event != "room.call":
                 logger.warning(f"received invalid event on websocket {req}")
 
@@ -201,7 +207,6 @@ class WebhookServer:
                 )
             )
 
-
     async def on_room_started(self, event: RoomStartedEvent):
         pass
 
@@ -213,7 +218,6 @@ class WebhookServer:
 
     async def on_call_answered(self, room: RoomClient):
         pass
-
 
     async def __aenter__(self):
         if not self._shared:
