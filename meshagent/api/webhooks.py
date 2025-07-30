@@ -177,14 +177,15 @@ class WebhookServer:
                 ws = web.WebSocketResponse()
                 await ws.prepare(request)
 
-                async with WebSocketServerProtocol(
-                    socket=ws, token=req["data"]["token"]
-                ) as protocol:
-                    async with RoomClient(protocol=protocol) as room:
-                        await self.on_call_answered(room=room)
+                async with RoomClient(
+                    protocol=WebSocketServerProtocol(
+                        socket=ws, token=req["data"]["token"]
+                    )
+                ) as room:
+                    await self.on_call_answered(room=room)
 
-                        logger.debug("connected to room")
-                        await protocol.wait_for_close()
+                    logger.debug("connected to room")
+                    await room.protocol.wait_for_close()
 
                 return ws
 
