@@ -108,8 +108,11 @@ class WebhookServer:
         return web.json_response({"ok": True})
 
     async def _webhook_request(self, request: web.Request):
-
-        req: dict = await request.json() if request.headers.get("Meshagent-Webhook", None) is None else json.loads(request.headers.get("Meshagent-Webhook"))
+        req: dict = (
+            await request.json()
+            if request.headers.get("Meshagent-Webhook", None) is None
+            else json.loads(request.headers.get("Meshagent-Webhook"))
+        )
 
         if not isinstance(req, dict):
             raise web.HTTPBadRequest(reason="invalid request body")
@@ -147,9 +150,7 @@ class WebhookServer:
                 raise web.HTTPUnauthorized(reason="signature does not match payload")
 
         if request.headers.get("Upgrade", None) is not None:
-
             if event != "room.call":
-
                 logger.warning(f"received invalid event on websocket {req}")
 
                 raise web.HTTPBadRequest()
@@ -157,14 +158,14 @@ class WebhookServer:
             ws = web.WebSocketResponse()
             await ws.prepare(request)
 
-            async with WebSocketServerProtocol(socket=ws, token=req["data"]["token"]) as protocol:
-
+            async with WebSocketServerProtocol(
+                socket=ws, token=req["data"]["token"]
+            ) as protocol:
                 await protocol.wait_for_close()
 
             return ws
-        
+
         else:
-            
             logger.debug(f"received webhook event={event} data={data}")
             await self.on_webhook(payload=req)
 

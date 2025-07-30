@@ -82,7 +82,11 @@ class WebSocketClientProtocol(ClientProtocol):
 
 
 class WebSocketServerProtocol(Protocol):
-    def __init__(self, socket: web.WebSocketResponse | ClientWebSocketResponse, token: Optional[str] = None):
+    def __init__(
+        self,
+        socket: web.WebSocketResponse | ClientWebSocketResponse,
+        token: Optional[str] = None,
+    ):
         super().__init__()
         self.socket = socket
         self.token = token
