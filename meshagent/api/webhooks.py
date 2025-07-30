@@ -114,7 +114,7 @@ class WebhookServer:
 
     async def _webhook_request(self, request: web.Request):
         logger.info(
-            f"received request {request.url} {request.method}, upgrade: {request.headers.get('Upgrade', None)}"
+            f"received request {request.url} {request.method}, upgrade: {request.headers.get('Connection', None)}"
         )
         try:
             req: dict = {}
@@ -169,13 +169,10 @@ class WebhookServer:
                 request.headers.get("Upgrade", None) is not None
                 and self._supports_websockets
             ):
-                logger.info("upgrading to websocket")
                 if event != "room.call":
                     logger.warning(f"received invalid event on websocket {req}")
 
                     raise web.HTTPBadRequest()
-
-                logger.info("upgrading websocket request")
 
                 ws = web.WebSocketResponse()
                 await ws.prepare(request)
@@ -183,10 +180,11 @@ class WebhookServer:
                 async with WebSocketServerProtocol(
                     socket=ws, token=req["data"]["token"]
                 ) as protocol:
-                    await self.on_call_answered(RoomClient(protocol=protocol))
+                    async with RoomClient(protocol=protocol) as room:
+                        await self.on_call_answered(room=room)
 
-                    logger.info("waiting for server to close")
-                    await protocol.wait_for_close()
+                        logger.debug("connected to room")
+                        await protocol.wait_for_close()
 
                 return ws
 
