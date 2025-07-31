@@ -179,7 +179,9 @@ class WebhookServer:
 
                 async with RoomClient(
                     protocol=WebSocketServerProtocol(
-                        socket=ws, token=req["data"]["token"]
+                        socket=ws,
+                        token=req["data"]["token"],
+                        url=req["data"]["room_url"],
                     )
                 ) as room:
                     await self.on_call_answered(room=room)

@@ -86,10 +86,16 @@ class WebSocketServerProtocol(Protocol):
         self,
         socket: web.WebSocketResponse | ClientWebSocketResponse,
         token: Optional[str] = None,
+        url: Optional[str] = None,
     ):
         super().__init__()
         self.socket = socket
         self.token = token
+        self._url = url
+
+    @property
+    def url(self):
+        return self._url
 
     async def __aenter__(self):
         self._ws_recv_task = asyncio.create_task(self._ws_recv())
