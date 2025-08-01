@@ -105,6 +105,23 @@ class Port(BaseModel):
     endpoints: Optional[list[Endpoint]] = None
 
 
+class RoomStorageMount(BaseModel):
+    path: str
+    subpath: Optional[str] = None
+    read_only: bool = False
+
+
+class ProjectStorageMount(BaseModel):
+    path: str
+    subpath: Optional[str] = None
+    read_only: bool = True
+
+
+class ServiceStorageMounts(BaseModel):
+    room: Optional[list[RoomStorageMount]] = None
+    project: Optional[list[ProjectStorageMount]] = None
+
+
 class Service(BaseModel):
     id: Optional[str] = None
     image: str
@@ -120,6 +137,7 @@ class Service(BaseModel):
     ports: Optional[Dict[str, Port]] = (None,)
     role: Optional[Literal["user", "tool", "agent"]] = None
     builtin: bool = Field(exclude=True, default=False)
+    storage: Optional[ServiceStorageMounts] = None
 
 
 class Services(BaseModel):

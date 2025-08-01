@@ -1,7 +1,31 @@
 from pydantic import BaseModel, PositiveInt
 from typing import Optional, Literal
 from datetime import datetime, timezone
-from meshagent.api.accounts_client import Port, Service, Endpoint
+from meshagent.api.accounts_client import (
+    Port,
+    Service,
+    Endpoint,
+    ServiceStorageMounts,
+    RoomStorageMount,
+    ProjectStorageMount,
+)
+
+
+class RoomStorageMountSpec(BaseModel):
+    path: str
+    subpath: Optional[str] = None
+    read_only: bool = False
+
+
+class ProjectStorageMountSpec(BaseModel):
+    path: str
+    subpath: Optional[str] = None
+    read_only: bool = True
+
+
+class ServiceStorageMountsSpec(BaseModel):
+    room: Optional[list[RoomStorageMountSpec]] = None
+    project: Optional[list[ProjectStorageMountSpec]] = None
 
 
 class ServiceSpec(BaseModel):
@@ -16,8 +40,7 @@ class ServiceSpec(BaseModel):
     environment: Optional[dict[str, str]] = {}
     secrets: list[str] = []
     pull_secret: Optional[str] = None
-    room_storage_path: Optional[str] = None
-    room_storage_subpath: Optional[str] = None
+    storage: Optional[ServiceStorageMountsSpec] = None
 
     def to_service(self):
         ports = {}
@@ -37,6 +60,25 @@ class ServiceSpec(BaseModel):
                     )
                 )
             ports[str(p.num)] = port
+
+        room_mounts = []
+        if self.storage is not None and self.storage.room is not None:
+            for rs in self.storage.room:
+                room_mounts.append(
+                    RoomStorageMount(
+                        path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+                    )
+                )
+
+        project_mounts = []
+        if self.storage is not None and self.storage.project is not None:
+            for rs in self.storage.project:
+                room_mounts.append(
+                    ProjectStorageMount(
+                        path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+                    )
+                )
+
         return Service(
             id="",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -48,8 +90,9 @@ class ServiceSpec(BaseModel):
             environment=self.environment,
             environment_secrets=self.secrets,
             pull_secret=self.pull_secret,
-            room_storage_path=self.room_storage_path,
-            room_storage_subpath=self.room_storage_subpath,
+            storage=ServiceStorageMounts(
+                room=[*room_mounts], project=[*project_mounts]
+            ),
         )
 
 
@@ -80,6 +123,10 @@ class ServiceTemplateEnvironmentVariable(BaseModel):
     value: str
 
 
+class ServiceTemplateMountSpec(BaseModel):
+    room: Optional[list[RoomStorageMountSpec]] = None
+
+
 class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
@@ -91,8 +138,7 @@ class ServiceTemplateSpec(BaseModel):
     ports: list[ServicePortSpec] = []
     command: Optional[str] = None
     role: Optional[Literal["user", "tool", "agent"]] = None
-    room_storage_path: Optional[str] = None
-    room_storage_subpath: Optional[str] = None
+    storage: Optional[ServiceTemplateMountSpec] = None
 
     def to_service_spec(self, *, values: dict[str, str]) -> ServiceSpec:
         env = {}
@@ -109,7 +155,7 @@ class ServiceTemplateSpec(BaseModel):
             ports=self.ports,
             role=self.role,
             environment=env,
-            # pull_secret=self.pull_secret,
-            room_storage_path=self.room_storage_path,
-            room_storage_subpath=self.room_storage_subpath,
+            storage=ServiceStorageMountsSpec(
+                room=self.storage.room if self.storage is not None else None,
+            ),
         )
