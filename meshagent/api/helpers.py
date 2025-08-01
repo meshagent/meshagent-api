@@ -4,6 +4,7 @@ from .participant_token import ParticipantToken
 from typing import Optional
 import os
 from .websocket_protocol import WebSocketClientProtocol
+import re
 
 
 def validate_schema_name(name: str):
@@ -83,3 +84,16 @@ def websocket_protocol(
         token_jwt = token.to_jwt(token=os.getenv("MESHAGENT_SECRET"))
 
     return WebSocketClientProtocol(url=url, token=token_jwt)
+
+
+# Pre-compile the pattern once if you’ll call this many times
+_ROOM_NAME_RE = re.compile(r"^(?=.{1,63}$)[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+
+
+def is_valid_room_name(identifier: str) -> bool:
+    """
+    Validate that `identifier` is 1-63 chars long, starts and ends with
+    a lowercase letter or digit, and contains only lowercase letters,
+    digits, or single hyphens in between (no consecutive hyphens).
+    """
+    return _ROOM_NAME_RE.fullmatch(identifier) is not None
