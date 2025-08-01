@@ -134,7 +134,7 @@ class Service(BaseModel):
     runtime_secrets: Optional[Dict[str, str]] = None
     environment_secrets: Optional[list[str]] = None
     created_at: Optional[str] = None
-    ports: Optional[Dict[str, Port]] = (None,)
+    ports: Optional[Dict[str, Port]] = None
     role: Optional[Literal["user", "tool", "agent"]] = None
     builtin: bool = Field(exclude=True, default=False)
     storage: Optional[ServiceStorageMounts] = None
