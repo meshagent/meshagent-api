@@ -132,7 +132,7 @@ class ServiceMetadata(BaseModel):
     description: Optional[str] = None
     repo: Optional[str] = None
     icon: Optional[str] = None
-    image: Optional[str] = None
+    
 
 
 class ServiceTemplateSpec(BaseModel):
@@ -142,6 +142,7 @@ class ServiceTemplateSpec(BaseModel):
     variables: Optional[list[ServiceTemplateVariable]] = None
     environment: Optional[list[ServiceTemplateEnvironmentVariable]] = None
     ports: list[ServicePortSpec] = []
+    image: Optional[str] = None
     command: Optional[str] = None
     role: Optional[Literal["user", "tool", "agent"]] = None
     storage: Optional[ServiceTemplateMountSpec] = None
