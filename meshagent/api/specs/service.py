@@ -132,7 +132,6 @@ class ServiceMetadata(BaseModel):
     description: Optional[str] = None
     repo: Optional[str] = None
     icon: Optional[str] = None
-    
 
 
 class ServiceTemplateSpec(BaseModel):
