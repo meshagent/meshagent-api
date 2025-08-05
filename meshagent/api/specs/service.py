@@ -127,14 +127,19 @@ class ServiceTemplateMountSpec(BaseModel):
     room: Optional[list[RoomStorageMountSpec]] = None
 
 
+class ServiceMetadata(BaseModel):
+    name: str
+    description: Optional[str] = None
+    repo: Optional[str] = None
+    icon: Optional[str] = None
+    image: Optional[str] = None
+   
 class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
+    metadata: ServiceMetadata
     variables: Optional[list[ServiceTemplateVariable]] = None
     environment: Optional[list[ServiceTemplateEnvironmentVariable]] = None
-    name: str
-    image: Optional[str] = None
-    description: Optional[str] = None
     ports: list[ServicePortSpec] = []
     command: Optional[str] = None
     role: Optional[Literal["user", "tool", "agent"]] = None
@@ -149,9 +154,9 @@ class ServiceTemplateSpec(BaseModel):
         return ServiceSpec(
             version=self.version,
             kind="Service",
-            name=self.name,
+            name=self.metadata.name,
             command=self.command,
-            image=self.image,
+            image=self.metadata.image,
             ports=self.ports,
             role=self.role,
             environment=env,
