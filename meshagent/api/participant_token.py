@@ -182,7 +182,30 @@ class ContainersGrant(BaseModel):
 
 class DeveloperGrant(BaseModel):
     logs: bool = True
-    pass
+
+
+class AdminGrant(BaseModel):
+    paths: Optional[list[StoragePathGrant]] = None
+
+    def can_read(self, path: str):
+        if self.paths is None:
+            return True
+
+        for t in self.paths:
+            if path.startswith(t.path):
+                return True
+
+        return False
+
+    def can_write(self, path: str):
+        if self.paths is None:
+            return True
+
+        for t in self.paths:
+            if path.startswith(t.path):
+                return not t.read_only
+
+        return False
 
 
 class ApiGrant(BaseModel):
@@ -195,6 +218,7 @@ class ApiGrant(BaseModel):
     containers: Optional[ContainersGrant] = None
     developer: Optional[DeveloperGrant] = None
     agents: Optional[AgentsGrant] = None
+    admin: Optional[AdminGrant] = None
 
     @staticmethod
     def full():
@@ -208,6 +232,8 @@ class ApiGrant(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            # Don't grant admin access
+            admin=None,
         )
 
 
