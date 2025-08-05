@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from .version import __version__
 
+
 class AgentsGrant(BaseModel):
     register_agent: bool = True
     register_public_toolkit: bool = True
@@ -14,7 +15,8 @@ class AgentsGrant(BaseModel):
     call: bool = True
     use_agents: bool = True
     use_tools: bool = True
-    
+
+
 class LivekitGrant(BaseModel):
     breakout_rooms: list[str] = Optional[None]
 
@@ -38,6 +40,7 @@ class MessagingGrant(BaseModel):
     broadcast: bool = True
     list: bool = True
     send: bool = True
+
 
 class TableGrant(BaseModel):
     name: str
@@ -94,7 +97,11 @@ class SyncGrant(BaseModel):
             return True
 
         for t in self.paths:
-            if t.path == path or t.path.endswith("*") and path.startswith(t.path.removesuffix("*")):
+            if (
+                t.path == path
+                or t.path.endswith("*")
+                and path.startswith(t.path.removesuffix("*"))
+            ):
                 return True
 
         return False
@@ -104,7 +111,11 @@ class SyncGrant(BaseModel):
             return True
 
         for t in self.paths:
-            if t.path == path or t.path.endswith("*") and path.startswith(t.path.removesuffix("*")):
+            if (
+                t.path == path
+                or t.path.endswith("*")
+                and path.startswith(t.path.removesuffix("*"))
+            ):
                 return not t.read_only
 
         return False
@@ -145,7 +156,7 @@ class ContainersGrant(BaseModel):
 
     pull: Optional[list[str]] = None
     run: Optional[list[str]] = None
-    
+
     use_containers: bool = True
 
     def can_pull(self, tag: str):
