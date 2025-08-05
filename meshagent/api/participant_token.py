@@ -3,19 +3,222 @@ import jwt
 from typing import Optional, List
 from datetime import datetime
 import json
+from pydantic import BaseModel
+
+from .version import __version__
+
+class AgentsGrant(BaseModel):
+    register_agent: bool = True
+    register_public_toolkit: bool = True
+    register_private_toolkit: bool = True
+    call: bool = True
+    use_agents: bool = True
+    use_tools: bool = True
+    
+class LivekitGrant(BaseModel):
+    breakout_rooms: list[str] = Optional[None]
+
+    def can_join_breakout_room(self, name: str):
+        return self.breakout_rooms is None or name in self.breakout_rooms
+
+
+class QueuesGrant(BaseModel):
+    send: Optional[list[str]] = None
+    receive: Optional[list[str]] = None
+    list: bool = True
+
+    def can_send(self, queue: str):
+        return self.send is None or queue in self.send
+
+    def can_receive(self, queue: str):
+        return self.receive is None or queue in self.receive
+
+
+class MessagingGrant(BaseModel):
+    broadcast: bool = True
+    list: bool = True
+    send: bool = True
+
+class TableGrant(BaseModel):
+    name: str
+    write: bool = False
+    read: bool = True
+    alter: bool = False
+
+
+class DatabaseGrant(BaseModel):
+    tables: Optional[list[TableGrant]] = None
+    list_tables: bool = True
+
+    def can_write(self, table: str):
+        if self.tables is None:
+            return True
+
+        for t in self.tables:
+            if t.name == table:
+                return t.write
+
+        return False
+
+    def can_read(self, table: str):
+        if self.tables is None:
+            return True
+
+        for t in self.tables:
+            if t.name == table:
+                return t.read
+
+        return False
+
+    def can_alter(self, table: str):
+        if self.tables is None:
+            return True
+
+        for t in self.tables:
+            if t.name == table:
+                return t.alter
+
+        return False
+
+
+class SyncPathGrant(BaseModel):
+    path: str
+    read_only: bool = False
+
+
+class SyncGrant(BaseModel):
+    paths: Optional[list[SyncPathGrant]] = None
+
+    def can_read(self, path: str):
+        if self.paths is None:
+            return True
+
+        for t in self.paths:
+            if t.path == path or t.path.endswith("*") and path.startswith(t.path.removesuffix("*")):
+                return True
+
+        return False
+
+    def can_write(self, path: str):
+        if self.paths is None:
+            return True
+
+        for t in self.paths:
+            if t.path == path or t.path.endswith("*") and path.startswith(t.path.removesuffix("*")):
+                return not t.read_only
+
+        return False
+
+
+class StoragePathGrant(BaseModel):
+    path: str
+    read_only: bool = False
+
+
+class StorageGrant(BaseModel):
+    paths: Optional[list[StoragePathGrant]] = None
+
+    def can_read(self, path: str):
+        if self.paths is None:
+            return True
+
+        for t in self.paths:
+            if path.startswith(t.path):
+                return True
+
+        return False
+
+    def can_write(self, path: str):
+        if self.paths is None:
+            return True
+
+        for t in self.paths:
+            if path.startswith(t.path):
+                return not t.read_only
+
+        return False
+
+
+class ContainersGrant(BaseModel):
+    build: bool = True
+    logs: bool = True
+
+    pull: Optional[list[str]] = None
+    run: Optional[list[str]] = None
+    
+    use_containers: bool = True
+
+    def can_pull(self, tag: str):
+        if self.pull is None:
+            return True
+
+        for t in self.pull:
+            if tag.startswith(t):
+                return True
+
+        return False
+
+    def can_run(self, tag: str):
+        if self.pull is None:
+            return True
+
+        for t in self.pull:
+            if tag.startswith(t):
+                return True
+
+        return False
+
+
+class DeveloperGrant(BaseModel):
+    logs: bool = True
+    pass
+
+
+class ApiGrant(BaseModel):
+    livekit: Optional[LivekitGrant] = None
+    queues: Optional[QueuesGrant] = None
+    messaging: Optional[MessagingGrant] = None
+    database: Optional[DatabaseGrant] = None
+    sync: Optional[SyncGrant] = None
+    storage: Optional[StorageGrant] = None
+    containers: Optional[ContainersGrant] = None
+    developer: Optional[DeveloperGrant] = None
+    agents: Optional[AgentsGrant] = None
+
+    @staticmethod
+    def full():
+        return ApiGrant(
+            livekit=LivekitGrant(),
+            queues=QueuesGrant(),
+            messaging=MessagingGrant(),
+            database=DatabaseGrant(),
+            sync=SyncGrant(),
+            storage=StorageGrant(),
+            containers=ContainersGrant(),
+            developer=DeveloperGrant(),
+            agents=AgentsGrant(),
+        )
 
 
 class ParticipantGrant:
-    def __init__(self, *, name: str, scope: Optional[str]):
+    def __init__(self, *, name: str, scope: Optional[str | ApiGrant] = None):
         self.name = name
         self.scope = scope
 
     def to_json(self) -> dict:
-        return {"name": self.name, "scope": self.scope}
+        return {
+            "name": self.name,
+            "scope": self.scope.model_dump_json() if self.name == "api" else self.scope,
+        }
 
     @staticmethod
     def from_json(data: dict) -> "ParticipantGrant":
-        return ParticipantGrant(name=data["name"], scope=data["scope"])
+        if data["name"] == "api":
+            scope = ApiGrant.model_validate(data["scope"])
+        else:
+            scope = data["scope"]
+
+        return ParticipantGrant(name=data["name"], scope=scope)
 
 
 class ParticipantToken:
@@ -27,14 +230,20 @@ class ParticipantToken:
         api_key_id: str = None,
         grants: Optional[List[ParticipantGrant]] = None,
         extra_payload: Optional[dict] = None,
+        version: Optional[None] = None,
     ):
         if grants is None:
             grants = []
+
+        if version is None:
+            version = __version__
+
         self.name = name
         self.grants = grants
         self.project_id = project_id
         self.api_key_id = api_key_id
         self.extra_payload = extra_payload
+        self.version = version
 
     @property
     def role(self):
@@ -62,12 +271,23 @@ class ParticipantToken:
     def add_room_grant(self, room_name: str):
         self.grants.append(ParticipantGrant(name="room", scope=room_name))
 
-    def grant_scope(self, name: str) -> str | None:
+    def add_api_grant(self, grant: ApiGrant):
+        self.grants.append(ParticipantGrant(name="api", scope=grant))
+
+    def grant_scope(self, name: str) -> str | ApiGrant | None:
         for g in self.grants:
             if g.name == name:
                 return g.scope
 
         return None
+
+    def get_api_grant(self) -> ApiGrant | None:
+        api = self.grant_scope("api")
+        if self.version <= "0.5.3" and api is None:
+            # <= 0.5.3 did not use fine grained tokens and should default api access on
+            return ApiGrant.full()
+
+        return api
 
     def to_json(self) -> dict:
         j = {"name": self.name, "grants": [g.to_json() for g in self.grants]}
@@ -123,12 +343,20 @@ class ParticipantToken:
         if "kid" in data:
             api_key_id = data.pop("kid")
 
+        if "version" in data:
+            version = data.pop("version")
+
+        else:
+            # did not encode a version prior to 0.5.3
+            version = "0.5.3"
+
         return ParticipantToken(
             name=name,
             project_id=project_id,
             api_key_id=api_key_id,
             grants=[ParticipantGrant.from_json(g) for g in grants],
             extra_payload=data,
+            version=version,
         )
 
     @staticmethod
