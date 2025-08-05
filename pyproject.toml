@@ -7,7 +7,7 @@ name = "meshagent-api"
 dynamic = ["version", "readme"]
 description = "Python Server API for Meshagent"
 license = "Apache-2.0"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 keywords = []
 dependencies = [
   "pyjwt~=2.10",
