@@ -18,7 +18,7 @@ class AgentsGrant(BaseModel):
 
 
 class LivekitGrant(BaseModel):
-    breakout_rooms: list[str] = Optional[None]
+    breakout_rooms: Optional[list[str]] = None
 
     def can_join_breakout_room(self, name: str):
         return self.breakout_rooms is None or name in self.breakout_rooms
@@ -164,17 +164,17 @@ class ContainersGrant(BaseModel):
             return True
 
         for t in self.pull:
-            if tag.startswith(t):
+            if tag == t or tag.startswith(t.removesuffix("*")):
                 return True
 
         return False
 
     def can_run(self, tag: str):
-        if self.pull is None:
+        if self.run is None:
             return True
 
-        for t in self.pull:
-            if tag.startswith(t):
+        for t in self.run:
+            if tag == t or tag.startswith(t.removesuffix("*")):
                 return True
 
         return False
