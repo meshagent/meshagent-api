@@ -133,7 +133,8 @@ class ServiceMetadata(BaseModel):
     repo: Optional[str] = None
     icon: Optional[str] = None
     image: Optional[str] = None
-   
+
+
 class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
