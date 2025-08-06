@@ -4,9 +4,10 @@ from typing import Optional, List
 from datetime import datetime
 import json
 from pydantic import BaseModel
-
+import logging
 from .version import __version__
 
+logger = logging.getLogger("participant-token")
 
 class AgentsGrant(BaseModel):
     register_agent: bool = True
@@ -208,7 +209,7 @@ class AdminGrant(BaseModel):
         return False
 
 
-class ApiGrant(BaseModel):
+class ApiScope(BaseModel):
     livekit: Optional[LivekitGrant] = None
     queues: Optional[QueuesGrant] = None
     messaging: Optional[MessagingGrant] = None
@@ -221,8 +222,8 @@ class ApiGrant(BaseModel):
     admin: Optional[AdminGrant] = None
 
     @staticmethod
-    def full():
-        return ApiGrant(
+    def agent_default() -> 'ApiScope':
+        return ApiScope(
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
@@ -232,26 +233,39 @@ class ApiGrant(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
-            # Don't grant admin access
-            admin=None,
+        )
+    
+    @staticmethod
+    def full() -> 'ApiScope':
+        return ApiScope(
+            livekit=LivekitGrant(),
+            queues=QueuesGrant(),
+            messaging=MessagingGrant(),
+            database=DatabaseGrant(),
+            sync=SyncGrant(),
+            storage=StorageGrant(),
+            containers=ContainersGrant(),
+            developer=DeveloperGrant(),
+            agents=AgentsGrant(),
+            admin=AdminGrant(),
         )
 
 
 class ParticipantGrant:
-    def __init__(self, *, name: str, scope: Optional[str | ApiGrant] = None):
+    def __init__(self, *, name: str, scope: Optional[str | ApiScope] = None):
         self.name = name
         self.scope = scope
 
     def to_json(self) -> dict:
         return {
             "name": self.name,
-            "scope": self.scope.model_dump_json() if self.name == "api" else self.scope,
+            "scope": self.scope.model_dump() if self.name == "api" else self.scope,
         }
 
     @staticmethod
     def from_json(data: dict) -> "ParticipantGrant":
         if data["name"] == "api":
-            scope = ApiGrant.model_validate(data["scope"])
+            scope = ApiScope.model_validate(data["scope"])
         else:
             scope = data["scope"]
 
@@ -308,21 +322,21 @@ class ParticipantToken:
     def add_room_grant(self, room_name: str):
         self.grants.append(ParticipantGrant(name="room", scope=room_name))
 
-    def add_api_grant(self, grant: ApiGrant):
+    def add_api_grant(self, grant: ApiScope):
         self.grants.append(ParticipantGrant(name="api", scope=grant))
 
-    def grant_scope(self, name: str) -> str | ApiGrant | None:
+    def grant_scope(self, name: str) -> str | ApiScope | None:
         for g in self.grants:
             if g.name == name:
                 return g.scope
 
         return None
 
-    def get_api_grant(self) -> ApiGrant | None:
+    def get_api_grant(self) -> ApiScope | None:
         api = self.grant_scope("api")
         if self.version <= "0.5.3" and api is None:
             # <= 0.5.3 did not use fine grained tokens and should default api access on
-            return ApiGrant(
+            return ApiScope(
                 livekit=LivekitGrant(),
                 queues=QueuesGrant(),
                 messaging=MessagingGrant(),
@@ -352,6 +366,17 @@ class ParticipantToken:
     def to_jwt(
         self, *, token: Optional[str] = None, expiration: Optional[datetime] = None
     ) -> str:
+        
+        api_grant = None
+        for g in self.grants:
+            if isinstance(g, ApiScope):
+                api_grant = g
+                break
+
+        if api_grant is None and self.version > "0.3.5":
+            logger.warning("there is no ApiScope in the participant token, this participant will not be able to make calls to the the room API. Use add_api_grant to add an ApiScope to this token.")
+
+
         extra_payload = self.extra_payload
         if extra_payload is None:
             extra_payload = {}

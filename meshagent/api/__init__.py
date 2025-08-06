@@ -18,7 +18,7 @@ from .room_server_client import (
     StorageEntry,
     AgentDescription,
 )
-from .participant_token import ParticipantToken, ParticipantGrant
+from .participant_token import ParticipantToken, ParticipantGrant, ApiScope
 from .participant import Participant
 from .schema import (
     MeshSchema,
@@ -66,6 +66,7 @@ __all__ = [
     AgentDescription,
     ParticipantToken,
     ParticipantGrant,
+    ApiScope,
     Participant,
     MeshSchema,
     ElementType,

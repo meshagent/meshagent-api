@@ -16,7 +16,7 @@ from .participant_token import (  # noqa: E402, F401
     StorageGrant,
     StoragePathGrant,
     ContainersGrant,
-    ApiGrant,
+    ApiScope,
     ParticipantToken,
 )
 
@@ -141,7 +141,7 @@ def test_participant_token_role_and_is_user() -> None:
 def test_get_api_grant_defaults_to_full_for_old_versions() -> None:
     pt = ParticipantToken(name="bob", version="0.5.3")
     api = pt.get_api_grant()
-    assert isinstance(api, ApiGrant) and api.queues and api.sync
+    assert isinstance(api, ApiScope) and api.queues and api.sync
 
 
 def test_token_json_round_trip() -> None:
