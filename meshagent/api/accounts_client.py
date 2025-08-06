@@ -174,7 +174,6 @@ class AccountsClient:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
-    
 
     async def upload(self, *, project_id: str, path: str, data: bytes) -> None:
         """Upload a file to project storage.
