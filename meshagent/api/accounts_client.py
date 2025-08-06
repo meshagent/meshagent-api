@@ -174,6 +174,53 @@ class AccountsClient:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
+    
+
+    async def upload(self, *, project_id: str, path: str, data: bytes) -> None:
+        """Upload a file to project storage.
+
+        Corresponds to: **POST /projects/:project_id/storage/upload**
+        Query params: `path`
+        Body: raw binary data (bytes)
+        Raises RoomException on HTTP >= 400.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/storage/upload"
+        params = {"path": path}
+
+        async with self._session.post(
+            url,
+            params=params,
+            headers={**self._get_headers(), "Content-Type": "application/octet-stream"},
+            data=data,
+        ) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RoomException(
+                    f"Failed to upload file. Status code: {resp.status}, body: {body}"
+                )
+
+    async def download(self, *, project_id: str, path: str) -> bytes:
+        """Download a file from project storage.
+
+        Corresponds to: **POST /projects/:project_id/storage/download** (HTTP GET in client)
+        Query params: `path`
+        Returns raw bytes of the file.
+        Raises NotFoundException for 404, RoomException for other HTTP errors.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/storage/download"
+        params = {"path": path}
+
+        async with self._session.get(
+            url, params=params, headers=self._get_headers()
+        ) as resp:
+            if resp.status == 404:
+                raise RoomException("file was not found")
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RoomException(
+                    f"Failed to download file. Status code: {resp.status}, body: {body}"
+                )
+            return await resp.read()
 
     async def get_project_role(self, project_id: str) -> ProjectRole:
         """
