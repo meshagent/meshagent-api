@@ -170,3 +170,31 @@ def test_token_expiration() -> None:
     token = pt.to_jwt(token=secret, expiration=exp)
     decoded = jwt.decode(token, key=secret, algorithms=["HS256"])
     assert abs(decoded["exp"] - int(exp.timestamp())) < 2  # within clock skew
+
+
+def test_legacy_token():
+    token = ParticipantToken.from_json(
+        {
+            "name": "72c17196-3f2d-4444-a55b-39825e35cbb7",
+            "grants": [
+                {"name": "room", "scope": "44bb91aa-2555-4487-8173-580027a87558"}
+            ],
+            "sub": "2",
+        }
+    )
+
+    assert token.version == "0.5.3"
+    api = token.get_api_grant()
+    assert api is not None
+    assert api.storage is not None
+    assert api.livekit is not None
+    assert api.agents is not None
+    assert api.developer is not None
+    assert api.database is not None
+    assert api.messaging is not None
+    assert api.queues is not None
+    assert api.containers is None
+    assert api.admin is None
+    assert token.grant_scope("room") == "44bb91aa-2555-4487-8173-580027a87558"
+    assert token.name == "72c17196-3f2d-4444-a55b-39825e35cbb7"
+    assert api.storage.can_read("/test")

@@ -322,7 +322,16 @@ class ParticipantToken:
         api = self.grant_scope("api")
         if self.version <= "0.5.3" and api is None:
             # <= 0.5.3 did not use fine grained tokens and should default api access on
-            return ApiGrant.full()
+            return ApiGrant(
+                livekit=LivekitGrant(),
+                queues=QueuesGrant(),
+                messaging=MessagingGrant(),
+                database=DatabaseGrant(),
+                sync=SyncGrant(),
+                storage=StorageGrant(),
+                agents=AgentsGrant(),
+                developer=DeveloperGrant(),
+            )
 
         return api
 
@@ -334,6 +343,9 @@ class ParticipantToken:
 
         if self.api_key_id is not None:
             j["kid"] = self.api_key_id
+
+        if self.version is not None:
+            j["version"] = self.version
 
         return j
 
