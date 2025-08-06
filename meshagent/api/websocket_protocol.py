@@ -53,26 +53,21 @@ class WebSocketClientProtocol(ClientProtocol):
         return self
 
     async def _ws_recv(self):
-        try:
-            async for msg in self._ws:
-                if msg.type == WSMsgType.BINARY:
-                    self.receive_packet(msg.data)
-                elif msg.type == WSMsgType.CLOSED:
-                    break
-                elif msg.type == WSMsgType.ERROR:
-                    break
-                else:
-                    raise (Exception("Unexpected message type"))
-        except asyncio.CancelledError:
-            pass
-
-        self.close()
+        async for msg in self._ws:
+            if msg.type == WSMsgType.BINARY:
+                self.receive_packet(msg.data)
+            elif msg.type == WSMsgType.CLOSED:
+                break
+            elif msg.type == WSMsgType.ERROR:
+                break
+            else:
+                raise (Exception("Unexpected message type"))
 
     async def __aexit__(self, exc_type, exc, tb):
         if not self._ws.closed:
             await self._ws.close()
 
-        self._ws_recv_task.cancel()
+        await self._ws_recv_task
         await self._session.__aexit__(exc_type, exc, tb)
         await self._ws_ctx.__aexit__(exc_type, exc, tb)
         await super().__aexit__(exc_type, exc, tb)
@@ -114,10 +109,8 @@ class WebSocketServerProtocol(Protocol):
                     break
                 else:
                     raise (Exception("Unexpected message type"))
-        except asyncio.CancelledError:
-            pass
-
-        self.close()
+        finally:
+            self.close()
 
     async def __aexit__(self, exc_type, exc, tb):
         if not self.socket.closed:

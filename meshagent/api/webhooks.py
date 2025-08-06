@@ -150,7 +150,7 @@ class WebhookServer:
                     decoded_jwt: dict = jwt.decode(
                         raw_jwt, key=self._webhook_secret, algorithms=["HS256"]
                     )
-                except Exception as e:
+                except jwt.exceptions.PyJWTError as e:
                     logger.warning("invalid jwt", exc_info=e)
                     raise web.HTTPUnauthorized(reason="invalid jwt")
 
@@ -196,6 +196,9 @@ class WebhookServer:
                 await self.on_webhook(payload=req)
 
                 return web.json_response({"ok": True})
+
+        except asyncio.CancelledError:
+            raise
 
         except Exception as ex:
             logger.error("unable to establish connection to agent %s", ex, exc_info=ex)

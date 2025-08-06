@@ -84,11 +84,9 @@ class ServiceHost:
 
     async def _stop_server(self):
         await self._site.stop()
-        await self._runner.cleanup()
 
         self._app = None
         self._site = None
-        self._runner = None
 
     def _create_host(self, p: ServicePath):
         supports_websockets = self._supports_websockets
@@ -113,7 +111,21 @@ class ServiceHost:
                     validate_webhook_secret=validate_webhook_secret,
                 )
 
+                self._done = asyncio.Future()
+                self._tasks = list[asyncio.Task]()
+
                 self._supports_websockets = supports_websockets
+
+            async def stop(self):
+                self._done.set_result(True)
+
+                logger.debug("waiting for service host tasks to complete")
+
+                await asyncio.gather(*self._tasks)
+
+                logger.debug("service host tasks completed")
+
+                await super().stop()
 
             async def _spawn(
                 self,
@@ -124,21 +136,24 @@ class ServiceHost:
                 arguments: Optional[dict] = None,
             ):
                 async def run():
+                    logger.debug("service host runner started")
                     async with RoomClient(
                         protocol=WebSocketClientProtocol(url=room_url, token=token)
                     ) as room:
-                        await self.on_call_answered(room=room)
+                        task = asyncio.create_task(self.on_call_answered(room=room))
 
-                def on_done(task: asyncio.Task):
-                    try:
-                        task.result()
-                    except Exception as e:
-                        logger.error(
-                            f"Unable to call service endpoint: {e}", exc_info=e
+                        await asyncio.wait(
+                            [
+                                asyncio.wrap_future(self._done),
+                                task,
+                            ],
+                            return_when=asyncio.FIRST_COMPLETED,
                         )
 
+                        logger.debug("service host runner completed")
+
                 task = asyncio.create_task(run())
-                task.add_done_callback(on_done)
+                self._tasks.append(task)
 
             async def on_call_answered(self, room: RoomClient):
                 dismissed = asyncio.Future()
@@ -199,11 +214,19 @@ class ServiceHost:
         await self._start_server()
 
     async def stop(self):
+        logger.debug("stopping service host")
         await self._stop_server()
+
+        logger.debug("stopping hosted ports")
 
         await asyncio.gather(*map(lambda x: x.stop(), self._hosts))
 
+        logger.debug("cleaning up runner")
+        await self._runner.cleanup()
+        self._runner = None
         self._hosts = None
+
+        logger.debug("service host stopped")
 
     async def run(self):
         await self.start()
@@ -253,6 +276,9 @@ async def send_webhook(
         async with session.post(url, headers=headers, data=payload) as resp:
             try:
                 resp.raise_for_status()
+
+            except asyncio.CancelledError:
+                raise
 
             except Exception as e:
                 logger.warning("webhook call failed %s %s", event, url, exc_info=e)

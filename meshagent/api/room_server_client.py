@@ -415,6 +415,10 @@ class SyncClient:
             self._connecting_documents.pop(path)
 
             logger.info("Connected to %s", path)
+
+        except asyncio.CancelledError:
+            raise
+
         except Exception as e:
             connecting_fut.set_exception(e)
             self._connecting_documents.pop(path)
@@ -1120,6 +1124,9 @@ class MessagingClient:
                 )
                 msg.fut.set_result(True)
 
+            except asyncio.CancelledError:
+                raise
+
             except Exception as ex:
                 logger.info("Unable to send message to participant", exc_info=ex)
                 msg.fut.set_exception(ex)
@@ -1244,6 +1251,7 @@ class MessagingClient:
         def on_send_complete(task: asyncio.Task):
             try:
                 task.result()
+
             except Exception as e:
                 logger.warning("unable to send stream response", exc_info=e)
 
@@ -1289,6 +1297,9 @@ class MessagingClient:
                 )
             )
             send.add_done_callback(on_send_complete)
+
+        except asyncio.CancelledError:
+            raise
 
         except Exception as e:
             logger.info(f"rejecting stream {stream_id}")

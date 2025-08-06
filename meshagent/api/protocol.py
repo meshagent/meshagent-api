@@ -69,9 +69,8 @@ class Protocol:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.close()
-
-        await asyncio.gather(self._main_task)
-        return
+        if not self._main_task.cancelled():
+            await self._main_task
 
     def unregister_handler(self, type: str, fn: Callable) -> None:
         assert self._handlers[type] == fn
@@ -110,6 +109,10 @@ class Protocol:
             fut = fn(self, message_id, type, data)
             if inspect.isawaitable(fut):
                 await fut
+
+        except asyncio.CancelledError:
+            raise
+
         except Exception as e:
             logger.error("error while invoking handler %s", type, exc_info=e)
 
@@ -269,7 +272,8 @@ class Protocol:
 
             await asyncio.gather(*tasks)
         finally:
-            self._done_fut.set_result(True)
+            if not self._done_fut.cancelled():
+                self._done_fut.set_result(True)
 
 
 class ClientProtocol(Protocol):

@@ -103,6 +103,8 @@ class Chan(Generic[T]):
                 await g
             except ChanClosed:
                 raise
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 g.cancel()
                 with contextlib.suppress(ValueError):
