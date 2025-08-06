@@ -369,7 +369,7 @@ class ParticipantToken:
     ) -> str:
         api_grant = None
         for g in self.grants:
-            if isinstance(g, ApiScope):
+            if g.name == "api":
                 api_grant = g
                 break
 
