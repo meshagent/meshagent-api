@@ -9,6 +9,7 @@ from .version import __version__
 
 logger = logging.getLogger("participant-token")
 
+
 class AgentsGrant(BaseModel):
     register_agent: bool = True
     register_public_toolkit: bool = True
@@ -222,7 +223,7 @@ class ApiScope(BaseModel):
     admin: Optional[AdminGrant] = None
 
     @staticmethod
-    def agent_default() -> 'ApiScope':
+    def agent_default() -> "ApiScope":
         return ApiScope(
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
@@ -234,9 +235,9 @@ class ApiScope(BaseModel):
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
         )
-    
+
     @staticmethod
-    def full() -> 'ApiScope':
+    def full() -> "ApiScope":
         return ApiScope(
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
@@ -366,7 +367,6 @@ class ParticipantToken:
     def to_jwt(
         self, *, token: Optional[str] = None, expiration: Optional[datetime] = None
     ) -> str:
-        
         api_grant = None
         for g in self.grants:
             if isinstance(g, ApiScope):
@@ -374,8 +374,9 @@ class ParticipantToken:
                 break
 
         if api_grant is None and self.version > "0.3.5":
-            logger.warning("there is no ApiScope in the participant token, this participant will not be able to make calls to the the room API. Use add_api_grant to add an ApiScope to this token.")
-
+            logger.warning(
+                "there is no ApiScope in the participant token, this participant will not be able to make calls to the the room API. Use add_api_grant to add an ApiScope to this token."
+            )
 
         extra_payload = self.extra_payload
         if extra_payload is None:
