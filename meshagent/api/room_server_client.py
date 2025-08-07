@@ -742,7 +742,11 @@ class LivekitClient:
 
 class StorageEntry:
     def __init__(
-        self, name: str, is_folder: bool, created_at: datetime, updated_at: datetime
+        self,
+        name: str,
+        is_folder: bool,
+        created_at: Optional[datetime] = None,
+        updated_at: Optional[datetime] = None,
     ):
         self.name = name
         self.is_folder = is_folder
