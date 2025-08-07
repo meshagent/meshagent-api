@@ -2,7 +2,18 @@ from meshagent.api.protocol import Protocol, ClientProtocol
 import json
 import asyncio
 import logging
-from typing import Optional, Callable, Dict, List, Any, Literal, Generic, TypeVar
+from pydantic import BaseModel, Field
+from typing import (
+    Optional,
+    Callable,
+    Dict,
+    List,
+    Any,
+    Literal,
+    Generic,
+    TypeVar,
+    AsyncIterator,
+)
 
 from meshagent.api.messaging import Request
 from meshagent.api.runtime import runtime, RuntimeDocument
@@ -1904,3 +1915,592 @@ class DatabaseClient:
             return response.json["indexes"]
 
         raise RoomException("unexpected return type")
+
+
+class ProgressDetail(BaseModel):
+    current: Optional[int] = None
+    total: Optional[int] = None
+
+
+class LogProgress(BaseModel):
+    layer: Optional[str] = None
+    message: Optional[str] = None
+    current: Optional[int] = None
+    total: Optional[int] = None
+
+
+class DockerImage(BaseModel):
+    id: Optional[str] = Field(default=None, alias="Id")
+    repo_tags: Optional[List[str]] = Field(default=None, alias="RepoTags")
+    created: Optional[int] = Field(default=None, alias="Created")
+    size: Optional[int] = Field(default=None, alias="Size")
+
+    # Accept arbitrary extra fields from the server
+    class Config:
+        populate_by_name = True
+        extra = "allow"
+
+
+class BuildInfo(BaseModel):
+    request_id: str
+    status: Literal["running", "finished", "errored"]
+    error: Optional[str] = None
+    result: Optional[dict] = None
+
+
+class DockerSecret(BaseModel):
+    registry: Optional[str] = None
+    username: str
+    password: str
+
+
+class BuildSourceGit(BaseModel):
+    url: str
+    ref: str = "HEAD"
+
+
+class BuildSourceContext(BaseModel):
+    encoding: str = "gzip"
+    # If you want to pass raw context bytes via send_request(data=...), put it on the call site.
+    # This model is only for the JSON header portion.
+
+
+class BuildSourceRoom(BaseModel):
+    path: str
+
+
+class BuildSource(BaseModel):
+    git: Optional[BuildSourceGit] = None
+    context: Optional[BuildSourceContext] = None
+    room: Optional[BuildSourceRoom] = None
+
+
+class BuildRequest(BaseModel):
+    tag: str
+    request_id: str
+    git: Optional[BuildSourceGit] = None
+    context: Optional[BuildSourceContext] = None
+    room: Optional[BuildSourceRoom] = None
+    credentials: List[DockerSecret] = Field(default_factory=list)
+
+
+class ImagePullRequest(BaseModel):
+    request_id: str
+    tag: str
+    credentials: List[DockerSecret] = Field(default_factory=list)
+
+
+class ImagePullResult(BaseModel):
+    logs: List[str] = Field(default_factory=list)
+
+
+class RunRequest(BaseModel):
+    request_id: str
+    image: str
+    command: Optional[str] = None
+    env: Dict[str, str] = Field(default_factory=dict)
+    mount_path: Optional[str] = None
+    mount_subpath: Optional[str] = None
+    role: Optional[str] = None
+    participant_name: Optional[str] = None
+    ports: Dict[int, int] = Field(default_factory=dict)
+    credentials: List[DockerSecret] = Field(default_factory=list)
+    tty: Optional[bool] = None
+    detach: bool = True
+    variables: Optional[Dict[str, str]] = None
+
+
+class ContainerRunResult(BaseModel):
+    status: str
+    logs: List[str] = Field(default_factory=list)
+
+
+class RoomContainer(BaseModel):
+    id: str
+    image: Optional[str] = None
+    status: Optional[str] = None
+
+    # Accept arbitrary extras (names, created, state, etc.)
+    class Config:
+        extra = "allow"
+
+
+# ---------------------------
+# LogStream (awaitable + async generators)
+# ---------------------------
+
+T = TypeVar("T")
+
+
+class LogStream(Generic[T]):
+    """
+    - await stream: waits for final result (T or None)
+    - stream.logs(): async iterator of text lines
+    - stream.progress(): async iterator of LogProgress
+    - stream.cancel(): cancels on server
+    """
+
+    def __init__(
+        self,
+        *,
+        result_fut: asyncio.Future,
+        logs_q: asyncio.Queue[str],
+        progress_q: asyncio.Queue[LogProgress],
+        cancel_cb: Callable[[], asyncio.Future[Any]],
+    ):
+        self._result_fut = result_fut
+        self._logs_q = logs_q
+        self._progress_q = progress_q
+        self._cancel_cb = cancel_cb
+
+    def __await__(self):
+        return self._result_fut.__await__()
+
+    async def cancel(self):
+        await self._cancel_cb()
+
+    async def logs(self) -> AsyncIterator[str]:
+        while True:
+            line = await self._logs_q.get()
+            if line is None:  # sentinel
+                return
+            yield line
+
+    async def progress(self) -> AsyncIterator[LogProgress]:
+        while True:
+            p = await self._progress_q.get()
+            if p is None:  # sentinel
+                return
+            yield p
+
+
+# ---------------------------
+# Container TTY
+# ---------------------------
+
+
+class ContainerTTY:
+    """
+    Provides async stdout/stderr streams for an interactive container session.
+    """
+
+    def __init__(self, *, room: RoomClient, request_id: str):
+        self._room = room
+        self._request_id = request_id
+        self._stdout_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self._stderr_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self._closed = asyncio.Future()
+        self._closed.set_running_or_notify_cancel()  # flipped to done on close
+
+    @property
+    def request_id(self):
+        return self._request_id
+
+    async def write(self, data: bytes) -> None:
+        # If server supports TTY input; adjust route name if different.
+        await self._room.send_request(
+            "containers.tty.input",
+            {"request_id": self._request_id},
+            data=data,
+        )
+
+    async def stdout(self) -> AsyncIterator[bytes]:
+        while True:
+            chunk = await self._stdout_q.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    async def stderr(self) -> AsyncIterator[bytes]:
+        while True:
+            chunk = await self._stderr_q.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    # Internal
+    def _push_stdout(self, data: bytes):
+        self._stdout_q.put_nowait(data)
+
+    def _push_stderr(self, data: bytes):
+        self._stderr_q.put_nowait(data)
+
+    def _close(self, status: str):
+        if not self._closed.done():
+            self._closed.set_result(status)
+        self._stdout_q.put_nowait(None)
+        self._stderr_q.put_nowait(None)
+
+    def _close_error(self, error: Exception):
+        if not self._closed.done():
+            self._closed.set_exception(error)
+        self._stdout_q.put_nowait(None)
+        self._stderr_q.put_nowait(None)
+
+
+# ---------------------------
+# ContainersClient
+# ---------------------------
+
+
+class ContainersClient:
+    def __init__(self, *, room: RoomClient):
+        self.room = room
+        # Hook server -> client events
+        self.room.protocol.register_handler(
+            "containers.log.chunk", self._handle_log_chunk
+        )
+        self.room.protocol.register_handler(
+            "containers.tty.chunk", self._handle_tty_chunk
+        )
+        self.room.protocol.register_handler(
+            "containers.progress", self._handle_progress
+        )
+
+        # Per-request routing
+        self._loggers: Dict[str, asyncio.Queue[Optional[str]]] = {}
+        self._progress: Dict[str, asyncio.Queue[Optional[LogProgress]]] = {}
+        self._ttys: Dict[str, ContainerTTY] = {}
+
+    # ---- Event handlers ----
+
+    async def _handle_log_chunk(
+        self, protocol: Protocol, message_id: int, typ: str, data: bytes
+    ):
+        header, _ = unpack_message(data)
+        req_id = header["request_id"]
+        log_line = header.get("log", "")
+        q = self._loggers.get(req_id)
+        if q:
+            q.put_nowait(str(log_line))
+
+    async def _handle_tty_chunk(
+        self, protocol: Protocol, message_id: int, typ: str, data: bytes
+    ):
+        header, payload = unpack_message(data)
+        req_id: str = header["request_id"]
+        channel: int = int(header["channel"])
+        tty = self._ttys.get(req_id)
+        if tty is None:
+            return  # tty closed or missing
+        if channel == 0:
+            tty._push_stdout(payload)
+        elif channel == 1:
+            tty._push_stderr(payload)
+
+    async def _handle_progress(
+        self, protocol: Protocol, message_id: int, typ: str, data: bytes
+    ):
+        header, _ = unpack_message(data)
+        req_id = header["request_id"]
+        detail = header.get("detail") or {}
+        lp = LogProgress(
+            layer=header.get("layer"),
+            message=header.get("message"),
+            current=(detail.get("current") if detail else None),
+            total=(detail.get("total") if detail else None),
+        )
+        pq = self._progress.get(req_id)
+        if pq:
+            pq.put_nowait(lp)
+
+    # ---- High-level API ----
+
+    async def list_builds(self) -> List[BuildInfo]:
+        res = await self.room.send_request("containers.list_builds", {})
+        builds = res["builds"]
+        return [BuildInfo(**b) for b in builds]
+
+    async def stop_build(self, *, request_id: str) -> None:
+        await self.room.send_request(
+            "containers.stop_build", {"request_id": request_id}
+        )
+
+    async def list_images(self) -> List[DockerImage]:
+        res = await self.room.send_request("containers.list_images", {})
+        imgs = res["images"]
+        return [DockerImage.model_validate(i) for i in imgs]
+
+    async def delete_image(self, *, image: str) -> None:
+        await self.room.send_request("containers.delete_image", {"image": image})
+
+    # ---- Streaming helpers ----
+
+    def _make_stream(
+        self,
+        *,
+        cancel_cb: Callable[[], asyncio.Future[Any]],
+        result_fut: asyncio.Future,
+        request_id: str,
+    ) -> LogStream:
+        logs_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+        prog_q: asyncio.Queue[Optional[LogProgress]] = asyncio.Queue()
+        self._loggers[request_id] = logs_q
+        self._progress[request_id] = prog_q
+        return LogStream(
+            result_fut=result_fut, logs_q=logs_q, progress_q=prog_q, cancel_cb=cancel_cb
+        )
+
+    def _finish_stream(
+        self, request_id: str, *, close_logs: bool = True, close_progress: bool = True
+    ):
+        ql = self._loggers.pop(request_id, None)
+        if ql and close_logs:
+            ql.put_nowait(None)
+        qp = self._progress.pop(request_id, None)
+        if qp and close_progress:
+            qp.put_nowait(None)
+
+    # ---- Build ----
+
+    def build(
+        self,
+        *,
+        tag: str,
+        source: BuildSource,
+        credentials: List[DockerSecret] | None = None,
+        context_bytes: Optional[bytes] = None,  # optional raw tar.gz to send
+    ) -> LogStream[None]:
+        request_id = uuid.uuid4().hex
+        result_fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+        async def cancel():
+            await self.room.send_request(
+                "containers.stop_build", {"request_id": request_id}
+            )
+
+        stream = self._make_stream(
+            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
+        )
+
+        req = BuildRequest(
+            tag=tag,
+            request_id=request_id,
+            git=source.git,
+            room=source.room,
+            context=source.context,
+            credentials=credentials or [],
+        )
+
+        async def _run():
+            try:
+                await self.room.send_request(
+                    "containers.build",
+                    req.model_dump(by_alias=True, exclude_none=True),
+                    data=context_bytes if (source.context and context_bytes) else None,
+                )
+                self._finish_stream(request_id)
+                result_fut.set_result(None)
+            except Exception as e:
+                self._finish_stream(request_id)
+                if not result_fut.done():
+                    result_fut.set_exception(e)
+
+        asyncio.create_task(_run())
+        return stream
+
+    # ---- Pull Image ----
+
+    def pull_image(
+        self, *, tag: str, credentials: List[DockerSecret] | None = None
+    ) -> LogStream[ImagePullResult]:
+        request_id = uuid.uuid4().hex
+        result_fut: asyncio.Future[ImagePullResult] = (
+            asyncio.get_event_loop().create_future()
+        )
+
+        async def cancel():
+            # mirrors Dart's stop_logs use; adjust to your server if different
+            await self.room.send_request(
+                "containers.stop_logs", {"request_id": request_id}
+            )
+
+        stream = self._make_stream(
+            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
+        )
+        req = ImagePullRequest(
+            request_id=request_id, tag=tag, credentials=credentials or []
+        )
+
+        async def _run():
+            try:
+                resp = await self.room.send_request(
+                    "containers.pull_image", req.model_dump()
+                )
+                if isinstance(resp, JsonResponse):
+                    logs = [str(x) for x in resp.json.get("logs", [])]
+                else:
+                    logs = [str(x) for x in resp.get("logs", [])]
+                self._finish_stream(request_id)
+                result_fut.set_result(ImagePullResult(logs=logs))
+            except Exception as e:
+                self._finish_stream(request_id)
+                if not result_fut.done():
+                    result_fut.set_exception(e)
+
+        asyncio.create_task(_run())
+        return stream
+
+    # ---- Run Container ----
+
+    def run(
+        self,
+        *,
+        image: str,
+        command: Optional[str] = None,
+        env: Dict[str, str] | None = None,
+        mount_path: Optional[str] = None,
+        mount_subpath: Optional[str] = None,
+        role: Optional[str] = None,
+        participant_name: Optional[str] = None,
+        ports: Dict[int, int] | None = None,
+        variables: Optional[Dict[str, str]] = None,
+        credentials: List[DockerSecret] | None = None,
+        detach: bool = True,
+    ) -> LogStream[ContainerRunResult]:
+        request_id = uuid.uuid4().hex
+        result_fut: asyncio.Future[ContainerRunResult] = (
+            asyncio.get_event_loop().create_future()
+        )
+
+        async def cancel():
+            await self.room.send_request(
+                "containers.stop_container", {"request_id": request_id}
+            )
+
+        stream = self._make_stream(
+            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
+        )
+
+        req = RunRequest(
+            request_id=request_id,
+            image=image,
+            command=command,
+            env=env or {},
+            mount_path=mount_path,
+            mount_subpath=mount_subpath,
+            role=role,
+            participant_name=participant_name,
+            ports=ports or {},
+            credentials=credentials or [],
+            detach=detach,
+            variables=variables,
+        )
+
+        async def _run():
+            try:
+                resp = await self.room.send_request(
+                    "containers.run", req.model_dump(exclude_none=True)
+                )
+                if isinstance(resp, JsonResponse):
+                    status = resp.json.get("status", "")
+                    logs = [str(x) for x in resp.json.get("logs", [])]
+                else:
+                    status = resp.get("status", "")
+                    logs = [str(x) for x in resp.get("logs", [])]
+                self._finish_stream(request_id)
+                result_fut.set_result(ContainerRunResult(status=status, logs=logs))
+            except Exception as e:
+                self._finish_stream(request_id)
+                if not result_fut.done():
+                    result_fut.set_exception(e)
+
+        asyncio.create_task(_run())
+        return stream
+
+    # ---- TTY ----
+
+    def tty(
+        self,
+        *,
+        image: str,
+        command: Optional[str] = None,
+        env: Dict[str, str] | None = None,
+        mount_path: Optional[str] = None,
+        mount_subpath: Optional[str] = None,
+        role: Optional[str] = None,
+        participant_name: Optional[str] = None,
+        ports: Dict[int, int] | None = None,
+        variables: Optional[Dict[str, str]] = None,
+        credentials: List[DockerSecret] | None = None,
+    ) -> ContainerTTY:
+        request_id = uuid.uuid4().hex
+
+        req = RunRequest(
+            request_id=request_id,
+            image=image,
+            command=command,
+            env=env or {},
+            mount_path=mount_path,
+            mount_subpath=mount_subpath,
+            role=role,
+            participant_name=participant_name,
+            ports=ports or {},
+            credentials=credentials or [],
+            tty=True,
+            detach=False,
+            variables=variables,
+        )
+
+        tty = ContainerTTY(room=self.room, request_id=request_id)
+        self._ttys[request_id] = tty
+
+        async def _run():
+            try:
+                resp = await self.room.send_request(
+                    "containers.run", req.model_dump(exclude_none=True)
+                )
+                # close TTY on completion
+                self._ttys.pop(request_id, None)
+                status = (
+                    resp.json["status"]
+                    if isinstance(resp, JsonResponse)
+                    else resp.get("status", "")
+                )
+                tty._close(status)
+            except Exception as e:
+                self._ttys.pop(request_id, None)
+                tty._close_error(e)
+
+        asyncio.create_task(_run())
+        return tty
+
+    # ---- Logs ----
+
+    def logs(self, *, container_id: str, follow: bool = False) -> LogStream[None]:
+        request_id = uuid.uuid4().hex
+        result_fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+        async def cancel():
+            await self.room.send_request(
+                "containers.stop_logs", {"request_id": request_id}
+            )
+
+        stream = self._make_stream(
+            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
+        )
+
+        async def _run():
+            try:
+                await self.room.send_request(
+                    "containers.logs",
+                    {"request_id": request_id, "id": container_id, "follow": follow},
+                )
+                self._finish_stream(request_id)
+                result_fut.set_result(None)
+            except Exception as e:
+                self._finish_stream(request_id)
+                if not result_fut.done():
+                    result_fut.set_exception(e)
+
+        asyncio.create_task(_run())
+        return stream
+
+    # ---- Misc ----
+
+    async def stop(self, *, container_id: str) -> None:
+        await self.room.send_request("containers.stop_container", {"id": container_id})
+
+    async def list(self) -> List[RoomContainer]:
+        res = await self.room.send_request("containers.list_containers", {})
+        return [RoomContainer(**c) for c in res["containers"]]
