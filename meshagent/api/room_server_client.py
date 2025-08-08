@@ -206,6 +206,7 @@ class RoomClient:
         self.developer = DeveloperClient(room=self)
         self.queues = QueuesClient(room=self)
         self.database = DatabaseClient(room=self)
+        self.containers = ContainersClient(room=self)
 
         self._room_url = None
         self._room_name = None
@@ -2011,7 +2012,8 @@ class RunRequest(BaseModel):
 
 
 class ContainerRunResult(BaseModel):
-    status: str
+    container_id: str
+    status: Optional[int] = None
     logs: List[str] = Field(default_factory=list)
 
 
@@ -2090,7 +2092,6 @@ class ContainerTTY:
         self._stdout_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._stderr_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._closed = asyncio.Future()
-        self._closed.set_running_or_notify_cancel()  # flipped to done on close
 
     @property
     def request_id(self):
@@ -2286,7 +2287,7 @@ class ContainersClient:
             try:
                 await self.room.send_request(
                     "containers.build",
-                    req.model_dump(by_alias=True, exclude_none=True),
+                    req.model_dump(mode="json", by_alias=True, exclude_none=True),
                     data=context_bytes if (source.context and context_bytes) else None,
                 )
                 self._finish_stream(request_id)
@@ -2393,13 +2394,17 @@ class ContainersClient:
                     "containers.run", req.model_dump(exclude_none=True)
                 )
                 if isinstance(resp, JsonResponse):
-                    status = resp.json.get("status", "")
+                    status = resp.json.get("status")
                     logs = [str(x) for x in resp.json.get("logs", [])]
                 else:
-                    status = resp.get("status", "")
+                    status = resp.get("status")
                     logs = [str(x) for x in resp.get("logs", [])]
                 self._finish_stream(request_id)
-                result_fut.set_result(ContainerRunResult(status=status, logs=logs))
+                result_fut.set_result(
+                    ContainerRunResult(
+                        container_id=resp["container_id"], status=status, logs=logs
+                    )
+                )
             except Exception as e:
                 self._finish_stream(request_id)
                 if not result_fut.done():
@@ -2450,6 +2455,7 @@ class ContainersClient:
                 resp = await self.room.send_request(
                     "containers.run", req.model_dump(exclude_none=True)
                 )
+
                 # close TTY on completion
                 self._ttys.pop(request_id, None)
                 status = (
