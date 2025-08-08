@@ -2045,18 +2045,27 @@ class LogStream(Generic[T]):
     def __init__(
         self,
         *,
-        result_fut: asyncio.Future,
-        logs_q: asyncio.Queue[str],
-        progress_q: asyncio.Queue[LogProgress],
+        task: asyncio.Task,
         cancel_cb: Callable[[], asyncio.Future[Any]],
     ):
-        self._result_fut = result_fut
-        self._logs_q = logs_q
-        self._progress_q = progress_q
+        self._logs_q = asyncio.Queue[Optional[str]]()
+        self._progress_q = asyncio.Queue[Optional[LogProgress]]()
+
         self._cancel_cb = cancel_cb
+        self._task = task
+
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, t):
+        self._logs_q.put_nowait(None)
+        self._progress_q.put_nowait(None)
+
+    @property
+    def result(self):
+        return asyncio.ensure_future(self._task)
 
     def __await__(self):
-        return self._result_fut.__await__()
+        return self.result.__await__()
 
     async def cancel(self):
         await self._cancel_cb()
@@ -2081,17 +2090,26 @@ class LogStream(Generic[T]):
 # ---------------------------
 
 
-class ContainerTTY:
+class Container:
     """
-    Provides async stdout/stderr streams for an interactive container session.
+    Provides async input/output streams for an interactive container session.
     """
 
-    def __init__(self, *, room: RoomClient, request_id: str):
+    def __init__(self, *, room: RoomClient, request_id: str, task: asyncio.Task):
         self._room = room
         self._request_id = request_id
-        self._stdout_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
-        self._stderr_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
-        self._closed = asyncio.Future()
+        self._output_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self._closed = asyncio.ensure_future(task)
+        self._task = task
+
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, t):
+        self._output_q.put_nowait(None)
+
+    @property
+    def result(self):
+        return self._closed
 
     @property
     def request_id(self):
@@ -2100,43 +2118,44 @@ class ContainerTTY:
     async def write(self, data: bytes) -> None:
         # If server supports TTY input; adjust route name if different.
         await self._room.send_request(
-            "containers.tty.input",
-            {"request_id": self._request_id},
+            "containers.container_input",
+            {"request_id": self._request_id, "channel": 1},
             data=data,
         )
 
-    async def stdout(self) -> AsyncIterator[bytes]:
+    async def resize(self, *, width: int, height: int) -> None:
+        """
+        Resize the TTY for the running container.
+        This sends a control message (channel 4) to adjust terminal dimensions.
+        """
+        await self._room.send_request(
+            "containers.container_input",
+            {
+                "request_id": self._request_id,
+                "channel": 4,
+                "width": width,
+                "height": height,
+            },
+        )
+
+    async def output(self) -> AsyncIterator[bytes]:
         while True:
-            chunk = await self._stdout_q.get()
+            chunk = await self._output_q.get()
             if chunk is None:
                 return
             yield chunk
 
-    async def stderr(self) -> AsyncIterator[bytes]:
-        while True:
-            chunk = await self._stderr_q.get()
-            if chunk is None:
-                return
-            yield chunk
+    async def kill(self):
+        # send a kill message on channel 5
+        await self._room.send_request(
+            "containers.container_input",
+            {"request_id": self._request_id, "channel": 5},
+            data={},
+        )
 
     # Internal
-    def _push_stdout(self, data: bytes):
-        self._stdout_q.put_nowait(data)
-
-    def _push_stderr(self, data: bytes):
-        self._stderr_q.put_nowait(data)
-
-    def _close(self, status: str):
-        if not self._closed.done():
-            self._closed.set_result(status)
-        self._stdout_q.put_nowait(None)
-        self._stderr_q.put_nowait(None)
-
-    def _close_error(self, error: Exception):
-        if not self._closed.done():
-            self._closed.set_exception(error)
-        self._stdout_q.put_nowait(None)
-        self._stderr_q.put_nowait(None)
+    def _push_output(self, data: bytes):
+        self._output_q.put_nowait(data)
 
 
 # ---------------------------
@@ -2152,16 +2171,14 @@ class ContainersClient:
             "containers.log.chunk", self._handle_log_chunk
         )
         self.room.protocol.register_handler(
-            "containers.tty.chunk", self._handle_tty_chunk
+            "containers.run.output", self._handle_container_run_chunk
         )
         self.room.protocol.register_handler(
             "containers.progress", self._handle_progress
         )
 
-        # Per-request routing
-        self._loggers: Dict[str, asyncio.Queue[Optional[str]]] = {}
-        self._progress: Dict[str, asyncio.Queue[Optional[LogProgress]]] = {}
-        self._ttys: Dict[str, ContainerTTY] = {}
+        self._ttys: Dict[str, Container] = {}
+        self._log_streams = dict[str, LogStream]()
 
     # ---- Event handlers ----
 
@@ -2171,23 +2188,24 @@ class ContainersClient:
         header, _ = unpack_message(data)
         req_id = header["request_id"]
         log_line = header.get("log", "")
-        q = self._loggers.get(req_id)
+        q = self._log_streams.get(req_id)
         if q:
-            q.put_nowait(str(log_line))
+            q._logs_q.put_nowait(str(log_line))
 
-    async def _handle_tty_chunk(
+    async def _handle_container_run_chunk(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
     ):
         header, payload = unpack_message(data)
+
         req_id: str = header["request_id"]
         channel: int = int(header["channel"])
         tty = self._ttys.get(req_id)
         if tty is None:
+            logger.warning("received output from missing container %s", req_id)
             return  # tty closed or missing
+
         if channel == 0:
-            tty._push_stdout(payload)
-        elif channel == 1:
-            tty._push_stderr(payload)
+            tty._push_output(payload)
 
     async def _handle_progress(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
@@ -2201,9 +2219,9 @@ class ContainersClient:
             current=(detail.get("current") if detail else None),
             total=(detail.get("total") if detail else None),
         )
-        pq = self._progress.get(req_id)
+        pq = self._log_streams.get(req_id)
         if pq:
-            pq.put_nowait(lp)
+            pq._progress_q.put_nowait(lp)
 
     # ---- High-level API ----
 
@@ -2231,26 +2249,18 @@ class ContainersClient:
         self,
         *,
         cancel_cb: Callable[[], asyncio.Future[Any]],
-        result_fut: asyncio.Future,
+        task: asyncio.Task,
         request_id: str,
     ) -> LogStream:
-        logs_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
-        prog_q: asyncio.Queue[Optional[LogProgress]] = asyncio.Queue()
-        self._loggers[request_id] = logs_q
-        self._progress[request_id] = prog_q
-        return LogStream(
-            result_fut=result_fut, logs_q=logs_q, progress_q=prog_q, cancel_cb=cancel_cb
-        )
+        log_stream = LogStream(cancel_cb=cancel_cb, task=task)
+        self._log_streams[request_id] = log_stream
 
-    def _finish_stream(
-        self, request_id: str, *, close_logs: bool = True, close_progress: bool = True
-    ):
-        ql = self._loggers.pop(request_id, None)
-        if ql and close_logs:
-            ql.put_nowait(None)
-        qp = self._progress.pop(request_id, None)
-        if qp and close_progress:
-            qp.put_nowait(None)
+        def _pop(t):
+            self._log_streams.pop(request_id)
+
+        task.add_done_callback(_pop)
+
+        return log_stream
 
     # ---- Build ----
 
@@ -2263,16 +2273,11 @@ class ContainersClient:
         context_bytes: Optional[bytes] = None,  # optional raw tar.gz to send
     ) -> LogStream[None]:
         request_id = uuid.uuid4().hex
-        result_fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
 
         async def cancel():
             await self.room.send_request(
                 "containers.stop_build", {"request_id": request_id}
             )
-
-        stream = self._make_stream(
-            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
-        )
 
         req = BuildRequest(
             tag=tag,
@@ -2284,20 +2289,17 @@ class ContainersClient:
         )
 
         async def _run():
-            try:
-                await self.room.send_request(
-                    "containers.build",
-                    req.model_dump(mode="json", by_alias=True, exclude_none=True),
-                    data=context_bytes if (source.context and context_bytes) else None,
-                )
-                self._finish_stream(request_id)
-                result_fut.set_result(None)
-            except Exception as e:
-                self._finish_stream(request_id)
-                if not result_fut.done():
-                    result_fut.set_exception(e)
+            await self.room.send_request(
+                "containers.build",
+                req.model_dump(mode="json", by_alias=True, exclude_none=True),
+                data=context_bytes if (source.context and context_bytes) else None,
+            )
+            return None
 
-        asyncio.create_task(_run())
+        stream = self._make_stream(
+            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
+        )
+
         return stream
 
     # ---- Pull Image ----
@@ -2306,9 +2308,6 @@ class ContainersClient:
         self, *, tag: str, credentials: List[DockerSecret] | None = None
     ) -> LogStream[ImagePullResult]:
         request_id = uuid.uuid4().hex
-        result_fut: asyncio.Future[ImagePullResult] = (
-            asyncio.get_event_loop().create_future()
-        )
 
         async def cancel():
             # mirrors Dart's stop_logs use; adjust to your server if different
@@ -2316,30 +2315,23 @@ class ContainersClient:
                 "containers.stop_logs", {"request_id": request_id}
             )
 
-        stream = self._make_stream(
-            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
-        )
         req = ImagePullRequest(
             request_id=request_id, tag=tag, credentials=credentials or []
         )
 
         async def _run():
-            try:
-                resp = await self.room.send_request(
-                    "containers.pull_image", req.model_dump()
-                )
-                if isinstance(resp, JsonResponse):
-                    logs = [str(x) for x in resp.json.get("logs", [])]
-                else:
-                    logs = [str(x) for x in resp.get("logs", [])]
-                self._finish_stream(request_id)
-                result_fut.set_result(ImagePullResult(logs=logs))
-            except Exception as e:
-                self._finish_stream(request_id)
-                if not result_fut.done():
-                    result_fut.set_exception(e)
+            resp = await self.room.send_request(
+                "containers.pull_image", req.model_dump()
+            )
+            if isinstance(resp, JsonResponse):
+                logs = [str(x) for x in resp.json.get("logs", [])]
+            else:
+                logs = [str(x) for x in resp.get("logs", [])]
+            return ImagePullResult(logs=logs)
 
-        asyncio.create_task(_run())
+        stream = self._make_stream(
+            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
+        )
         return stream
 
     # ---- Run Container ----
@@ -2357,21 +2349,13 @@ class ContainersClient:
         ports: Dict[int, int] | None = None,
         variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
-        detach: bool = True,
     ) -> LogStream[ContainerRunResult]:
         request_id = uuid.uuid4().hex
-        result_fut: asyncio.Future[ContainerRunResult] = (
-            asyncio.get_event_loop().create_future()
-        )
 
         async def cancel():
             await self.room.send_request(
                 "containers.stop_container", {"request_id": request_id}
             )
-
-        stream = self._make_stream(
-            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
-        )
 
         req = RunRequest(
             request_id=request_id,
@@ -2384,38 +2368,32 @@ class ContainersClient:
             participant_name=participant_name,
             ports=ports or {},
             credentials=credentials or [],
-            detach=detach,
+            detach=True,
             variables=variables,
         )
 
         async def _run():
-            try:
-                resp = await self.room.send_request(
-                    "containers.run", req.model_dump(exclude_none=True)
-                )
-                if isinstance(resp, JsonResponse):
-                    status = resp.json.get("status")
-                    logs = [str(x) for x in resp.json.get("logs", [])]
-                else:
-                    status = resp.get("status")
-                    logs = [str(x) for x in resp.get("logs", [])]
-                self._finish_stream(request_id)
-                result_fut.set_result(
-                    ContainerRunResult(
-                        container_id=resp["container_id"], status=status, logs=logs
-                    )
-                )
-            except Exception as e:
-                self._finish_stream(request_id)
-                if not result_fut.done():
-                    result_fut.set_exception(e)
+            resp = await self.room.send_request(
+                "containers.run", req.model_dump(exclude_none=True)
+            )
+            if isinstance(resp, JsonResponse):
+                status = resp.json.get("status")
+                logs = [str(x) for x in resp.json.get("logs", [])]
+            else:
+                status = resp.get("status")
+                logs = [str(x) for x in resp.get("logs", [])]
+            return ContainerRunResult(
+                container_id=resp["container_id"], status=status, logs=logs
+            )
 
-        asyncio.create_task(_run())
+        stream = self._make_stream(
+            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
+        )
         return stream
 
     # ---- TTY ----
 
-    def tty(
+    def run_attached(
         self,
         *,
         image: str,
@@ -2428,8 +2406,9 @@ class ContainersClient:
         ports: Dict[int, int] | None = None,
         variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
-    ) -> ContainerTTY:
-        request_id = uuid.uuid4().hex
+        tty: bool = False,
+    ) -> Container:
+        request_id = str(uuid.uuid4())
 
         req = RunRequest(
             request_id=request_id,
@@ -2442,64 +2421,55 @@ class ContainersClient:
             participant_name=participant_name,
             ports=ports or {},
             credentials=credentials or [],
-            tty=True,
+            tty=tty,
             detach=False,
             variables=variables,
         )
 
-        tty = ContainerTTY(room=self.room, request_id=request_id)
-        self._ttys[request_id] = tty
-
-        async def _run():
+        async def run():
             try:
                 resp = await self.room.send_request(
                     "containers.run", req.model_dump(exclude_none=True)
                 )
 
                 # close TTY on completion
-                self._ttys.pop(request_id, None)
+
                 status = (
                     resp.json["status"]
                     if isinstance(resp, JsonResponse)
                     else resp.get("status", "")
                 )
-                tty._close(status)
-            except Exception as e:
+                return status
+            finally:
                 self._ttys.pop(request_id, None)
-                tty._close_error(e)
 
-        asyncio.create_task(_run())
-        return tty
+        container = Container(
+            room=self.room, request_id=request_id, task=asyncio.create_task(run())
+        )
+        self._ttys[request_id] = container
+
+        return container
 
     # ---- Logs ----
 
     def logs(self, *, container_id: str, follow: bool = False) -> LogStream[None]:
         request_id = uuid.uuid4().hex
-        result_fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
 
         async def cancel():
             await self.room.send_request(
                 "containers.stop_logs", {"request_id": request_id}
             )
 
-        stream = self._make_stream(
-            cancel_cb=cancel, result_fut=result_fut, request_id=request_id
-        )
-
         async def _run():
-            try:
-                await self.room.send_request(
-                    "containers.logs",
-                    {"request_id": request_id, "id": container_id, "follow": follow},
-                )
-                self._finish_stream(request_id)
-                result_fut.set_result(None)
-            except Exception as e:
-                self._finish_stream(request_id)
-                if not result_fut.done():
-                    result_fut.set_exception(e)
+            await self.room.send_request(
+                "containers.logs",
+                {"request_id": request_id, "id": container_id, "follow": follow},
+            )
+            return None
 
-        asyncio.create_task(_run())
+        stream = self._make_stream(
+            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
+        )
         return stream
 
     # ---- Misc ----
