@@ -1930,16 +1930,13 @@ class LogProgress(BaseModel):
     total: Optional[int] = None
 
 
-class DockerImage(BaseModel):
-    id: Optional[str] = Field(default=None, alias="Id")
-    repo_tags: Optional[List[str]] = Field(default=None, alias="RepoTags")
-    created: Optional[int] = Field(default=None, alias="Created")
-    size: Optional[int] = Field(default=None, alias="Size")
-
-    # Accept arbitrary extra fields from the server
-    class Config:
-        populate_by_name = True
-        extra = "allow"
+class Image(BaseModel):
+    id: str
+    tags: List[str]
+    created: int
+    size: int
+    labels: Dict[str, str]
+    manifest: Optional[Any] = None
 
 
 class BuildInfo(BaseModel):
@@ -2235,10 +2232,10 @@ class ContainersClient:
             "containers.stop_build", {"request_id": request_id}
         )
 
-    async def list_images(self) -> List[DockerImage]:
+    async def list_images(self) -> List[Image]:
         res = await self.room.send_request("containers.list_images", {})
         imgs = res["images"]
-        return [DockerImage.model_validate(i) for i in imgs]
+        return [Image.model_validate(i) for i in imgs]
 
     async def delete_image(self, *, image: str) -> None:
         await self.room.send_request("containers.delete_image", {"image": image})
