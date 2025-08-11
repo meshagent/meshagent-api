@@ -13,6 +13,7 @@ from typing import (
     Generic,
     TypeVar,
     AsyncIterator,
+    Awaitable,
 )
 
 from meshagent.api.messaging import Request
@@ -35,6 +36,7 @@ import uuid
 from datetime import datetime
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 
 logger = logging.getLogger("room_server_client")
@@ -185,7 +187,14 @@ class _QueuedRoomMessage(RoomMessage):
 
 
 class RoomClient:
-    def __init__(self, *, protocol: ClientProtocol):
+    def __init__(
+        self,
+        *,
+        protocol: ClientProtocol,
+        oauth_token_request_handler: Optional[
+            Callable[["OAuthTokenRequest"], Awaitable]
+        ] = None,
+    ):
         self.protocol = protocol
         self.protocol.register_handler("room_ready", self._handle_ready)
         self.protocol.register_handler("room.status", self._handle_status)
@@ -207,6 +216,9 @@ class RoomClient:
         self.queues = QueuesClient(room=self)
         self.database = DatabaseClient(room=self)
         self.containers = ContainersClient(room=self)
+        self.secrets = SecretsClient(
+            room=self, oauth_token_request_handler=oauth_token_request_handler
+        )
 
         self._room_url = None
         self._room_name = None
@@ -268,8 +280,8 @@ class RoomClient:
     async def send_request(
         self, type: str, request: dict, data: bytes | None = None
     ) -> FileResponse | None | dict | str:
-        logger.info("sending request %s", type)
         request_id = self.protocol.next_message_id()
+        logger.debug("sending request %s %s", request_id, type)
 
         pr = _PendingRequest()
         self._pending_requests[request_id] = pr
@@ -277,7 +289,10 @@ class RoomClient:
         message = pack_message(header=request, data=data)
 
         await self.protocol.send(type=type, data=message, message_id=request_id)
-        return await pr.fut
+        result = await pr.fut
+        logger.debug("returning response %s", type)
+
+        return result
 
     async def _handle_status(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -300,8 +315,6 @@ class RoomClient:
     async def _handle_response(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
-        logger.info("received response %s", type)
-
         response = unpack_response(data=data)
 
         request_id = message_id
@@ -312,7 +325,7 @@ class RoomClient:
             else:
                 pr.fut.set_result(response)
         else:
-            logger.warning(
+            logger.error(
                 "received a response for a request that is not pending {id}".format(
                     id=request_id
                 )
@@ -2477,3 +2490,122 @@ class ContainersClient:
     async def list(self) -> List[RoomContainer]:
         res = await self.room.send_request("containers.list_containers", {})
         return [RoomContainer(**c) for c in res["containers"]]
+
+
+class _RequestOAuthTokenRequest(BaseModel):
+    authorization_endpoint: str
+    token_endpoint: str
+    participant_id: str
+    scopes: Optional[list[str]] = None
+    timeout: int = 60 * 5
+
+
+class _RequestOAuthTokenResponse(BaseModel):
+    access_token: str
+
+
+class OAuthCredentials(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    expiration: Optional[datetime] = None
+    scopes: Optional[list[str]] = None
+
+
+class _ClientRequestOAuthTokenRequest(BaseModel):
+    request_id: str
+    request: _RequestOAuthTokenRequest
+
+
+class _ClientRequestOAuthTokenResponse(BaseModel):
+    request_id: str
+    credentials: OAuthCredentials
+
+
+@dataclass
+class OAuthTokenRequest:
+    request_id: str
+    authorization_endpoint: str
+    token_endpoint: str
+    scopes: Optional[list[str]] = None
+
+
+class SecretsClient:
+    def __init__(
+        self,
+        *,
+        room: RoomClient,
+        oauth_token_request_handler: Optional[
+            Callable[[OAuthTokenRequest], Awaitable]
+        ] = None,
+    ):
+        self.room = room
+        # Hook server -> client events
+        self.room.protocol.register_handler(
+            "secrets.request_oauth_token", self._handle_client_oauth_token_request
+        )
+        self._oauth_token_request_handler = oauth_token_request_handler
+        self._pending_authorization_requests = []
+
+    async def _handle_client_oauth_token_request(
+        self, protocol: Protocol, message_id: int, type: str, data: bytes
+    ) -> None:
+        request, bytes = unpack_message(data=data)
+        req = _ClientRequestOAuthTokenRequest.model_validate(request)
+
+        if self._oauth_token_request_handler is None:
+            raise RoomException("No oauth token handler registered")
+
+        def on_done(t: asyncio.Task):
+            try:
+                t.result()
+            finally:
+                self._pending_authorization_requests.remove(t)
+
+        task = asyncio.create_task(
+            self._oauth_token_request_handler(
+                OAuthTokenRequest(
+                    request_id=req.request_id,
+                    authorization_endpoint=req.request.authorization_endpoint,
+                    token_endpoint=req.request.token_endpoint,
+                    scopes=req.request.scopes,
+                )
+            )
+        )
+        task.add_done_callback(on_done)
+        self._pending_authorization_requests.append(task)
+
+    async def provide_oauth_token(
+        self, *, request_id: str, credentials: OAuthCredentials
+    ):
+        credentials = _ClientRequestOAuthTokenResponse(
+            credentials=credentials, request_id=request_id
+        )
+
+        await self.room.send_request(
+            "secrets.provide_oauth_token", credentials.model_dump(mode="json")
+        )
+
+    async def request_oauth_token(
+        self,
+        *,
+        authorization_endpoint: str,
+        token_endpoint: str,
+        scopes: Optional[list[str]] = None,
+        timeout: int = 60 * 5,
+        from_participant_id: str,
+    ) -> str:
+        req = _RequestOAuthTokenRequest(
+            authorization_endpoint=authorization_endpoint,
+            token_endpoint=token_endpoint,
+            scopes=scopes,
+            timeout=timeout,
+            participant_id=from_participant_id,
+        )
+        response = await self.room.send_request(
+            "secrets.request_oauth_token", req.model_dump(mode="json")
+        )
+        if isinstance(response, JsonResponse):
+            resp = _RequestOAuthTokenResponse.model_validate(response.json)
+            return resp.access_token
+        else:
+            raise RoomException("Invalid response received, expected JsonResponse")
