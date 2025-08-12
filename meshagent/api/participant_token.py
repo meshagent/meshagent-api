@@ -367,6 +367,8 @@ class ParticipantToken:
                 storage=StorageGrant(),
                 agents=AgentsGrant(),
                 developer=DeveloperGrant(),
+                # TODO: this should be removed so you have to use fine grained tokens to enable, temp hack to unblock powerboards
+                containers=ContainersGrant(),
             )
 
         return api
