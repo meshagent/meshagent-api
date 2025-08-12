@@ -2493,8 +2493,10 @@ class ContainersClient:
 
 
 class _RequestOAuthTokenRequest(BaseModel):
+    client_id: str
     authorization_endpoint: str
     token_endpoint: str
+    client_secret: Optional[str]
     participant_id: str
     scopes: Optional[list[str]] = None
     timeout: int = 60 * 5
@@ -2518,7 +2520,7 @@ class _ClientRequestOAuthTokenRequest(BaseModel):
 
 class _ClientRequestOAuthTokenResponse(BaseModel):
     request_id: str
-    credentials: OAuthCredentials
+    code: str
 
 
 @dataclass
@@ -2574,27 +2576,31 @@ class SecretsClient:
         task.add_done_callback(on_done)
         self._pending_authorization_requests.append(task)
 
-    async def provide_oauth_token(
-        self, *, request_id: str, credentials: OAuthCredentials
+    async def provide_oauth_authorization(
+        self,
+        *,
+        request_id: str,
+        code: str,
     ):
-        credentials = _ClientRequestOAuthTokenResponse(
-            credentials=credentials, request_id=request_id
-        )
-
         await self.room.send_request(
-            "secrets.provide_oauth_token", credentials.model_dump(mode="json")
+            "secrets.provide_oauth_authorization",
+            {"code": code, "request_id": request_id},
         )
 
     async def request_oauth_token(
         self,
         *,
+        client_id: str,
         authorization_endpoint: str,
         token_endpoint: str,
+        client_secret: str,
         scopes: Optional[list[str]] = None,
         timeout: int = 60 * 5,
         from_participant_id: str,
     ) -> str:
         req = _RequestOAuthTokenRequest(
+            client_id=client_id,
+            client_secret=client_secret,
             authorization_endpoint=authorization_endpoint,
             token_endpoint=token_endpoint,
             scopes=scopes,
