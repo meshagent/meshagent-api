@@ -2500,6 +2500,7 @@ class _RequestOAuthTokenRequest(BaseModel):
     participant_id: str
     scopes: Optional[list[str]] = None
     timeout: int = 60 * 5
+    redirect_uri: str
 
 
 class _RequestOAuthTokenResponse(BaseModel):
@@ -2584,7 +2585,10 @@ class SecretsClient:
     ):
         await self.room.send_request(
             "secrets.provide_oauth_authorization",
-            {"code": code, "request_id": request_id},
+            {
+                "code": code,
+                "request_id": request_id,
+            },
         )
 
     async def request_oauth_token(
@@ -2593,14 +2597,16 @@ class SecretsClient:
         client_id: str,
         authorization_endpoint: str,
         token_endpoint: str,
-        client_secret: str,
+        client_secret: Optional[str] = None,
         scopes: Optional[list[str]] = None,
         timeout: int = 60 * 5,
         from_participant_id: str,
+        redirect_uri: str,
     ) -> str:
         req = _RequestOAuthTokenRequest(
             client_id=client_id,
             client_secret=client_secret,
+            redirect_uri=redirect_uri,
             authorization_endpoint=authorization_endpoint,
             token_endpoint=token_endpoint,
             scopes=scopes,
