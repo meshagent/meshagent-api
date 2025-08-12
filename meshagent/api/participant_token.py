@@ -210,6 +210,24 @@ class AdminGrant(BaseModel):
         return False
 
 
+class SecretsGrant(BaseModel):
+    request_oauth_token: Optional[list[str]] = None
+
+    def can_request_oauth_token(self, authorization_endpoint: str):
+        if self.request_oauth_token is None:
+            return True
+
+        for t in self.request_oauth_token:
+            if (
+                t == authorization_endpoint
+                or t.endswith("*")
+                and authorization_endpoint.startswith(t.removesuffix("*"))
+            ):
+                return True
+
+        return False
+
+
 class ApiScope(BaseModel):
     livekit: Optional[LivekitGrant] = None
     queues: Optional[QueuesGrant] = None
@@ -221,6 +239,7 @@ class ApiScope(BaseModel):
     developer: Optional[DeveloperGrant] = None
     agents: Optional[AgentsGrant] = None
     admin: Optional[AdminGrant] = None
+    secrets: Optional[SecretsGrant] = None
 
     @staticmethod
     def agent_default() -> "ApiScope":
@@ -234,6 +253,7 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            secrets=SecretsGrant(),
         )
 
     @staticmethod
@@ -249,6 +269,7 @@ class ApiScope(BaseModel):
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
             admin=AdminGrant(),
+            secrets=SecretsGrant(),
         )
 
 
