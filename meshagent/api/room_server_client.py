@@ -2507,6 +2507,28 @@ class _RequestOAuthTokenResponse(BaseModel):
     access_token: str
 
 
+class _DeleteUserSecretRequest(BaseModel):
+    id: str
+
+
+class _DeleteUserSecretResponse(BaseModel):
+    pass
+
+
+class _ListUserSecretsRequest(BaseModel):
+    pass
+
+
+class SecretInfo(BaseModel):
+    id: str
+    type: str
+    name: str
+
+
+class _ListUserSecretsResponse(BaseModel):
+    secrets: list[SecretInfo]
+
+
 class OAuthCredentials(BaseModel):
     access_token: str
     refresh_token: Optional[str] = None
@@ -2624,3 +2646,19 @@ class SecretsClient:
             return resp.access_token
         else:
             raise RoomException("Invalid response received, expected JsonResponse")
+
+    async def list_user_secrets(self) -> list[SecretInfo]:
+        response = await self.room.send_request(
+            "secrets.list_secrets", _ListUserSecretsRequest().model_dump(mode="json")
+        )
+        if isinstance(response, JsonResponse):
+            resp = _ListUserSecretsResponse.model_validate(response.json)
+            return resp.secrets
+        else:
+            raise RoomException("Invalid response received, expected JsonResponse")
+
+    async def delete_user_secret(self, id: str):
+        await self.room.send_request(
+            "secrets.delete_secret",
+            _DeleteUserSecretRequest(id=id).model_dump(mode="json"),
+        )
