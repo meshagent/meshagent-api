@@ -2517,6 +2517,7 @@ class OAuthCredentials(BaseModel):
 class _ClientRequestOAuthTokenRequest(BaseModel):
     request_id: str
     request: _RequestOAuthTokenRequest
+    challenge: str
 
 
 class _ClientRequestOAuthTokenResponse(BaseModel):
@@ -2529,6 +2530,7 @@ class OAuthTokenRequest:
     request_id: str
     authorization_endpoint: str
     token_endpoint: str
+    challenge: str
     scopes: Optional[list[str]] = None
 
 
@@ -2571,6 +2573,7 @@ class SecretsClient:
                     authorization_endpoint=req.request.authorization_endpoint,
                     token_endpoint=req.request.token_endpoint,
                     scopes=req.request.scopes,
+                    challenge=req.challenge,
                 )
             )
         )
