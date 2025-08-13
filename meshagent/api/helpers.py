@@ -1,6 +1,6 @@
 from .room_server_client import RoomClient, MeshSchema, RoomException
 import json
-from .participant_token import ParticipantToken
+from .participant_token import ParticipantToken, ApiScope
 from typing import Optional
 import os
 from .websocket_protocol import WebSocketClientProtocol
@@ -65,6 +65,7 @@ def participant_token(
         project_id=os.getenv("MESHAGENT_PROJECT_ID"),
         api_key_id=os.getenv("MESHAGENT_KEY_ID"),
     )
+    token.add_api_grant(ApiScope.agent_default())
     token.add_room_grant(room_name=room_name)
     if role is not None:
         token.add_role_grant(role=role)
