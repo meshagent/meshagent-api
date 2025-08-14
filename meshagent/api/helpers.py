@@ -43,6 +43,7 @@ def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str
 
     return f"{base_url}/rooms/{room_name}"
 
+
 @deprecated("create a ParticipantToken directly instead")
 def participant_token(
     *, participant_name: str, room_name: str, role: Optional[str] = None
