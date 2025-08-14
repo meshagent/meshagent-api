@@ -72,7 +72,6 @@ def participant_token(
     if role is not None:
         token.add_role_grant(role=role)
 
-
     return token
 
 
