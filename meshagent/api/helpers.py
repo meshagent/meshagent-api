@@ -1,10 +1,12 @@
 from .room_server_client import RoomClient, MeshSchema, RoomException
+from .participant_token import ApiScope
 import json
 from .participant_token import ParticipantToken
 from typing import Optional
 import os
 from .websocket_protocol import WebSocketClientProtocol
 import re
+from warnings import deprecated
 
 
 def validate_schema_name(name: str):
@@ -41,7 +43,7 @@ def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str
 
     return f"{base_url}/rooms/{room_name}"
 
-
+@deprecated("create a ParticipantToken directly instead")
 def participant_token(
     *, participant_name: str, room_name: str, role: Optional[str] = None
 ):
@@ -68,10 +70,12 @@ def participant_token(
     token.add_room_grant(room_name=room_name)
     if role is not None:
         token.add_role_grant(role=role)
+    token.add_api_grant(ApiScope.agent_default())
 
     return token
 
 
+@deprecated("create WebSocketClientProtocol directly instead")
 def websocket_protocol(
     *, participant_name: str, room_name: str, role: Optional[str] = None
 ):

@@ -356,8 +356,8 @@ class ParticipantToken:
 
     def get_api_grant(self) -> ApiScope | None:
         api = self.grant_scope("api")
-        if self.version <= "0.5.3" and api is None:
-            # <= 0.5.3 did not use fine grained tokens and should default api access on
+        if self.version < "0.6.0" and api is None:
+            # <= 0.6.0 did not use fine grained tokens and should default api access on
             return ApiScope(
                 livekit=LivekitGrant(),
                 queues=QueuesGrant(),
