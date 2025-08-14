@@ -15,7 +15,7 @@ token = ParticipantToken(
     api_key_id="your-api-key-id",
 )
 token.add_room_grant(room_name="my-room", role="user")
-jwt = token.to_jwt(secret="your-api-secret")
+jwt = token.to_jwt(token="your-api-secret")
 ```
 
 ### WebSocket Protocol

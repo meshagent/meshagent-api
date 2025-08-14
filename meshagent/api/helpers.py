@@ -1,5 +1,4 @@
 from .room_server_client import RoomClient, MeshSchema, RoomException
-from .participant_token import ApiScope
 import json
 from .participant_token import ParticipantToken, ApiScope
 from typing import Optional
