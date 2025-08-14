@@ -71,7 +71,7 @@ def participant_token(
     token.add_room_grant(room_name=room_name)
     if role is not None:
         token.add_role_grant(role=role)
-    token.add_api_grant(ApiScope.agent_default())
+
 
     return token
 
