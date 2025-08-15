@@ -42,7 +42,7 @@ Messages are encoded and decoded using a ``Protocol`` layer that is transport-ag
 ```Python Python
 from meshagent.api import RoomClient
 async with RoomClient(protocol=protocol) as room:
-    await room.messaging.send("hello everyone!")
+    await room.messaging.send_message("hello everyone!")
     async with room.storage.open(path="example.txt", overwrite=True) as f:
         await f.write(b"content")
 ```
