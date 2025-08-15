@@ -44,7 +44,14 @@ logger.setLevel(logging.WARN)
 
 
 class RoomException(Exception):
-    pass
+    def __init__(self, message: str, *, status_code: int = 400):
+        self.status_code = status_code
+        super().__init__(message)
+
+
+class RoomAccessDeniedException(RoomException):
+    def __init__(message: str):
+        super().__init__(message, status_code=403)
 
 
 class Requirement(ABC):
@@ -2509,6 +2516,7 @@ class _RequestOAuthTokenResponse(BaseModel):
 
 class _DeleteUserSecretRequest(BaseModel):
     id: str
+    delegated_to: Optional[str] = None
 
 
 class _DeleteUserSecretResponse(BaseModel):
@@ -2523,6 +2531,7 @@ class SecretInfo(BaseModel):
     id: str
     type: str
     name: str
+    delegated_to: Optional[str] = None
 
 
 class _ListUserSecretsResponse(BaseModel):
@@ -2657,8 +2666,10 @@ class SecretsClient:
         else:
             raise RoomException("Invalid response received, expected JsonResponse")
 
-    async def delete_user_secret(self, id: str):
+    async def delete_user_secret(self, id: str, delegated_to: Optional[str] = None):
         await self.room.send_request(
             "secrets.delete_secret",
-            _DeleteUserSecretRequest(id=id).model_dump(mode="json"),
+            _DeleteUserSecretRequest(id=id, delegated_to=delegated_to).model_dump(
+                mode="json"
+            ),
         )
