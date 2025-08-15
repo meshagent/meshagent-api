@@ -39,14 +39,6 @@ Messages are encoded and decoded using a ``Protocol`` layer that is transport-ag
 - ``agents``: manage agent instances.
 - ``queues``, ``database``, ``livekit``, and more.
 
-```Python Python
-from meshagent.api import RoomClient
-async with RoomClient(protocol=protocol) as room:
-    await room.messaging.send_message("hello everyone!")
-    async with room.storage.open(path="example.txt", overwrite=True) as f:
-        await f.write(b"content")
-```
-
 ### Document Runtime and Schemas
 ``SyncClient`` and the document runtime allow multiple participants to edit structured documents (defined by a ``MeshSchema``) with real-time updates propagated via WebSocket messages.
 
