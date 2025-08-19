@@ -2508,6 +2508,7 @@ class _RequestOAuthTokenRequest(BaseModel):
     scopes: Optional[list[str]] = None
     timeout: int = 60 * 5
     redirect_uri: str
+    no_pkce: bool = False
 
 
 class _RequestOAuthTokenResponse(BaseModel):
@@ -2548,7 +2549,7 @@ class OAuthCredentials(BaseModel):
 class _ClientRequestOAuthTokenRequest(BaseModel):
     request_id: str
     request: _RequestOAuthTokenRequest
-    challenge: str
+    challenge: Optional[str]
 
 
 class _ClientRequestOAuthTokenResponse(BaseModel):
@@ -2651,6 +2652,7 @@ class SecretsClient:
         timeout: int = 60 * 5,
         from_participant_id: str,
         redirect_uri: str,
+        no_pkce: bool = False,
     ) -> str:
         req = _RequestOAuthTokenRequest(
             client_id=client_id,
@@ -2661,6 +2663,7 @@ class SecretsClient:
             scopes=scopes,
             timeout=timeout,
             participant_id=from_participant_id,
+            no_pkce=no_pkce,
         )
         response = await self.room.send_request(
             "secrets.request_oauth_token", req.model_dump(mode="json")
