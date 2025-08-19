@@ -2553,7 +2553,8 @@ class _ClientRequestOAuthTokenRequest(BaseModel):
 
 class _ClientRequestOAuthTokenResponse(BaseModel):
     request_id: str
-    code: str
+    code: Optional[str] = None
+    error: Optional[str] = None
 
 
 @dataclass
@@ -2621,6 +2622,20 @@ class SecretsClient:
             "secrets.provide_oauth_authorization",
             {
                 "code": code,
+                "request_id": request_id,
+            },
+        )
+
+    async def reject_oauth_authorization(
+        self,
+        *,
+        request_id: str,
+        error: str,
+    ):
+        await self.room.send_request(
+            "secrets.provide_oauth_authorization",
+            {
+                "error": error,
                 "request_id": request_id,
             },
         )
