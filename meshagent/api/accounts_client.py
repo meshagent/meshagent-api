@@ -147,6 +147,28 @@ class Services(BaseModel):
 ProjectRole = Literal["member", "admin"]
 
 
+class _CreateMailboxRequest(BaseModel):
+    room: str
+    queue: str
+    address: str
+
+
+class _UpdateMailboxRequest(BaseModel):
+    room: str
+    queue: str
+
+
+class Mailbox(BaseModel):
+    """
+    Minimal shape returned by the server for a mailbox.
+    Extra fields (if any) from the server response will be ignored.
+    """
+
+    address: str
+    room: str
+    queue: str
+
+
 class AccountsClient:
     """
     A simple asynchronous client to interact with the accounts routes.
@@ -640,9 +662,60 @@ class AccountsClient:
         async with self._session.delete(endpoint, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
-    # ---------------------------------------------------------------------
-    # Services
-    # ---------------------------------------------------------------------
+    async def create_mailbox(
+        self, *, project_id: str, address: str, room: str, queue: str
+    ) -> None:
+        """
+        POST /accounts/projects/{project_id}/mailboxes
+        Body: { "address", "room", "queue" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes"
+        payload = _CreateMailboxRequest(
+            address=address, room=room, queue=queue
+        ).model_dump(mode="json")
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+
+    async def update_mailbox(
+        self, *, project_id: str, address: str, room: str, queue: str
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/mailboxes/{address}
+        Body: { "room", "queue" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
+        payload = _UpdateMailboxRequest(room=room, queue=queue).model_dump(mode="json")
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+
+    async def list_mailboxes(self, *, project_id: str) -> List[Mailbox]:
+        """
+        GET /accounts/projects/{project_id}/mailboxes
+        Returns a list[Mailbox].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [Mailbox.model_validate(item) for item in data["mailboxes"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid mailboxes payload: {exc}") from exc
+
+    async def delete_mailbox(self, *, project_id: str, address: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/mailboxes/{address}
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
 
     async def create_service(
         self,
