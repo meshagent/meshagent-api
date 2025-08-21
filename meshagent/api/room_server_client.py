@@ -2498,6 +2498,7 @@ class ContainersClient:
         res = await self.room.send_request("containers.list_containers", {})
         return [RoomContainer(**c) for c in res["containers"]]
 
+
 class _GetOfflineOAuthTokenRequest(BaseModel):
     client_id: str
     authorization_endpoint: str
@@ -2506,6 +2507,7 @@ class _GetOfflineOAuthTokenRequest(BaseModel):
     participant_name: str
     scopes: Optional[list[str]] = None
     timeout: int = 60 * 5
+
 
 class _GetOfflineOAuthTokenResponse(BaseModel):
     access_token: Optional[str] = None
@@ -2654,7 +2656,8 @@ class SecretsClient:
         )
 
     # get a saved oauth token
-    async def get_offline_oauth_token(self,
+    async def get_offline_oauth_token(
+        self,
         *,
         client_id: str,
         authorization_endpoint: str,
@@ -2681,7 +2684,6 @@ class SecretsClient:
             return resp.access_token
         else:
             raise RoomException("Invalid response received, expected JsonResponse")
-
 
     async def request_oauth_token(
         self,
