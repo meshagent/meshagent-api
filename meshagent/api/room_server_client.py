@@ -2505,8 +2505,6 @@ class _GetOfflineOAuthTokenRequest(BaseModel):
     token_endpoint: str
     client_secret: Optional[str]
     participant_name: str
-    scopes: Optional[list[str]] = None
-    timeout: int = 60 * 5
 
 
 class _GetOfflineOAuthTokenResponse(BaseModel):
