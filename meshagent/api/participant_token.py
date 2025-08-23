@@ -210,19 +210,24 @@ class AdminGrant(BaseModel):
         return False
 
 
-class SecretsGrant(BaseModel):
-    request_oauth_token: Optional[list[str]] = None
+class OAuthEndpoint(BaseModel):
+    endpoint: str
+    client_id: str
 
-    def can_request_oauth_token(self, authorization_endpoint: str):
+
+class SecretsGrant(BaseModel):
+    request_oauth_token: Optional[list[OAuthEndpoint]] = None
+
+    def can_request_oauth_token(self, *, authorization_endpoint: str, client_id: str):
         if self.request_oauth_token is None:
             return True
 
         for t in self.request_oauth_token:
             if (
-                t == authorization_endpoint
-                or t.endswith("*")
-                and authorization_endpoint.startswith(t.removesuffix("*"))
-            ):
+                t.endpoint == authorization_endpoint
+                or t.endpoint.endswith("*")
+                and authorization_endpoint.startswith(t.endpoint.removesuffix("*"))
+            ) and t.client_id == client_id:
                 return True
 
         return False
