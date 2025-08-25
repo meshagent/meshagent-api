@@ -2,6 +2,7 @@ import aiohttp
 from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, ValidationError
 from meshagent.api import RoomException
+from meshagent.api.participant_token import ApiScope
 
 from pydantic import Field
 
@@ -93,6 +94,7 @@ class Endpoint(BaseModel):
     path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
     role: Optional[Literal["user", "tool", "agent"]] = None
+    api: Optional[ApiScope] = None
 
 
 class Port(BaseModel):

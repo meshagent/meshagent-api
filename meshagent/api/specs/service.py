@@ -1,6 +1,7 @@
 from pydantic import BaseModel, PositiveInt
 from typing import Optional, Literal
 from datetime import datetime, timezone
+from meshagent.api.participant_token import ApiScope
 from meshagent.api.accounts_client import (
     Port,
     Service,
@@ -57,6 +58,9 @@ class ServiceSpec(BaseModel):
                         participant_name=endpoint.identity,
                         path=endpoint.path,
                         role=endpoint.role,
+                        api=endpoint.api
+                        if endpoint.api is not None
+                        else ApiScope.agent_default(),
                     )
                 )
             ports[str(p.num)] = port
@@ -101,6 +105,7 @@ class ServicePortEndpointSpec(BaseModel):
     identity: str
     role: Optional[Literal["user", "tool", "agent"]] = None
     type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
+    api: Optional[ApiScope] = None
 
 
 class ServicePortSpec(BaseModel):
