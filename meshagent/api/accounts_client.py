@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, ValidationError
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
-
+from meshagent.api.helpers import meshagent_base_url
 from pydantic import Field
 
 
@@ -176,7 +176,7 @@ class AccountsClient:
     A simple asynchronous client to interact with the accounts routes.
     """
 
-    def __init__(self, base_url: str, token: str):
+    def __init__(self, *, base_url: str = meshagent_base_url(), token: str):
         """
         :param base_url: The root URL of your server, e.g. 'http://localhost:8080'.
         :param token: A Bearer token for the Authorization header.
