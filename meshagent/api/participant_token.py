@@ -1,6 +1,6 @@
 import os
 import jwt
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 import json
 from pydantic import BaseModel
@@ -475,3 +475,12 @@ class ParticipantToken:
             decoded = jwt.decode(jwt=jwt_str, options={"verify_signature": False})
 
         return ParticipantToken.from_json(decoded)
+
+
+class ParticipantTokenSpec(BaseModel):
+    version: Literal["v1"]
+    kind: Literal["ParticipantToken"]
+    room: Optional[str] = None
+    identity: str
+    role: Optional[Literal["user", "agent", "tool"]] = None
+    api: ApiScope
