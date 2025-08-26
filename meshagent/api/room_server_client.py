@@ -77,7 +77,7 @@ class Requirement(ABC):
 class _MakeCallRequest(BaseModel):
     url: str
     arguments: dict
-    participant_name: str
+    name: str
     api: Optional[ApiScope] = None
 
 
@@ -615,7 +615,7 @@ class AgentsClient:
         await self.room.send_request(
             "agent.call",
             _MakeCallRequest(
-                participant_name=name, url=url, arguments=arguments, api=api
+                name=name, url=url, arguments=arguments, api=api
             ).model_dump(mode="json"),
         )
         return None
