@@ -2,6 +2,7 @@ from meshagent.api.protocol import Protocol, ClientProtocol
 import json
 import asyncio
 import logging
+from meshagent.api.participant_token import ApiScope
 from pydantic import BaseModel, Field
 from typing import (
     Optional,
@@ -71,6 +72,13 @@ class Requirement(ABC):
     @abstractmethod
     def to_json(self):
         pass
+
+
+class _MakeCallRequest(BaseModel):
+    url: str
+    arguments: dict
+    participant_name: str
+    api: Optional[ApiScope] = None
 
 
 class RequiredToolkit(Requirement):
@@ -601,9 +609,14 @@ class AgentsClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
 
-    async def make_call(self, *, name: str, url: str, arguments: dict) -> None:
+    async def make_call(
+        self, *, name: str, url: str, arguments: dict, api: Optional[ApiScope] = None
+    ) -> None:
         await self.room.send_request(
-            "agent.call", {"name": name, "url": url, "arguments": arguments}
+            "agent.call",
+            _MakeCallRequest(
+                participant_name=name, url=url, arguments=arguments, api=api
+            ).model_dump(mode="json"),
         )
         return None
 

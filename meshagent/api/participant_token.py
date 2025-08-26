@@ -350,6 +350,10 @@ class ParticipantToken:
         self.grants.append(ParticipantGrant(name="room", scope=room_name))
 
     def add_api_grant(self, grant: ApiScope):
+        for g in self.grants:
+            if g.name == "api":
+                raise ValueError("can only have a single api grant")
+
         self.grants.append(ParticipantGrant(name="api", scope=grant))
 
     def grant_scope(self, name: str) -> str | ApiScope | None:
