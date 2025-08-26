@@ -286,7 +286,9 @@ class ParticipantGrant:
     def to_json(self) -> dict:
         return {
             "name": self.name,
-            "scope": self.scope.model_dump() if self.name == "api" else self.scope,
+            "scope": self.scope.model_dump(mode="json", exclude_none=True)
+            if self.name == "api"
+            else self.scope,
         }
 
     @staticmethod
