@@ -12,6 +12,34 @@ from pydantic import Field
 # ------------------------------------------------------------------
 
 
+class ProjectRoomGrant(BaseModel):
+    room: str
+    email: str
+    permissions: dict
+
+
+class ProjectRoomGrantCount(BaseModel):
+    room: str
+    count: int
+
+
+class ProjectEmailGrantCount(BaseModel):
+    email: str
+    count: int
+
+
+class _CreateRoomGrantRequest(BaseModel):
+    room_name: str
+    email: str
+    permissions: dict
+
+
+class _UpdateRoomGrantRequest(BaseModel):
+    room_name: str
+    email: str
+    permissions: dict
+
+
 class _BaseSecret(BaseModel):
     """Common fields shared by all secrets."""
 
@@ -872,3 +900,244 @@ class AccountsClient:
             resp.raise_for_status()
             raw = await resp.json()
             return [_parse_secret(item) for item in raw["secrets"]]
+
+    async def create_room_grant(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        email: str,
+        permissions: Dict[str, Any],
+    ) -> None:
+        """
+        POST /accounts/projects/{project_id}/room-grants
+        Body: { "room_name", "email", "permissions" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
+        payload = _CreateRoomGrantRequest(
+            room_name=room_name,
+            email=email,
+            permissions=permissions,
+        ).model_dump(mode="json")
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+
+    async def update_room_grant(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        email: str,
+        permissions: Dict[str, Any],
+        grant_id: Optional[str] = None,
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/room-grants/{grant_id}
+        Body: { "room_name", "email", "permissions" }
+        NOTE: The server handler currently ignores grant_id and updates by (project_id, room_name, email).
+        """
+        gid = grant_id or "unused"
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/{gid}"
+        payload = _UpdateRoomGrantRequest(
+            room_name=room_name,
+            email=email,
+            permissions=permissions,
+        ).model_dump(mode="json")
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+
+    async def delete_room_grant(
+        self, *, project_id: str, room_name: str, email: str
+    ) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/room-grants/{room_name}/{email}
+        Returns {} on success.
+        """
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/room-grants/{quote(room_name, safe='')}/{quote(email, safe='')}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+
+    async def get_room_grant(
+        self, *, project_id: str, room_name: str, email: str
+    ) -> ProjectRoomGrant:
+        """
+        GET /accounts/projects/{project_id}/room-grants/{room_name}/{email}
+        Returns ProjectRoomGrant
+        """
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/room-grants/{quote(room_name, safe='')}/{quote(email, safe='')}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return ProjectRoomGrant.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid room grant payload: {exc}") from exc
+
+    async def list_room_grants(
+        self,
+        *,
+        project_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: str = "room_name",
+    ) -> List[ProjectRoomGrant]:
+        """
+        GET /accounts/projects/{project_id}/room-grants?limit=&offset=&order_by=
+        Returns [ProjectRoomGrant]
+        """
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [
+                    ProjectRoomGrant.model_validate(item)
+                    for item in data["room_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid room grants list payload: {exc}") from exc
+
+    async def list_room_grants_by_email(
+        self,
+        *,
+        project_id: str,
+        email: str,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: str = "room_name",
+    ) -> List[ProjectRoomGrant]:
+        """
+        GET /accounts/projects/{project_id}/room-grants/by-email/{email}?limit=&offset=&order_by=
+        Returns [ProjectRoomGrant]
+        """
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/room-grants/by-email/{quote(email, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [
+                    ProjectRoomGrant.model_validate(item)
+                    for item in data["room_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid room grants-by-email payload: {exc}"
+                ) from exc
+
+    async def list_room_grants_by_room(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: str = "email",
+    ) -> List[ProjectRoomGrant]:
+        """
+        GET /accounts/projects/{project_id}/room-grants/by-room/{room_name}?limit=&offset=&order_by=
+        Returns [ProjectRoomGrant]
+        """
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/room-grants/by-room/{quote(room_name, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [
+                    ProjectRoomGrant.model_validate(item)
+                    for item in data["room_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid room grants-by-room payload: {exc}"
+                ) from exc
+
+    async def list_unique_rooms_with_grants(
+        self,
+        *,
+        project_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ProjectRoomGrantCount]:
+        """
+        GET /accounts/projects/{project_id}/room-grants/by-room?limit=&offset=
+        Returns [ProjectRoomGrantCount]; accepts either {"room": "..."} or {"room_name": "..."} shapes.
+        """
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-room"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            items = data.get("rooms", [])
+            out: List[ProjectRoomGrantCount] = []
+            for item in items:
+                # tolerate either key name
+                room = item.get("room") or item.get("room_name")
+                count = item.get("count")
+                out.append(ProjectRoomGrantCount(room=room, count=int(count)))
+            return out
+
+    async def list_unique_emails_with_grants(
+        self,
+        *,
+        project_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ProjectEmailGrantCount]:
+        """
+        GET /accounts/projects/{project_id}/room-grants/by-email?limit=&offset=
+        Returns [ProjectEmailGrantCount]
+        """
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-email"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            items = data.get("emails", [])
+            out: List[ProjectEmailGrantCount] = []
+            for item in items:
+                out.append(
+                    ProjectEmailGrantCount(
+                        email=item.get("email"), count=int(item.get("count", 0))
+                    )
+                )
+            return out
