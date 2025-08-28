@@ -178,7 +178,7 @@ class Services(BaseModel):
     services: list["Service"]
 
 
-ProjectRole = Literal["member", "admin"]
+ProjectRole = Literal["member", "admin", "developer"]
 
 
 class _CreateMailboxRequest(BaseModel):
