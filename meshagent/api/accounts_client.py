@@ -14,7 +14,7 @@ from pydantic import Field
 
 class ProjectRoomGrant(BaseModel):
     room: str
-    email: str
+    user_id: str
     permissions: dict
 
 
@@ -23,20 +23,24 @@ class ProjectRoomGrantCount(BaseModel):
     count: int
 
 
-class ProjectEmailGrantCount(BaseModel):
-    email: str
+class ProjectUserGrantCount(BaseModel):
+    user_id: str
     count: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: str
 
 
 class _CreateRoomGrantRequest(BaseModel):
     room_name: str
-    email: str
+    user_id: Optional[str] = None
+    email: Optional[str] = None
     permissions: dict
 
 
 class _UpdateRoomGrantRequest(BaseModel):
     room_name: str
-    email: str
+    user_id: str
     permissions: dict
 
 
@@ -906,12 +910,37 @@ class AccountsClient:
         *,
         project_id: str,
         room_name: str,
+        user_id: str,
+        permissions: Dict[str, Any],
+    ) -> None:
+        """
+        POST /accounts/projects/{project_id}/room-grants
+        Body: { "room_name", "user_id", "permissions" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
+        payload = _CreateRoomGrantRequest(
+            room_name=room_name,
+            user_id=user_id,
+            permissions=permissions,
+        ).model_dump(mode="json")
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+
+    async def create_room_grant_by_email(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
         email: str,
         permissions: Dict[str, Any],
     ) -> None:
         """
         POST /accounts/projects/{project_id}/room-grants
-        Body: { "room_name", "email", "permissions" }
+        Body: { "room_name", "user_id", "permissions" }
         Returns {} on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
@@ -931,20 +960,20 @@ class AccountsClient:
         *,
         project_id: str,
         room_name: str,
-        email: str,
+        user_id: str,
         permissions: Dict[str, Any],
         grant_id: Optional[str] = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/room-grants/{grant_id}
-        Body: { "room_name", "email", "permissions" }
-        NOTE: The server handler currently ignores grant_id and updates by (project_id, room_name, email).
+        Body: { "room_name", "user_id", "permissions" }
+        NOTE: The server handler currently ignores grant_id and updates by (project_id, room_name, user_id).
         """
         gid = grant_id or "unused"
         url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/{gid}"
         payload = _UpdateRoomGrantRequest(
             room_name=room_name,
-            email=email,
+            user_id=user_id,
             permissions=permissions,
         ).model_dump(mode="json")
 
@@ -954,33 +983,33 @@ class AccountsClient:
             resp.raise_for_status()
 
     async def delete_room_grant(
-        self, *, project_id: str, room_name: str, email: str
+        self, *, project_id: str, room_name: str, user_id: str
     ) -> None:
         """
-        DELETE /accounts/projects/{project_id}/room-grants/{room_name}/{email}
+        DELETE /accounts/projects/{project_id}/room-grants/{room_name}/{user_id}
         Returns {} on success.
         """
         from urllib.parse import quote
 
         url = (
             f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/{quote(room_name, safe='')}/{quote(email, safe='')}"
+            f"/room-grants/{quote(room_name, safe='')}/{quote(user_id, safe='')}"
         )
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
     async def get_room_grant(
-        self, *, project_id: str, room_name: str, email: str
+        self, *, project_id: str, room_name: str, user_id: str
     ) -> ProjectRoomGrant:
         """
-        GET /accounts/projects/{project_id}/room-grants/{room_name}/{email}
+        GET /accounts/projects/{project_id}/room-grants/{room_name}/{user_id}
         Returns ProjectRoomGrant
         """
         from urllib.parse import quote
 
         url = (
             f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/{quote(room_name, safe='')}/{quote(email, safe='')}"
+            f"/room-grants/{quote(room_name, safe='')}/{quote(user_id, safe='')}"
         )
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
@@ -1017,17 +1046,17 @@ class AccountsClient:
             except ValidationError as exc:
                 raise RoomException(f"Invalid room grants list payload: {exc}") from exc
 
-    async def list_room_grants_by_email(
+    async def list_room_grants_by_user(
         self,
         *,
         project_id: str,
-        email: str,
+        user_id: str,
         limit: int = 50,
         offset: int = 0,
         order_by: str = "room_name",
     ) -> List[ProjectRoomGrant]:
         """
-        GET /accounts/projects/{project_id}/room-grants/by-email/{email}?limit=&offset=&order_by=
+        GET /accounts/projects/{project_id}/room-grants/by-user/{user_id}?limit=&offset=&order_by=
         Returns [ProjectRoomGrant]
         """
         from urllib.parse import quote
@@ -1035,7 +1064,7 @@ class AccountsClient:
         params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
         url = (
             f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/by-email/{quote(email, safe='')}"
+            f"/room-grants/by-user/{quote(user_id, safe='')}"
         )
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -1049,7 +1078,7 @@ class AccountsClient:
                 ]
             except ValidationError as exc:
                 raise RoomException(
-                    f"Invalid room grants-by-email payload: {exc}"
+                    f"Invalid room grants-by-user payload: {exc}"
                 ) from exc
 
     async def list_room_grants_by_room(
@@ -1059,7 +1088,7 @@ class AccountsClient:
         room_name: str,
         limit: int = 50,
         offset: int = 0,
-        order_by: str = "email",
+        order_by: str = "user_id",
     ) -> List[ProjectRoomGrant]:
         """
         GET /accounts/projects/{project_id}/room-grants/by-room/{room_name}?limit=&offset=&order_by=
@@ -1114,30 +1143,36 @@ class AccountsClient:
                 out.append(ProjectRoomGrantCount(room=room, count=int(count)))
             return out
 
-    async def list_unique_emails_with_grants(
+    async def list_unique_users_with_grants(
         self,
         *,
         project_id: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[ProjectEmailGrantCount]:
+    ) -> List[ProjectUserGrantCount]:
         """
-        GET /accounts/projects/{project_id}/room-grants/by-email?limit=&offset=
-        Returns [ProjectEmailGrantCount]
+        GET /accounts/projects/{project_id}/room-grants/by-user?limit=&offset=
+        Returns [ProjectUserGrantCount]
         """
         params = {"limit": str(limit), "offset": str(offset)}
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-email"
+        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-user"
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
             resp.raise_for_status()
             data = await resp.json()
-            items = data.get("emails", [])
-            out: List[ProjectEmailGrantCount] = []
+            items = data.get("users", [])
+            out: List[ProjectUserGrantCount] = []
             for item in items:
                 out.append(
-                    ProjectEmailGrantCount(
-                        email=item.get("email"), count=int(item.get("count", 0))
+                    ProjectUserGrantCount(
+                        user_id=item.get("user_id"),
+                        count=int(
+                            item.get("count", 0),
+                            first_name=item.get("first_name"),
+                            last_name=item.get("last_name"),
+                            email=item.get("email"),
+                        ),
                     )
                 )
             return out
