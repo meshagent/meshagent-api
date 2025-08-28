@@ -388,7 +388,11 @@ class AccountsClient:
             return await resp.json()
 
     async def add_user_to_project(
-        self, project_id: str, user_id: str
+        self,
+        project_id: str,
+        user_id: str,
+        is_admin: bool = False,
+        is_developer: bool = False,
     ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/:id/users
@@ -396,7 +400,12 @@ class AccountsClient:
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
-        body = {"project_id": project_id, "user_id": user_id}
+        body = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "is_admin": is_admin,
+            "is_developer": is_developer,
+        }
         async with self._session.post(
             url, headers=self._get_headers(), json=body
         ) as resp:
