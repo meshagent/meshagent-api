@@ -15,7 +15,7 @@ from pydantic import Field
 class ProjectRoomGrant(BaseModel):
     room: str
     user_id: str
-    permissions: dict
+    permissions: ApiScope
 
 
 class ProjectRoomGrantCount(BaseModel):
@@ -35,13 +35,13 @@ class _CreateRoomGrantRequest(BaseModel):
     room_name: str
     user_id: Optional[str] = None
     email: Optional[str] = None
-    permissions: dict
+    permissions: ApiScope
 
 
 class _UpdateRoomGrantRequest(BaseModel):
     room_name: str
     user_id: str
-    permissions: dict
+    permissions: ApiScope
 
 
 class _BaseSecret(BaseModel):
@@ -936,7 +936,7 @@ class AccountsClient:
         project_id: str,
         room_name: str,
         email: str,
-        permissions: Dict[str, Any],
+        permissions: ApiScope,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/room-grants
@@ -961,7 +961,7 @@ class AccountsClient:
         project_id: str,
         room_name: str,
         user_id: str,
-        permissions: Dict[str, Any],
+        permissions: ApiScope,
         grant_id: Optional[str] = None,
     ) -> None:
         """
