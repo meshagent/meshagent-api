@@ -10,10 +10,19 @@ import jwt
 import hashlib
 import aiohttp
 
+import sys
+
 from meshagent.api import RoomException
+from meshagent.api.participant_token import ApiScope
 from meshagent.api.webhooks import WebhookServer
 from meshagent.api import WebSocketClientProtocol, RoomMessage
 from meshagent.api.room_server_client import RoomClient
+
+from meshagent.api.specs.service import (
+    ServiceSpec,
+    ServicePortSpec,
+    ServicePortEndpointSpec,
+)
 
 logger = logging.getLogger("services")
 
@@ -24,9 +33,18 @@ class Portable(Protocol):
 
 
 class ServicePath:
-    def __init__(self, *, path: str, cls: type[Portable]):
+    def __init__(
+        self,
+        *,
+        path: str,
+        cls: type[Portable],
+        identity: Optional[str] = None,
+        permissions: Optional[ApiScope] = None,
+    ):
         self.cls = cls
         self.path = path
+        self.identity = identity
+        self.permissions = permissions
 
 
 class ServiceHost:
@@ -36,6 +54,7 @@ class ServiceHost:
         host: Optional[str] = None,
         webhook_secret: Optional[str] = None,
         port: Optional[int] = None,
+        name: Optional[str] = None,
     ):
         if host is None:
             host = os.getenv("MESHAGENT_HOST", "0.0.0.0")
@@ -54,10 +73,21 @@ class ServiceHost:
         self._app = None
         self._supports_websockets = True
 
-    def path(self, path: str):
-        def deco(cls: type[Portable]):
-            self.paths.append(ServicePath(path=path, cls=cls))
+        self.name = name
 
+    def path(
+        self,
+        path: str,
+        *,
+        identity: Optional[str] = None,
+        permissions: Optional[ApiScope] = None,
+    ):
+        def deco(cls: type[Portable]):
+            self.paths.append(
+                ServicePath(
+                    path=path, cls=cls, identity=identity, permissions=permissions
+                )
+            )
             return cls
 
         return deco
@@ -228,7 +258,16 @@ class ServiceHost:
 
         logger.debug("service host stopped")
 
-    async def run(self):
+    async def run(self, *, argv: Optional[list[str]] = None):
+        if argv is None:
+            argv = sys.argv
+
+        if "--describe" in argv:
+            sys.stdout.write(
+                self.get_service_spec(image="<YOUR_DOCKER_IMAGE_TAG>").model_dump_json()
+            )
+            return
+
         await self.start()
         try:
             term = asyncio.Future()
@@ -243,6 +282,38 @@ class ServiceHost:
 
         finally:
             await self.stop()
+
+    def get_service_spec(
+        self,
+        *,
+        image: str,
+        command: Optional[str] = None,
+        environment: Optional[dict[str, str]] = None,
+    ) -> ServiceSpec:
+        spec = ServiceSpec(
+            version="v1",
+            kind="Service",
+            name=self.name if self.name is not None else "<YOUR_SERVICE_NAME>",
+            command=command,
+            image=image,
+            environment=environment,
+        )
+
+        port = ServicePortSpec(
+            num=self.port,
+            type="meshagent.callable",
+        )
+        spec.ports.append(port)
+        for p in self.paths:
+            port.endpoints.append(
+                ServicePortEndpointSpec(
+                    path=p.path,
+                    identity=p.identity if p.identity is not None else "agent",
+                    api=p.permissions,
+                )
+            )
+
+        return spec
 
 
 async def send_webhook(
