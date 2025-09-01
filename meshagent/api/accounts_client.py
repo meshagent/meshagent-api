@@ -5,11 +5,23 @@ from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
 from pydantic import Field
+from datetime import datetime
 
 
 # ------------------------------------------------------------------
 #  Secret models
 # ------------------------------------------------------------------
+
+
+class RoomSession(BaseModel):
+    id: str
+    room_name: str
+    created_at: datetime
+    is_active: bool
+
+
+class _ListRoomSessionsResponse(BaseModel):
+    sessions: list[RoomSession]
 
 
 class Room(BaseModel):
@@ -595,6 +607,17 @@ class AccountsClient:
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             return await resp.json()
+
+    async def list_active_sessions(self, project_id: str) -> list[RoomSession]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/sessions
+        Returns a JSON dict: { "sessions": [...] }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            return await _ListRoomSessionsResponse.model_validate(resp.json()).sessions
 
     async def list_recent_sessions(self, project_id: str) -> Dict[str, Any]:
         """
