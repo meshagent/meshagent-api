@@ -1122,6 +1122,30 @@ class AccountsClient:
             except ValidationError as exc:
                 raise RoomException(f"Invalid room grant payload: {exc}") from exc
 
+    async def list_rooms(
+        self,
+        *,
+        project_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: str = "room_name",
+    ) -> List[ProjectRoomGrant]:
+        """
+        GET /accounts/projects/{project_id}/rooms?limit=&offset=&order_by=
+        Returns [Rooms]
+        """
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [Room.model_validate(item) for item in data["rooms"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid rooms list payload: {exc}") from exc
+
     async def list_room_grants(
         self,
         *,
