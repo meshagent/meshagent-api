@@ -123,6 +123,7 @@ class ServiceTemplateVariable(BaseModel):
     optional: bool = False
     type: Optional[Literal["email"]]
 
+
 class ServiceTemplateEnvironmentVariable(BaseModel):
     name: str
     value: str
