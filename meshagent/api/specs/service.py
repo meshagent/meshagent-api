@@ -77,7 +77,7 @@ class ServiceSpec(BaseModel):
         project_mounts = []
         if self.storage is not None and self.storage.project is not None:
             for rs in self.storage.project:
-                room_mounts.append(
+                project_mounts.append(
                     ProjectStorageMount(
                         path=rs.path, subpath=rs.subpath, read_only=rs.read_only
                     )
@@ -121,7 +121,7 @@ class ServiceTemplateVariable(BaseModel):
     obscure: bool = False
     enum: Optional[list[str]] = None
     optional: bool = False
-
+    type: Optional[Literal["email"]]
 
 class ServiceTemplateEnvironmentVariable(BaseModel):
     name: str
