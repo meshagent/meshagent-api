@@ -121,6 +121,7 @@ class ServiceTemplateVariable(BaseModel):
     obscure: bool = False
     enum: Optional[list[str]] = None
     optional: bool = False
+    type: Optional[Literal["email"]]
 
 
 class ServiceTemplateEnvironmentVariable(BaseModel):
