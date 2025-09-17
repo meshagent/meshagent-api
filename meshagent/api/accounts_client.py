@@ -13,6 +13,17 @@ from datetime import datetime
 # ------------------------------------------------------------------
 
 
+class OAuthClient(BaseModel):
+    client_id: str
+    client_secret: str
+    grant_types: list[str]
+    response_types: list[str]
+    redirect_uris: list[str]
+    scope: str
+    project_id: str
+    metadata: dict[str, str]
+
+
 class RoomSession(BaseModel):
     id: str
     room_name: str
@@ -514,25 +525,6 @@ class AccountsClient:
         url = f"{self.base_url}/accounts/projects/{project_id}"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
-    async def create_project_participant_token(
-        self, project_id: str, room_name: str
-    ) -> Dict[str, Any]:
-        """
-        Corresponds to: POST /accounts/projects/{project_id}/participant-tokens
-        Body: { "room_name": "<>" }
-        Returns a JSON dict with { "token" }.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/participant-tokens"
-        payload = {
-            "room_name": room_name,
-        }
-
-        async with self._session.post(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -1289,3 +1281,124 @@ class AccountsClient:
             for item in items:
                 out.append(ProjectUserGrantCount.model_validate(item))
             return out
+
+    async def create_oauth_client(
+        self,
+        *,
+        project_id: str,
+        grant_types: List[str],
+        response_types: List[str],
+        redirect_uris: List[str],
+        scope: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> OAuthClient:
+        """
+        POST /accounts/projects/{project_id}/oauth/clients
+        Body: { grant_types, response_types, redirect_uris, scope, metadata? }
+        Returns the newly created client (including client_secret).
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/oauth/clients"
+        payload = {
+            "grant_types": grant_types,
+            "response_types": response_types,
+            "redirect_uris": redirect_uris,
+            "scope": scope,
+            "metadata": metadata or {},
+        }
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            resp.raise_for_status()
+            raw = await resp.json()
+            try:
+                return OAuthClient.model_validate(raw)
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid create-oauth-client payload: {exc}"
+                ) from exc
+
+    async def update_oauth_client(
+        self,
+        *,
+        project_id: str,
+        client_id: str,
+        grant_types: Optional[List[str]] = None,
+        response_types: Optional[List[str]] = None,
+        redirect_uris: Optional[List[str]] = None,
+        scope: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        PUT /accounts/projects/{project_id}/oauth/clients/{client_id}
+        Body: any subset of { grant_types, response_types, redirect_uris, scope, metadata }
+        Returns { "ok": True } on success.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/oauth/clients/{client_id}"
+        )
+        body: Dict[str, Any] = {}
+        if grant_types is not None:
+            body["grant_types"] = grant_types
+        if response_types is not None:
+            body["response_types"] = response_types
+        if redirect_uris is not None:
+            body["redirect_uris"] = redirect_uris
+        if scope is not None:
+            body["scope"] = scope
+        if metadata is not None:
+            body["metadata"] = metadata
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def list_oauth_clients(self, *, project_id: str) -> List[OAuthClient]:
+        """
+        GET /accounts/projects/{project_id}/oauth/clients
+        Returns a list of OAuthClient (no secrets).
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/oauth/clients"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            raw = await resp.json()
+            try:
+                return [
+                    OAuthClient.model_validate(item) for item in raw.get("clients", [])
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid oauth-clients list payload: {exc}"
+                ) from exc
+
+    async def get_oauth_client(
+        self, *, project_id: Optional[str], client_id: str
+    ) -> OAuthClient:
+        """
+        GET /accounts/projects/{project_id}/oauth/clients/{client_id}
+        Returns the OAuthClient (no secret).
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/oauth/clients/{client_id}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            if resp.status == 404:
+                raise RoomException("oauth client not found")
+            resp.raise_for_status()
+            raw = await resp.json()
+            try:
+                return OAuthClient.model_validate(raw)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid oauth-client payload: {exc}") from exc
+
+    async def delete_oauth_client(self, *, project_id: str, client_id: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/oauth/clients/{client_id}
+        Returns 204 No Content on success.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/oauth/clients/{client_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
