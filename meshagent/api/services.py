@@ -10,8 +10,6 @@ import jwt
 import hashlib
 import aiohttp
 
-import sys
-
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.webhooks import WebhookServer
@@ -23,6 +21,8 @@ from meshagent.api.specs.service import (
     ServicePortSpec,
     ServicePortEndpointSpec,
 )
+
+well_known_service_path = "/.well-known/meshagent-service.json"
 
 logger = logging.getLogger("services")
 
@@ -234,7 +234,7 @@ class ServiceHost:
         self._app = web.Application()
 
         self._app.router.add_get("/", self._liveness_check_request)
-        self._app.router.add_get("/.well-known/meshagent-service.json", self._describe)
+        self._app.router.add_get(well_known_service_path, self._describe)
 
         self._hosts: list[WebhookServer] = list(
             map(lambda x: self._create_host(x), self.paths)
@@ -264,15 +264,7 @@ class ServiceHost:
 
         logger.debug("service host stopped")
 
-    async def run(self, *, argv: Optional[list[str]] = None):
-        if argv is None:
-            argv = sys.argv
-
-        if "--describe" in argv:
-            sys.stdout.write(
-                self.get_service_spec(image="<YOUR_DOCKER_IMAGE_TAG>").model_dump_json()
-            )
-            return
+    async def run(self):
 
         await self.start()
         try:
