@@ -234,6 +234,7 @@ class ServiceHost:
         self._app = web.Application()
 
         self._app.router.add_get("/", self._liveness_check_request)
+        self._app.router.add_get("/.well-known/meshagent-service.json", self._describe)
 
         self._hosts: list[WebhookServer] = list(
             map(lambda x: self._create_host(x), self.paths)
@@ -242,6 +243,11 @@ class ServiceHost:
         await asyncio.gather(*map(lambda x: x.start(), self._hosts))
 
         await self._start_server()
+
+    async def _describe(self, request: web.Request):
+        return web.json_response(
+            self.get_service_spec(image="").model_dump(mode="json")
+        )
 
     async def stop(self):
         logger.debug("stopping service host")
