@@ -265,7 +265,6 @@ class ServiceHost:
         logger.debug("service host stopped")
 
     async def run(self):
-
         await self.start()
         try:
             term = asyncio.Future()
