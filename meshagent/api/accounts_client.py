@@ -26,9 +26,11 @@ class OAuthClient(BaseModel):
 
 class RoomSession(BaseModel):
     id: str
+    room_id: Optional[str]
     room_name: str
     created_at: datetime
     is_active: bool
+    participants: Optional[dict[str, int]] = None
 
 
 class _ListRoomSessionsResponse(BaseModel):
