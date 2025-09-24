@@ -502,9 +502,7 @@ class SyncClient:
             if not doc.ref.synchronized.done():
                 doc.ref.synchronized.set_result(True)
         else:
-            raise RoomException(
-                "received change for a document that is not connected:" + path
-            )
+            logger.debug("received change for a document that is not connected:" + path)
 
 
 class AgentDescription:
