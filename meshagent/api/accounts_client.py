@@ -1000,7 +1000,8 @@ class AccountsClient:
         project_id: str,
         name: str,
         if_not_exists: bool = False,
-        metadata=Optional[dict[str, any]],
+        metadata: Optional[dict[str, any]] = None,
+        permissions: Optional[dict[str, ApiScope]] = None,
     ) -> Room:
         """
         POST /accounts/projects/{project_id}/rooms
@@ -1012,6 +1013,7 @@ class AccountsClient:
             "name": name,
             "if_not_exists": bool(if_not_exists),
             "metadata": metadata,
+            "permissions": permissions,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
