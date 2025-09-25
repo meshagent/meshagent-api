@@ -292,6 +292,10 @@ class Element(EventEmitter):
     def get_children(self) -> list["Element | Text"]:
         return self._data["children"]
 
+    def get_children_by_tag_name(self, tag_name: str) -> list["Element"]:
+        children = [x for x in self.get_children() if x.tag_name == tag_name]
+        return children
+
     def to_json(self, include_ids: bool = False) -> dict:
         props = dict()
 

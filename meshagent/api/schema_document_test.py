@@ -15,12 +15,19 @@ schema = MeshSchema(
             description="",
             properties=[
                 ChildProperty(
-                    name="children", description="", child_tag_names=["child"]
+                    name="children", description="", child_tag_names=["child", "child2"]
                 ),
             ],
         ),
         ElementType(
             tag_name="child",
+            description="",
+            properties=[
+                ValueProperty(name="attr", description="", type="string"),
+            ],
+        ),
+        ElementType(
+            tag_name="child2",
             description="",
             properties=[
                 ValueProperty(name="attr", description="", type="string"),
@@ -57,6 +64,21 @@ def test_append_single_json():
         copy.root.append_json(expected["root"]["children"][0])
 
         assert json.dumps(copy.root.to_json()) == json.dumps(expected)
+
+
+def test_get_children_by_tag_name_():
+    with DocumentRuntime() as rt:
+        # can copy a single element
+        copy = rt.new_document(schema=schema)
+
+        # copy.root["attr"] = "test"
+        copy.root.append_child("child")
+        copy.root.append_child("child2")
+        copy.root.append_child("child")
+
+        assert len(copy.root.get_children_by_tag_name("child")) == 2
+        assert len(copy.root.get_children_by_tag_name("child2")) == 1
+        assert len(copy.root.get_children_by_tag_name("x")) == 0
 
 
 def test_doc_from_json():
