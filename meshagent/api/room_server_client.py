@@ -1,4 +1,5 @@
 from meshagent.api.protocol import Protocol, ClientProtocol
+from meshagent.api.specs.service import ServiceTemplateSpec
 import json
 import asyncio
 import logging
@@ -2011,6 +2012,7 @@ class BuildRequest(BaseModel):
     context: Optional[BuildSourceContext] = None
     room: Optional[BuildSourceRoom] = None
     credentials: List[DockerSecret] = Field(default_factory=list)
+    manifest: Optional[ServiceTemplateSpec] = None
 
 
 class ImagePullRequest(BaseModel):
@@ -2311,6 +2313,7 @@ class ContainersClient:
         source: BuildSource,
         credentials: List[DockerSecret] | None = None,
         context_bytes: Optional[bytes] = None,  # optional raw tar.gz to send
+        manifest: ServiceTemplateSpec,
     ) -> LogStream[None]:
         request_id = uuid.uuid4().hex
 
@@ -2326,6 +2329,7 @@ class ContainersClient:
             room=source.room,
             context=source.context,
             credentials=credentials or [],
+            manifest=manifest,
         )
 
         async def _run():

@@ -5,8 +5,8 @@ from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
 from pydantic import Field
-from datetime import datetime
-
+from datetime import datetime, timezone
+from meshagent.api.specs.service import ServiceSpec
 
 # ------------------------------------------------------------------
 #  Secret models
@@ -203,6 +203,63 @@ class Service(BaseModel):
     role: Optional[Literal["user", "tool", "agent"]] = None
     builtin: bool = Field(exclude=True, default=False)
     storage: Optional[ServiceStorageMounts] = None
+
+    @staticmethod
+    def from_spec(spec: ServiceSpec):
+        ports = {}
+        for p in spec.ports:
+            port = Port(liveness_path=p.liveness, type=p.type, endpoints=[])
+            for endpoint in p.endpoints:
+                type = port.type
+                if endpoint.type is not None:
+                    type = endpoint.type
+
+                port.endpoints.append(
+                    Endpoint(
+                        type=type,
+                        participant_name=endpoint.identity,
+                        path=endpoint.path,
+                        role=endpoint.role,
+                        api=endpoint.api
+                        if endpoint.api is not None
+                        else ApiScope.agent_default(),
+                    )
+                )
+            ports[str(p.num)] = port
+
+        room_mounts = []
+        if spec.storage is not None and spec.storage.room is not None:
+            for rs in spec.storage.room:
+                room_mounts.append(
+                    RoomStorageMount(
+                        path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+                    )
+                )
+
+        project_mounts = []
+        if spec.storage is not None and spec.storage.project is not None:
+            for rs in spec.storage.project:
+                project_mounts.append(
+                    ProjectStorageMount(
+                        path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+                    )
+                )
+
+        return Service(
+            id="",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            name=spec.name,
+            command=spec.command,
+            image=spec.image,
+            ports=ports,
+            role=spec.role,
+            environment=spec.environment,
+            environment_secrets=spec.secrets,
+            pull_secret=spec.pull_secret,
+            storage=ServiceStorageMounts(
+                room=[*room_mounts], project=[*project_mounts]
+            ),
+        )
 
 
 class Services(BaseModel):
