@@ -104,7 +104,7 @@ class ServiceHost:
         await self._runner.setup()
 
         for path in self.paths:
-            logger.info(
+            logger.debug(
                 f"starting -> {self.host}:{self.port}{path.path} -> {path.cls.__name__}"
             )
 

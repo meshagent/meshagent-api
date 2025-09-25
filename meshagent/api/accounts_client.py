@@ -1,6 +1,6 @@
 import aiohttp
 from typing import Any, Dict, List, Optional, Literal
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, JsonValue
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
@@ -40,6 +40,7 @@ class _ListRoomSessionsResponse(BaseModel):
 class Room(BaseModel):
     id: str
     name: str
+    metadata: dict[str, JsonValue]
 
 
 class ProjectRoomGrant(BaseModel):
@@ -937,7 +938,12 @@ class AccountsClient:
             return [_parse_secret(item) for item in raw["secrets"]]
 
     async def create_room(
-        self, *, project_id: str, name: str, if_not_exists: bool = False
+        self,
+        *,
+        project_id: str,
+        name: str,
+        if_not_exists: bool = False,
+        metadata=Optional[dict[str, any]],
     ) -> Room:
         """
         POST /accounts/projects/{project_id}/rooms
@@ -945,7 +951,11 @@ class AccountsClient:
         Returns Room.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms"
-        payload = {"name": name, "if_not_exists": bool(if_not_exists)}
+        payload = {
+            "name": name,
+            "if_not_exists": bool(if_not_exists),
+            "metadata": metadata,
+        }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:

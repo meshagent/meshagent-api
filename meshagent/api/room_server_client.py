@@ -3,7 +3,7 @@ import json
 import asyncio
 import logging
 from meshagent.api.participant_token import ApiScope
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 from typing import (
     Optional,
     Callable,
@@ -2037,6 +2037,7 @@ class RunRequest(BaseModel):
     tty: Optional[bool] = None
     detach: bool = True
     variables: Optional[Dict[str, str]] = None
+    name: Optional[str] = None
 
 
 class ContainerRunResult(BaseModel):
@@ -2045,10 +2046,21 @@ class ContainerRunResult(BaseModel):
     logs: List[str] = Field(default_factory=list)
 
 
+class ContainerStartedBy(BaseModel):
+    id: str
+    name: str
+
+
 class RoomContainer(BaseModel):
     id: str
     image: Optional[str] = None
     status: Optional[str] = None
+    name: Optional[str] = None
+    command: Optional[list[str]] = None
+    entrypoint: Optional[list[str]] = None
+    environment: Optional[dict[str, str]] = None
+    started_by: ContainerStartedBy
+    manifest: dict[str, JsonValue]
 
     # Accept arbitrary extras (names, created, state, etc.)
     class Config:
@@ -2377,6 +2389,7 @@ class ContainersClient:
         ports: Dict[int, int] | None = None,
         variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
+        name: Optional[str] = None,
     ) -> LogStream[ContainerRunResult]:
         request_id = uuid.uuid4().hex
 
@@ -2386,6 +2399,7 @@ class ContainersClient:
             )
 
         req = RunRequest(
+            name=name,
             request_id=request_id,
             image=image,
             command=command,
@@ -2435,10 +2449,12 @@ class ContainersClient:
         variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
         tty: bool = False,
+        name: Optional[str] = None,
     ) -> Container:
         request_id = str(uuid.uuid4())
 
         req = RunRequest(
+            name=name,
             request_id=request_id,
             image=image,
             command=command,
