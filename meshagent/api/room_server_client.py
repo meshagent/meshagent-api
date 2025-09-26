@@ -1837,6 +1837,7 @@ class DatabaseClient:
         text: Optional[str] = None,
         vector: Optional[list[float]] = None,
         where: Optional[str] | dict = None,
+        offset: Optional[int] = None,
         limit: Optional[int] = None,
         select: Optional[List[str]] = None,
     ) -> list[Dict[str, Any]]:
@@ -1862,6 +1863,10 @@ class DatabaseClient:
         }
         if limit is not None:
             payload["limit"] = limit
+
+        if offset is not None:
+            payload["offset"] = offset
+
         if select is not None:
             payload["select"] = select
 
