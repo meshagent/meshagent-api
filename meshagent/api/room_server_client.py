@@ -1728,16 +1728,26 @@ class DatabaseClient:
     ) -> None:
         return await self._create_table(name=name, data=data, mode=mode)
 
-    async def drop_table(self, *, name: str, ignore_missing: bool = False):
+    async def drop_table(self, *, name: str, ignore_missing: bool = False) -> None:
         """
         Drop (delete) a table.
 
         :param name: Table name.
         :param ignore_missing: If True, ignore if table doesn't exist.
-        :return: Server response dict containing "status", "table", etc.
         """
         payload = {"name": name, "ignore_missing": ignore_missing}
         await self.room.send_request("database.drop_table", payload)
+        return None
+
+    async def drop_index(self, *, table: str, name: str) -> None:
+        """
+        Drop (delete) a index.
+
+        :param table: table name
+        :param name: index name.
+        """
+        payload = {"table": table, "name": name}
+        await self.room.send_request("database.drop_index", payload)
         return None
 
     async def add_columns(self, *, table: str, new_columns: Dict[str, str]) -> None:
@@ -1758,7 +1768,6 @@ class DatabaseClient:
 
         :param table: Table name.
         :param columns: List of column names to drop.
-        :return: Server response dict with "status", "table", "dropped_columns".
         """
         payload = {"table": table, "columns": columns}
 
@@ -1771,7 +1780,6 @@ class DatabaseClient:
 
         :param table: Table name.
         :param records: The record(s) to insert (list or dict).
-        :return: Server response dict with "status", "table", "result".
         """
         payload = {
             "table": table,
@@ -1794,7 +1802,6 @@ class DatabaseClient:
         :param where: SQL WHERE clause (e.g. "id = 123").
         :param values: Dict of column updates, e.g. {"col1": "new_value"}.
         :param values_sql: Dict of SQL expressions for updates, e.g. {"col2": "col2 + 1"}.
-        :return: Server response dict with "status", "table", "where".
         """
         payload = {
             "table": table,
@@ -1810,7 +1817,6 @@ class DatabaseClient:
 
         :param table: Table name.
         :param where: SQL WHERE clause (e.g. "id = 123").
-        :return: Server response dict with "status", "table", "where".
         """
         payload = {"table": table, "where": where}
         await self.room.send_request("database.delete", payload)
@@ -1824,7 +1830,6 @@ class DatabaseClient:
         :param table: Table name.
         :param on: Column name to match on (e.g. "id").
         :param records: The record(s) to merge.
-        :return: Server response dict with "status", "table", "on".
         """
         payload = {"table": table, "on": on, "records": records}
         await self.room.send_request("database.merge", payload)
@@ -1849,7 +1854,6 @@ class DatabaseClient:
         :param where: A filter clause or values to match
         :param limit: Limit the number of results.
         :param select: Columns to select.
-        :return: Server response dict with "status", "table", "results".
         """
 
         if isinstance(where, dict):
@@ -1979,7 +1983,7 @@ class DatabaseClient:
         await self.room.send_request("database.create_full_text_search_index", payload)
         return None
 
-    async def list_indexes(self, *, table: str) -> Dict[str, Any]:
+    async def list_indexes(self, *, table: str) -> list["TableIndex"]:
         """
         List all indexes on a table.
 
@@ -1988,7 +1992,7 @@ class DatabaseClient:
         payload = {"table": table}
         response = await self.room.send_request("database.list_indexes", payload)
         if hasattr(response, "json"):
-            return response.json["indexes"]
+            return [ TableIndex.model_validate(i) for i in response.json["indexes"]]
 
         raise RoomException("unexpected return type")
 
@@ -1998,6 +2002,10 @@ class TableVersion(BaseModel):
     version: int
     metadata: dict[str, JsonValue]
 
+class TableIndex(BaseModel):
+    name: str
+    columns: list[str]
+    type: str
 
 class ProgressDetail(BaseModel):
     current: Optional[int] = None
