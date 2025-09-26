@@ -2111,7 +2111,7 @@ class RoomContainer(BaseModel):
     entrypoint: Optional[list[str]] = None
     environment: Optional[dict[str, str]] = None
     started_by: ContainerStartedBy
-    manifest: dict[str, JsonValue]
+    manifest: Optional[dict[str, JsonValue]] = None
 
     # Accept arbitrary extras (names, created, state, etc.)
     class Config:
