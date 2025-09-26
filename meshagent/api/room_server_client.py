@@ -1992,7 +1992,7 @@ class DatabaseClient:
         payload = {"table": table}
         response = await self.room.send_request("database.list_indexes", payload)
         if hasattr(response, "json"):
-            return [ TableIndex.model_validate(i) for i in response.json["indexes"]]
+            return [TableIndex.model_validate(i) for i in response.json["indexes"]]
 
         raise RoomException("unexpected return type")
 
@@ -2002,10 +2002,12 @@ class TableVersion(BaseModel):
     version: int
     metadata: dict[str, JsonValue]
 
+
 class TableIndex(BaseModel):
     name: str
     columns: list[str]
     type: str
+
 
 class ProgressDetail(BaseModel):
     current: Optional[int] = None
