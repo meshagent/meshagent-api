@@ -1878,7 +1878,7 @@ class DatabaseClient:
             return response.json["results"]
         return []
 
-    async def optimize(self, table: str) -> None:
+    async def optimize(self, *, table: str) -> None:
         """
         Optimize (compact/prune) a table.
 
@@ -1889,6 +1889,44 @@ class DatabaseClient:
         }
         await self.room.send_request("database.optimize", payload)
         return None
+
+    async def restore(self, *, table: str, version: int) -> None:
+        """
+        restore a table version.
+
+        :param table: Table name.
+        """
+        payload = {
+            "table": table,
+            "version": version,
+        }
+        await self.room.send_request("database.restore", payload)
+        return None
+
+    async def checkout(self, *, table: str, version: int) -> None:
+        """
+        checkout a table version.
+
+        :param table: Table name.
+        """
+        payload = {
+            "table": table,
+            "version": version,
+        }
+        await self.room.send_request("database.checkout", payload)
+        return None
+
+    async def list_versions(self, *, table: str) -> list["TableVersion"]:
+        """
+        list a table's versions
+
+        :param table: Table name.
+        """
+        payload = {
+            "table": table,
+        }
+        resp = await self.room.send_request("database.list_versions", payload)
+        return [TableVersion.model_validate(v) for v in resp.json["versions"]]
 
     async def create_vector_index(
         self, *, table: str, column: str, replace: Optional[bool] = None
@@ -1953,6 +1991,12 @@ class DatabaseClient:
             return response.json["indexes"]
 
         raise RoomException("unexpected return type")
+
+
+class TableVersion(BaseModel):
+    timestamp: datetime
+    version: int
+    metadata: dict[str, JsonValue]
 
 
 class ProgressDetail(BaseModel):
