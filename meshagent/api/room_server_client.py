@@ -18,6 +18,8 @@ from typing import (
     Awaitable,
 )
 
+import base64
+
 from meshagent.api.messaging import Request
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
@@ -39,6 +41,41 @@ from datetime import datetime
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+
+def decode_records(records: list[dict]):
+    for r in records:
+        if isinstance(r, dict):
+            for k in r.keys():
+                v = r[k]
+                if isinstance(v, dict):
+                    encoding = v["encoding"]
+                    if encoding == "base64":
+                        r[k] = base64.b64decode(v["data"].encode())
+                    else:
+                        raise ValueError(f"Invalid encoding type {encoding}")
+
+    return records
+
+
+def encode_records(records: list[dict]):
+    transformed_records = []
+
+    for r in records:
+        c = {}
+        for k in r.keys():
+            v = r[k]
+            if isinstance(v, bytes):
+                c[k] = {
+                    "encoding": "base64",
+                    "data": base64.b64encode(v).decode(),
+                }
+            else:
+                c[k] = r
+
+        transformed_records.append(c)
+
+    return transformed_records
 
 
 logger = logging.getLogger("room_server_client")
@@ -1655,6 +1692,21 @@ class TextDataType(DataType):
 _data_types["text"] = TextDataType
 
 
+class BinaryDataType(DataType):
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def from_json(data: dict):
+        assert data["type"] == "binary"
+        return BinaryDataType()
+
+    def to_json(self):
+        return {"type": "binary"}
+
+
+_data_types["binary"] = BinaryDataType
+
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
 
@@ -1781,9 +1833,10 @@ class DatabaseClient:
         :param table: Table name.
         :param records: The record(s) to insert (list or dict).
         """
+
         payload = {
             "table": table,
-            "records": records,
+            "records": encode_records(records),
         }
         await self.room.send_request("database.insert", payload)
 
@@ -1878,8 +1931,8 @@ class DatabaseClient:
             payload["vector"] = vector
 
         response = await self.room.send_request("database.search", payload)
-        if hasattr(response, "json"):
-            return response.json["results"]
+        if isinstance(response, JsonResponse):
+            return decode_records(response.json["results"])
         return []
 
     async def optimize(self, *, table: str) -> None:
