@@ -46,11 +46,10 @@ from dataclasses import dataclass
 def decode_records(records: list[dict]):
     for r in records:
         if isinstance(r, dict):
-            print(r)
             for k in r.keys():
                 v = r[k]
                 if isinstance(v, dict):
-                    print(v)
+                    encoding = v["encoding"]
                     if encoding == "base64":
                         r[k] = base64.b64decode(v["data"].encode())
                     else:
