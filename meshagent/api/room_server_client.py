@@ -18,6 +18,8 @@ from typing import (
     Awaitable,
 )
 
+import base64
+
 from meshagent.api.messaging import Request
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
@@ -39,6 +41,41 @@ from datetime import datetime
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+
+def decode_records(records: list[dict]):
+    for r in records:
+        if isinstance(r, dict):
+            for k in r.keys():
+                v = r[k]
+                if isinstance(v, dict):
+                    encoding = v["encoding"]
+                    if encoding == "base64":
+                        r[k] = base64.b64decode(v["data"].encode())
+                    else:
+                        raise ValueError(f"Invalid encoding type {encoding}")
+
+    return records
+
+
+def encode_records(records: list[dict]):
+    transformed_records = []
+
+    for r in records:
+        c = {}
+        for k in r.keys():
+            v = r[k]
+            if isinstance(v, bytes):
+                c[k] = {
+                    "encoding": "base64",
+                    "data": base64.b64encode(v).decode(),
+                }
+            else:
+                c[k] = v
+
+        transformed_records.append(c)
+
+    return transformed_records
 
 
 logger = logging.getLogger("room_server_client")
@@ -515,7 +552,7 @@ class AgentDescription:
         input_schema: dict,
         output_schema: Optional[dict] = None,
         requires: Optional[list[Requirement]] = None,
-        supports_tools: Optional[bool] = False,
+        supports_tools: bool = False,
         labels: Optional[list[str]] = None,
     ):
         if labels is None:
@@ -554,6 +591,8 @@ class ToolDescription:
         self.thumbnail_url = thumbnail_url
         self.defs = defs
         self.pricing = pricing
+        if supports_context is None:
+            supports_context = False
         self.supports_context = supports_context
 
     def to_json(self):
@@ -1653,6 +1692,21 @@ class TextDataType(DataType):
 _data_types["text"] = TextDataType
 
 
+class BinaryDataType(DataType):
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def from_json(data: dict):
+        assert data["type"] == "binary"
+        return BinaryDataType()
+
+    def to_json(self):
+        return {"type": "binary"}
+
+
+_data_types["binary"] = BinaryDataType
+
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
 
@@ -1726,16 +1780,26 @@ class DatabaseClient:
     ) -> None:
         return await self._create_table(name=name, data=data, mode=mode)
 
-    async def drop_table(self, *, name: str, ignore_missing: bool = False):
+    async def drop_table(self, *, name: str, ignore_missing: bool = False) -> None:
         """
         Drop (delete) a table.
 
         :param name: Table name.
         :param ignore_missing: If True, ignore if table doesn't exist.
-        :return: Server response dict containing "status", "table", etc.
         """
         payload = {"name": name, "ignore_missing": ignore_missing}
         await self.room.send_request("database.drop_table", payload)
+        return None
+
+    async def drop_index(self, *, table: str, name: str) -> None:
+        """
+        Drop (delete) a index.
+
+        :param table: table name
+        :param name: index name.
+        """
+        payload = {"table": table, "name": name}
+        await self.room.send_request("database.drop_index", payload)
         return None
 
     async def add_columns(self, *, table: str, new_columns: Dict[str, str]) -> None:
@@ -1756,7 +1820,6 @@ class DatabaseClient:
 
         :param table: Table name.
         :param columns: List of column names to drop.
-        :return: Server response dict with "status", "table", "dropped_columns".
         """
         payload = {"table": table, "columns": columns}
 
@@ -1769,11 +1832,11 @@ class DatabaseClient:
 
         :param table: Table name.
         :param records: The record(s) to insert (list or dict).
-        :return: Server response dict with "status", "table", "result".
         """
+
         payload = {
             "table": table,
-            "records": records,
+            "records": encode_records(records),
         }
         await self.room.send_request("database.insert", payload)
 
@@ -1792,7 +1855,6 @@ class DatabaseClient:
         :param where: SQL WHERE clause (e.g. "id = 123").
         :param values: Dict of column updates, e.g. {"col1": "new_value"}.
         :param values_sql: Dict of SQL expressions for updates, e.g. {"col2": "col2 + 1"}.
-        :return: Server response dict with "status", "table", "where".
         """
         payload = {
             "table": table,
@@ -1808,7 +1870,6 @@ class DatabaseClient:
 
         :param table: Table name.
         :param where: SQL WHERE clause (e.g. "id = 123").
-        :return: Server response dict with "status", "table", "where".
         """
         payload = {"table": table, "where": where}
         await self.room.send_request("database.delete", payload)
@@ -1822,7 +1883,6 @@ class DatabaseClient:
         :param table: Table name.
         :param on: Column name to match on (e.g. "id").
         :param records: The record(s) to merge.
-        :return: Server response dict with "status", "table", "on".
         """
         payload = {"table": table, "on": on, "records": records}
         await self.room.send_request("database.merge", payload)
@@ -1847,7 +1907,6 @@ class DatabaseClient:
         :param where: A filter clause or values to match
         :param limit: Limit the number of results.
         :param select: Columns to select.
-        :return: Server response dict with "status", "table", "results".
         """
 
         if isinstance(where, dict):
@@ -1872,8 +1931,8 @@ class DatabaseClient:
             payload["vector"] = vector
 
         response = await self.room.send_request("database.search", payload)
-        if hasattr(response, "json"):
-            return response.json["results"]
+        if isinstance(response, JsonResponse):
+            return decode_records(response.json["results"])
         return []
 
     async def optimize(self, *, table: str) -> None:
@@ -1977,7 +2036,7 @@ class DatabaseClient:
         await self.room.send_request("database.create_full_text_search_index", payload)
         return None
 
-    async def list_indexes(self, *, table: str) -> Dict[str, Any]:
+    async def list_indexes(self, *, table: str) -> list["TableIndex"]:
         """
         List all indexes on a table.
 
@@ -1986,7 +2045,7 @@ class DatabaseClient:
         payload = {"table": table}
         response = await self.room.send_request("database.list_indexes", payload)
         if hasattr(response, "json"):
-            return response.json["indexes"]
+            return [TableIndex.model_validate(i) for i in response.json["indexes"]]
 
         raise RoomException("unexpected return type")
 
@@ -1995,6 +2054,12 @@ class TableVersion(BaseModel):
     timestamp: datetime
     version: int
     metadata: dict[str, JsonValue]
+
+
+class TableIndex(BaseModel):
+    name: str
+    columns: list[str]
+    type: str
 
 
 class ProgressDetail(BaseModel):
