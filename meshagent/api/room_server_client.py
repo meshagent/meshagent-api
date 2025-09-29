@@ -582,7 +582,7 @@ class ToolDescription:
         thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
         pricing: Optional[str] = None,
-        supports_context: Optional[bool] = None,
+        supports_context: Optional[bool] = False,
     ):
         self.name = name
         self.title = title
