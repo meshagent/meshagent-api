@@ -1802,7 +1802,9 @@ class DatabaseClient:
         await self.room.send_request("database.drop_index", payload)
         return None
 
-    async def add_columns(self, *, table: str, new_columns: Dict[str, str]) -> None:
+    async def add_columns(
+        self, *, table: str, new_columns: Dict[str, str | DataType]
+    ) -> None:
         """
         Add new columns to an existing table.
 
@@ -1810,7 +1812,16 @@ class DatabaseClient:
         :param new_columns: Dict of {column_name: default_value_expression}.
         """
 
-        payload = {"table": table, "new_columns": new_columns}
+        columns = {}
+
+        for c in new_columns.keys():
+            if isinstance(new_columns[c], DataType):
+                columns[c] = new_columns[c].to_json()
+            else:
+                columns[c] = new_columns[c]
+
+        payload = {"table": table, "new_columns": columns}
+
         await self.room.send_request("database.add_columns", payload)
         return None
 
