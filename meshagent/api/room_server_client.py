@@ -515,7 +515,7 @@ class AgentDescription:
         input_schema: dict,
         output_schema: Optional[dict] = None,
         requires: Optional[list[Requirement]] = None,
-        supports_tools: bool = False,
+        supports_tools: Optional[bool] = False,
         labels: Optional[list[str]] = None,
     ):
         if labels is None:
@@ -545,7 +545,7 @@ class ToolDescription:
         thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
         pricing: Optional[str] = None,
-        supports_context: Optional[bool] = None,
+        supports_context: Optional[bool] = False,
     ):
         self.name = name
         self.title = title
@@ -554,8 +554,6 @@ class ToolDescription:
         self.thumbnail_url = thumbnail_url
         self.defs = defs
         self.pricing = pricing
-        if supports_context is None:
-            supports_context = False
         self.supports_context = supports_context
 
     def to_json(self):
