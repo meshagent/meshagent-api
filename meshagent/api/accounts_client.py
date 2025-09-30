@@ -304,7 +304,12 @@ class AccountsClient:
     A simple asynchronous client to interact with the accounts routes.
     """
 
-    def __init__(self, *, base_url: str = meshagent_base_url(), token: str = os.getenv("MESHAGENT_API_KEY")):
+    def __init__(
+        self,
+        *,
+        base_url: str = meshagent_base_url(),
+        token: str = os.getenv("MESHAGENT_API_KEY"),
+    ):
         """
         :param base_url: The root URL of your server, e.g. 'http://localhost:8080'.
         :param token: A Bearer token for the Authorization header.
