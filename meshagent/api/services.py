@@ -92,8 +92,17 @@ class ServiceHost:
 
         return deco
 
-    def add_path(self, *, path: str, cls):
-        self.paths.append(ServicePath(path=path, cls=cls))
+    def add_path(
+        self,
+        path: str,
+        *,
+        cls,
+        identity: Optional[str] = None,
+        permissions: Optional[ApiScope] = None,
+    ):
+        self.paths.append(
+            ServicePath(path=path, cls=cls, identity=identity, permissions=permissions)
+        )
 
     async def _liveness_check_request(self, request: web.Request):
         return web.json_response({"ok": True})
