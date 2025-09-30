@@ -24,6 +24,13 @@ class OAuthClient(BaseModel):
     metadata: dict[str, str]
 
 
+class RoomConnectionInfo(BaseModel):
+    jwt: str
+    room_name: str
+    project_id: str
+    room_url: str
+
+
 class RoomSession(BaseModel):
     id: str
     room_id: Optional[str]
@@ -594,7 +601,7 @@ class AccountsClient:
         """
         Corresponds to: POST /accounts/projects/{project_id}/api-keys
         Body: { "name": "<>", "description": "<>" }
-        Returns a JSON dict with { "id", "name", "description", "token" }.
+        Returns a JSON dict with { "id", "name", "description", "value" }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
         payload = {"name": name, "description": description}
@@ -633,17 +640,6 @@ class AccountsClient:
         Returns a JSON dict like: { "tokens": [ { ... }, ... ] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
-
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
-    async def decrypt_project_api_key(self, project_id: str, id: str) -> Dict[str, Any]:
-        """
-        Corresponds to: GET /accounts/projects/{project_id}/api-keys/{token_id}/decrypt
-        Returns a JSON dict with { "tokens": <decrypted_token> }.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/api-keys/{id}/decrypt"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
@@ -1059,17 +1055,17 @@ class AccountsClient:
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
-    async def connect_room(self, *, project_id: str, name: str) -> Dict[str, Any]:
+    async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
         """
         POST /accounts/projects/{project_id}/rooms/{room_name}/connect
         Returns: { "jwt", "room_name", "project_id", "room_url" }
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{name}/connect"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/connect"
         async with self._session.post(
             url, headers=self._get_headers(), json={}
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            return RoomConnectionInfo.model_validate(await resp.json())
 
     async def create_room_grant(
         self,
