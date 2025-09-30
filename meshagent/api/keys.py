@@ -59,14 +59,19 @@ def decompress_uuid(compressed_uuid: str) -> str:
 
 
 def base64_compress_uuid(id: str):
-    return base64.urlsafe_b64encode(uuid.UUID(hex=id).bytes).decode().rstrip("=")
+    return (
+        base64.urlsafe_b64encode(uuid.UUID(hex=id).bytes)
+        .decode()
+        .replace("-", ".")
+        .rstrip("=")
+    )
 
 
 def base64_decompress_uuid(id: str):
     padding_needed = len(id) % 4
     if padding_needed:
         id += "=" * (4 - padding_needed)
-    return str(uuid.UUID(bytes=base64.urlsafe_b64decode(id)))
+    return str(uuid.UUID(bytes=base64.urlsafe_b64decode(id.replace(".", "-"))))
 
 
 class ApiKey:
