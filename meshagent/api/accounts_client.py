@@ -7,6 +7,7 @@ from meshagent.api.helpers import meshagent_base_url
 from pydantic import Field
 from datetime import datetime, timezone
 from meshagent.api.specs.service import ServiceSpec
+import os
 
 # ------------------------------------------------------------------
 #  Secret models
@@ -303,7 +304,7 @@ class AccountsClient:
     A simple asynchronous client to interact with the accounts routes.
     """
 
-    def __init__(self, *, base_url: str = meshagent_base_url(), token: str):
+    def __init__(self, *, base_url: str = meshagent_base_url(), token: str = os.getenv("MESHAGENT_API_KEY")):
         """
         :param base_url: The root URL of your server, e.g. 'http://localhost:8080'.
         :param token: A Bearer token for the Authorization header.
