@@ -380,7 +380,11 @@ class ParticipantToken:
         return j
 
     def to_jwt(
-        self, *, token: Optional[str] = None, expiration: Optional[datetime] = None, api_key: Optional[str] = None
+        self,
+        *,
+        token: Optional[str] = None,
+        expiration: Optional[datetime] = None,
+        api_key: Optional[str] = None,
     ) -> str:
         api_grant = None
         for g in self.grants:
@@ -407,7 +411,6 @@ class ParticipantToken:
             api_key = os.getenv("MESHAGENT_API_KEY")
 
         if api_key is not None:
-
             parsed = parse_api_key(api_key)
             token = parsed.secret
             payload["kid"] = parsed.id
