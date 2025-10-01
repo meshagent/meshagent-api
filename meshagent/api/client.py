@@ -299,7 +299,7 @@ class Mailbox(BaseModel):
     queue: str
 
 
-class AccountsClient:
+class Meshagent:
     """
     A simple asynchronous client to interact with the accounts routes.
     """

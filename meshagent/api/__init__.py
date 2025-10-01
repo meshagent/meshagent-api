@@ -18,6 +18,8 @@ from .room_server_client import (
     StorageEntry,
     AgentDescription,
 )
+
+from .client import Meshagent
 from .participant_token import ParticipantToken, ParticipantGrant, ApiScope
 from .participant import Participant
 from .schema import (
@@ -46,6 +48,7 @@ from .webhooks import WebhookServer, RoomStartedEvent, RoomEndedEvent, CallEvent
 from .version import __version__
 
 __all__ = [
+    Meshagent,
     WebSocketClientProtocol,
     RequiredToolkit,
     RequiredSchema,

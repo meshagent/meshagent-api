@@ -45,8 +45,8 @@ Messages are encoded and decoded using a ``Protocol`` layer that is transport-ag
 ### WebhookServer
 ``WebhookServer`` can run in your own service to receive signed events (HTTP webhooks) from MeshAgent—such as room lifecycle events (e.g., room started/ended)—allowing you to trigger custom logic.
 
-### AccountsClient
-Separate from rooms, ``AccountsClient`` is a REST-based client for managing projects, API keys, and secrets. It is useful for administrative tasks.
+### Meshagent
+Separate from rooms, ``Meshagent`` is a REST-based client for managing projects, API keys, and secrets. It is useful for administrative tasks.
 
 ### ServiceHost
 ``ServiceHost`` allows you to expose agents or tools as an HTTP service. The MeshAgent Server or CLI can invoke the service via webhook calls. The ``Servicehost`` spins up the agent or tool, connects it to the specified room, and manages its lifecycle until the call completes or is dismissed. This is how examples like the ChatBot or VoiceBot can be run locally and also enables you to deploy an agent as a MeshAgent Service using the same applicable service path once your agent or tool is ready. 
