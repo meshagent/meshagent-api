@@ -87,7 +87,7 @@ class ApiKey:
 
 def parse_api_key(key: str) -> ApiKey:
     if key.startswith("ma-"):
-        parts = key.removeprefix("ma-").split("-")
+        parts = key.removeprefix("ma-").split("-", 3)
 
         kid = base64_decompress_uuid(parts[0])
         project_id = base64_decompress_uuid(parts[1])
