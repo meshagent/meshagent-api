@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from pydantic import BaseModel
 import logging
+from .keys import parse_api_key
 from .version import __version__
 
 logger = logging.getLogger("participant-token")
@@ -379,7 +380,7 @@ class ParticipantToken:
         return j
 
     def to_jwt(
-        self, *, token: Optional[str] = None, expiration: Optional[datetime] = None
+        self, *, token: Optional[str] = None, expiration: Optional[datetime] = None, api_key: Optional[str] = None
     ) -> str:
         api_grant = None
         for g in self.grants:
@@ -402,6 +403,15 @@ class ParticipantToken:
             extra_payload["exp"] = expiration
 
         payload = self.to_json()
+        if api_key is None:
+            api_key = os.getenv("MESHAGENT_API_KEY")
+
+        if api_key is not None:
+
+            parsed = parse_api_key(api_key)
+            token = parsed.secret
+            payload["kid"] = parsed.id
+            payload["sub"] = parsed.project_id
 
         if token is None:
             token = os.getenv("MESHAGENT_SECRET")
