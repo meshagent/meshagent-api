@@ -601,7 +601,7 @@ class AccountsClient:
             resp.raise_for_status()
             return await resp.json()
 
-    async def create_project_api_key(
+    async def create_api_key(
         self, project_id: str, name: str, description: str
     ) -> Dict[str, Any]:
         """
@@ -697,7 +697,7 @@ class AccountsClient:
             resp.raise_for_status()
             return await resp.json()
 
-    async def create_project_webhook(
+    async def create_webhook(
         self,
         project_id: str,
         name: str,
