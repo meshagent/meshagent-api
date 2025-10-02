@@ -20,6 +20,12 @@ class ServiceStorageMountsSpec(BaseModel):
     project: Optional[list[ProjectStorageMountSpec]] = None
 
 
+class ServiceApiKeySpec(BaseModel):
+    role: Literal["admin"]
+    name: str
+    auto_provision: Optional[bool] = True
+
+
 class ServiceSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["Service"]
@@ -33,6 +39,7 @@ class ServiceSpec(BaseModel):
     secrets: list[str] = []
     pull_secret: Optional[str] = None
     storage: Optional[ServiceStorageMountsSpec] = None
+    api_key: Optional[ServiceApiKeySpec] = None
 
 
 class ServicePortEndpointSpec(BaseModel):

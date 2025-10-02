@@ -195,6 +195,12 @@ class ServiceStorageMounts(BaseModel):
     project: Optional[list[ProjectStorageMount]] = None
 
 
+class ServiceApiKey(BaseModel):
+    role: Literal["admin"]
+    name: str
+    auto_provision: Optional[bool] = True
+
+
 class Service(BaseModel):
     id: Optional[str] = None
     image: str
@@ -211,6 +217,7 @@ class Service(BaseModel):
     role: Optional[Literal["user", "tool", "agent"]] = None
     builtin: bool = Field(exclude=True, default=False)
     storage: Optional[ServiceStorageMounts] = None
+    api_key: Optional[ServiceApiKey] = None
 
     @staticmethod
     def from_spec(spec: ServiceSpec):
@@ -253,6 +260,13 @@ class Service(BaseModel):
                     )
                 )
 
+        api_key = None
+        if spec.api_key is not None:
+            api_key = ServiceApiKey(
+                role=spec.api_key.role,
+                name=spec.api_key.name,
+                auto_provision=spec.api_key.auto_provision,
+            )
         return Service(
             id="",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -267,6 +281,7 @@ class Service(BaseModel):
             storage=ServiceStorageMounts(
                 room=[*room_mounts], project=[*project_mounts]
             ),
+            api_key=api_key,
         )
 
 
