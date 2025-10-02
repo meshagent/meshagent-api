@@ -181,6 +181,16 @@ class ServiceHost:
                     ) as room:
                         task = asyncio.create_task(self.on_call_answered(room=room))
 
+                        def task_done(t):
+                            try:
+                                t.result()
+                            except Exception as e:
+                                logger.error(
+                                    f"Service host task failed {e}", exc_info=e
+                                )
+
+                        task.add_done_callback(task_done)
+
                         await asyncio.wait(
                             [
                                 asyncio.wrap_future(self._done),

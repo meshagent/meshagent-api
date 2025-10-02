@@ -226,8 +226,6 @@ class Protocol:
         logger.debug("send channel task ended")
 
     async def _recv_task(self) -> None:
-        logger.debug("recv channel task started")
-
         async for message in self._recv_ch:
             logger.debug(
                 "received queued message %d %s %d",
@@ -241,6 +239,10 @@ class Protocol:
             await self._handle_message(message_id=message_id, type=type, data=data)
 
         logger.debug("recv channel task ended")
+
+    def _shutdown(self):
+        self._send_ch.close()
+        self._recv_ch.close()
 
     def next_message_id(self):
         self._message_id += 1
@@ -271,6 +273,7 @@ class Protocol:
                 tasks.append(asyncio.create_task(self._send_task()))
 
             await asyncio.gather(*tasks)
+
         finally:
             if not self._done_fut.cancelled():
                 self._done_fut.set_result(True)

@@ -291,13 +291,27 @@ class RoomClient:
     async def __aenter__(self):
         await self.protocol.__aenter__()
 
-        await self._ready
+        async def startup():
+            await self._ready
 
-        await self.sync.start()
+            await self.sync.start()
 
-        await self.messaging.start()
+            await self.messaging.start()
+            await self._local_participant_ready
 
-        await self._local_participant_ready
+        async def closed():
+            # protect against early termination
+            await self.protocol.wait_for_close()
+
+        startup_task = asyncio.create_task(startup())
+        close_task = asyncio.create_task(closed())
+        _, pending = await asyncio.wait(
+            [
+                startup_task,
+                close_task,
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
 
         return self
 
@@ -449,7 +463,8 @@ class SyncClient:
     async def stop(self):
         self._sync_ch.close()
 
-        asyncio.gather(self._main_task)
+        if self._main_task is not None:
+            asyncio.gather(self._main_task)
 
     async def create(self, *, path: str, json: Optional[dict] = None) -> None:
         await self.room.send_request("room.create", {"path": path, "json": json})
@@ -1193,7 +1208,8 @@ class MessagingClient:
 
     async def stop(self):
         self._message_queue.close()
-        await asyncio.gather(self._send_task)
+        if self._send_task is not None:
+            await asyncio.gather(self._send_task)
 
     async def _send_messages(self):
         async for msg in self._message_queue:

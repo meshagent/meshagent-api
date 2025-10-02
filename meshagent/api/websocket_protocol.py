@@ -63,10 +63,12 @@ class WebSocketClientProtocol(ClientProtocol):
             else:
                 raise (Exception("Unexpected message type"))
 
+        if self._ws.closed:
+            super()._shutdown()
+
     async def __aexit__(self, exc_type, exc, tb):
         if not self._ws.closed:
             await self._ws.close()
-
         await self._ws_recv_task
         await self._session.__aexit__(exc_type, exc, tb)
         await self._ws_ctx.__aexit__(exc_type, exc, tb)
