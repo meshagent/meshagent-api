@@ -629,7 +629,7 @@ class Meshagent:
 
             return (await resp.json())["usage"]
 
-    async def delete_project_api_key(self, project_id: str, id: str) -> None:
+    async def delete_api_key(self, project_id: str, id: str) -> None:
         """
         Corresponds to: DELETE /accounts/projects/{project_id}/api-keys/{token_id}
         Returns 204 No Content on success (no JSON body).
@@ -640,7 +640,7 @@ class Meshagent:
             resp.raise_for_status()
             # The server returns status 204 with no content, so no need to parse JSON.
 
-    async def list_project_api_keys(self, project_id: str) -> Dict[str, Any]:
+    async def list_api_keys(self, project_id: str) -> Dict[str, Any]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/api-keys
         Returns a JSON dict like: { "tokens": [ { ... }, ... ] }.
@@ -730,7 +730,7 @@ class Meshagent:
             # If the server returns JSON with newly created webhook info, parse it:
             return await resp.json()
 
-    async def update_project_webhook(
+    async def update_webhook(
         self,
         project_id: str,
         webhook_id: str,
@@ -764,7 +764,7 @@ class Meshagent:
             resp.raise_for_status()
             return await resp.json()
 
-    async def list_project_webhooks(self, project_id: str) -> Dict[str, Any]:
+    async def list_webhooks(self, project_id: str) -> Dict[str, Any]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/webhooks
         Returns a JSON dict like: { "webhooks": [ { ... }, ... ] }
@@ -775,7 +775,7 @@ class Meshagent:
             resp.raise_for_status()
             return await resp.json()
 
-    async def delete_project_webhook(self, project_id: str, webhook_id: str) -> None:
+    async def delete_webhook(self, project_id: str, webhook_id: str) -> None:
         """
         Corresponds to: DELETE /accounts/projects/{project_id}/webhooks/{webhook_id}
         Typically returns 200 or 204 on success (no JSON body).
