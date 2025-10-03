@@ -44,6 +44,7 @@ class RoomShareConnectionInfo(BaseModel):
     settings: dict[str, JsonValue]
     room_url: str
 
+
 class RoomSession(BaseModel):
     id: str
     room_id: Optional[str]
@@ -325,6 +326,7 @@ class Mailbox(BaseModel):
     room: str
     queue: str
 
+
 class Balance(BaseModel):
     balance: float
     auto_recharge_threshold: Optional[float] = Field(
@@ -347,6 +349,7 @@ class Transaction(BaseModel):
     created_at: datetime = Field(alias="created_at")
 
     model_config = ConfigDict(populate_by_name=True)
+
 
 class Meshagent:
     """
@@ -402,7 +405,7 @@ class Meshagent:
         Body: raw binary data (bytes)
         Raises RoomException on HTTP >= 400.
         """
-        url = f"{self.base_url}/projects/{project_id}/storage/upload"        
+        url = f"{self.base_url}/projects/{project_id}/storage/upload"
         params = {"path": path}
 
         async with self._session.post(
@@ -708,7 +711,9 @@ class Meshagent:
             data = await resp.json()
             enabled = data.get("enabled")
             if not isinstance(enabled, bool):
-                raise RoomException("Invalid status payload: expected boolean 'enabled'")
+                raise RoomException(
+                    "Invalid status payload: expected boolean 'enabled'"
+                )
             return enabled
 
     async def get_balance(self, project_id: str) -> Balance:
@@ -847,7 +852,9 @@ class Meshagent:
             data = await resp.json()
             usage = data.get("usage", [])
             if not isinstance(usage, list):
-                raise RoomException("Invalid usage payload: expected 'usage' to be a list")
+                raise RoomException(
+                    "Invalid usage payload: expected 'usage' to be a list"
+                )
             return [item for item in usage if isinstance(item, dict)]
 
     async def delete_api_key(self, project_id: str, id: str) -> None:
