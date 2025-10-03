@@ -4,7 +4,7 @@ import json
 import asyncio
 import logging
 from meshagent.api.participant_token import ApiScope
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, Field, JsonValue, ConfigDict
 from typing import (
     Optional,
     Callable,
@@ -2101,6 +2101,71 @@ class LogProgress(BaseModel):
     total: Optional[int] = None
 
 
+class ErrorDetail(BaseModel):
+    """Structured error information returned on failure."""
+
+    code: Optional[int] = None
+    message: str
+
+
+class BuildMessage(BaseModel):
+    # core message variants ---------------------------------------------------
+    stream: Optional[str] = None  # build‑step / CLI text
+    status: Optional[str] = None  # pull/push layer state
+    id: Optional[str] = Field(None, alias="id")  # layer / step identifier
+
+    # progress bar ------------------------------------------------------------
+    progress: Optional[str] = None
+    progressDetail: Optional[ProgressDetail] = None
+
+    # success / aux payload ---------------------------------------------------
+    aux: Optional[Any] = None  # e.g. {"ID": "sha256:…"} on success
+
+    # error handling ----------------------------------------------------------
+    error: Optional[str] = None
+    errorDetail: Optional[ErrorDetail] = None
+
+    # extras occasionally present (timestamps, actors, etc.) ------------------
+    time: Optional[int] = None  # seconds since epoch
+    from_: Optional[str] = Field(None, alias="from")  # reserve keyword workaround
+
+    class Config:
+        validate_by_name = True
+        extra = "allow"  # future‑proof: keep unknown keys instead of raising
+
+
+class PullMessage(BaseModel):
+    """
+    One JSON object emitted by the Engine while pulling *or* pushing.
+
+    Docker can add extra keys in new versions, so we allow unknown fields.
+    """
+
+    # Main variants ----------------------------------------------------------
+    status: Optional[str] = None  # layer status ("Downloading", "Extracting", ...)
+    id: Optional[str] = Field(None, alias="id")  # layer identifier / step number
+
+    # Progress bar -----------------------------------------------------------
+    progress: Optional[str] = None
+    progress_detail: Optional[ProgressDetail] = Field(None, alias="progressDetail")
+
+    # Success / aux payload --------------------------------------------------
+    aux: Optional[Any] = None  # e.g. {"Digest": "sha256:…", "Size": 123}
+
+    # Error handling ---------------------------------------------------------
+    error: Optional[str] = None
+    error_detail: Optional[ErrorDetail] = Field(None, alias="errorDetail")
+
+    # Misc extras sometimes present -----------------------------------------
+    time: Optional[int] = None  # seconds since epoch
+    from_: Optional[str] = Field(None, alias="from")  # reserve‑word workaround
+
+    model_config = ConfigDict(
+        validate_by_name=True,  # accept field aliases on input
+        extra="allow",  # keep unknown keys for forward‑compat
+    )
+
+
 class Image(BaseModel):
     id: str
     tags: List[str]
@@ -2164,8 +2229,12 @@ class ImagePullResult(BaseModel):
     logs: List[str] = Field(default_factory=list)
 
 
+class ListContainersRequest(BaseModel):
+    all: Optional[bool] = None
+
+
 class RunRequest(BaseModel):
-    request_id: str
+    request_id: Optional[str] = None
     image: str
     command: Optional[str] = None
     env: Dict[str, str] = Field(default_factory=dict)
@@ -2179,6 +2248,7 @@ class RunRequest(BaseModel):
     detach: bool = True
     variables: Optional[Dict[str, str]] = None
     name: Optional[str] = None
+    gc: Optional[bool] = False
 
 
 class ContainerRunResult(BaseModel):
@@ -2533,6 +2603,7 @@ class ContainersClient:
         variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
+        gc: Optional[bool] = None,
     ) -> LogStream[ContainerRunResult]:
         request_id = uuid.uuid4().hex
 
@@ -2555,6 +2626,7 @@ class ContainersClient:
             credentials=credentials or [],
             detach=True,
             variables=variables,
+            gc=gc,
         )
 
         async def _run():
@@ -2593,6 +2665,7 @@ class ContainersClient:
         credentials: List[DockerSecret] | None = None,
         tty: bool = False,
         name: Optional[str] = None,
+        gc: Optional[bool] = None,
     ) -> Container:
         request_id = str(uuid.uuid4())
 
@@ -2611,6 +2684,7 @@ class ContainersClient:
             tty=tty,
             detach=False,
             variables=variables,
+            gc=gc,
         )
 
         async def run():
@@ -2664,8 +2738,11 @@ class ContainersClient:
     async def stop(self, *, container_id: str) -> None:
         await self.room.send_request("containers.stop_container", {"id": container_id})
 
-    async def list(self) -> List[RoomContainer]:
-        res = await self.room.send_request("containers.list_containers", {})
+    async def list(self, all: Optional[bool] = None) -> List[RoomContainer]:
+        res = await self.room.send_request(
+            "containers.list_containers",
+            ListContainersRequest(all=all).model_dump(mode="json"),
+        )
         return [RoomContainer(**c) for c in res["containers"]]
 
 
