@@ -2243,7 +2243,7 @@ class RunRequest(BaseModel):
     role: Optional[str] = None
     participant_name: Optional[str] = None
     ports: Dict[int, int] = Field(default_factory=dict)
-    credentials: List[DockerSecret] = Field(default_factory=list)
+    credentials: Optional[List[DockerSecret]] = None
     tty: Optional[bool] = None
     detach: bool = True
     variables: Optional[Dict[str, str]] = None
