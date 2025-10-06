@@ -2190,7 +2190,10 @@ class DockerSecret(BaseModel):
 
 class BuildSourceGit(BaseModel):
     url: str
-    ref: str = "HEAD"
+    ref: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    path: Optional[str] = None
 
 
 class BuildSourceContext(BaseModel):
