@@ -1159,6 +1159,13 @@ class MessagingClient:
     def get_participants(self) -> list[RemoteParticipant]:
         return list(self._participants.values())
 
+    def get_participant(self, id: str) -> RemoteParticipant | None:
+        for part in self.remote_participants:
+            if part.id == id:
+                return part
+        
+        return None
+
     async def enable(
         self,
         *,
