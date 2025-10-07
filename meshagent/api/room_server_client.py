@@ -1163,7 +1163,7 @@ class MessagingClient:
         for part in self.remote_participants:
             if part.id == id:
                 return part
-        
+
         return None
 
     async def enable(
