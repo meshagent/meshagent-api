@@ -84,6 +84,7 @@ class ServiceTemplateEnvironmentVariable(BaseModel):
 class ServiceTemplateMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
+    project: Optional[list[ProjectStorageMountSpec]] = None
 
 
 class ServiceTemplateMetadata(BaseModel):
@@ -92,6 +93,13 @@ class ServiceTemplateMetadata(BaseModel):
     description: Optional[str] = None
     repo: Optional[str] = None
     icon: Optional[str] = None
+
+
+class ServiceApiKeySpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["admin"]
+    name: str
+    auto_provision: Optional[bool] = True
 
 
 class ServiceTemplateSpec(BaseModel):
@@ -124,5 +132,6 @@ class ServiceTemplateSpec(BaseModel):
             environment=env,
             storage=ServiceStorageMountsSpec(
                 room=self.storage.room if self.storage is not None else None,
+                project=self.storage.project if self.storage is not None else None,
             ),
         )

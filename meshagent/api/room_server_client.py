@@ -2190,7 +2190,10 @@ class DockerSecret(BaseModel):
 
 class BuildSourceGit(BaseModel):
     url: str
-    ref: str = "HEAD"
+    ref: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    path: Optional[str] = None
 
 
 class BuildSourceContext(BaseModel):
@@ -2243,7 +2246,7 @@ class RunRequest(BaseModel):
     role: Optional[str] = None
     participant_name: Optional[str] = None
     ports: Dict[int, int] = Field(default_factory=dict)
-    credentials: List[DockerSecret] = Field(default_factory=list)
+    credentials: Optional[List[DockerSecret]] = None
     tty: Optional[bool] = None
     detach: bool = True
     variables: Optional[Dict[str, str]] = None
