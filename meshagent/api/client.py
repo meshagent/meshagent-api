@@ -1,10 +1,9 @@
 import aiohttp
-from typing import Any, Dict, List, Optional, Literal
-from pydantic import BaseModel, ValidationError, JsonValue
+from typing import Any, Dict, List, Optional, Literal, cast
+from pydantic import BaseModel, ValidationError, JsonValue, Field, ConfigDict
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
-from pydantic import Field
 from datetime import datetime, timezone
 from meshagent.api.specs.service import ServiceSpec
 import os
@@ -29,6 +28,20 @@ class RoomConnectionInfo(BaseModel):
     jwt: str
     room_name: str
     project_id: str
+    room_url: str
+
+
+class RoomShare(BaseModel):
+    id: str
+    project_id: str
+    settings: dict[str, JsonValue]
+
+
+class RoomShareConnectionInfo(BaseModel):
+    jwt: str
+    room_name: str
+    project_id: str
+    settings: dict[str, JsonValue]
     room_url: str
 
 
@@ -314,6 +327,30 @@ class Mailbox(BaseModel):
     queue: str
 
 
+class Balance(BaseModel):
+    balance: float
+    auto_recharge_threshold: Optional[float] = Field(
+        default=None, alias="auto_recharge_threshold"
+    )
+    auto_recharge_amount: Optional[float] = Field(
+        default=None, alias="auto_recharge_amount"
+    )
+    last_recharge: Optional[datetime] = Field(default=None, alias="last_recharge")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class Transaction(BaseModel):
+    id: str
+    amount: float
+    reference: Optional[str] = None
+    reference_type: Optional[str] = Field(default=None, alias="referenceType")
+    description: str
+    created_at: datetime = Field(alias="created_at")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class Meshagent:
     """
     A simple asynchronous client to interact with the accounts routes.
@@ -347,6 +384,19 @@ class Meshagent:
             "Content-Type": "application/json",
         }
 
+    async def _ensure_success(
+        self, resp: aiohttp.ClientResponse, *, action: str
+    ) -> None:
+        if resp.status < 400:
+            return
+        try:
+            body = await resp.text()
+        except Exception:
+            body = "<unable to read body>"
+        raise RoomException(
+            f"Failed to {action}. Status code: {resp.status}, body: {body}"
+        )
+
     async def upload(self, *, project_id: str, path: str, data: bytes) -> None:
         """Upload a file to project storage.
 
@@ -355,7 +405,7 @@ class Meshagent:
         Body: raw binary data (bytes)
         Raises RoomException on HTTP >= 400.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/storage/upload"
+        url = f"{self.base_url}/projects/{project_id}/storage/upload"
         params = {"path": path}
 
         async with self._session.post(
@@ -378,7 +428,7 @@ class Meshagent:
         Returns raw bytes of the file.
         Raises NotFoundException for 404, RoomException for other HTTP errors.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/storage/download"
+        url = f"{self.base_url}/projects/{project_id}/storage/download"
         params = {"path": path}
 
         async with self._session.get(
@@ -398,14 +448,15 @@ class Meshagent:
         Corresponds to: GET /accounts/projects/{id}/role
         Returns a JSON dict with { "role" : "member" | "admin" } on success.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/role"
 
         async with self._session.get(
             url,
             headers=self._get_headers(),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()["role"]
+            payload = await resp.json()
+            return cast(ProjectRole, payload["role"])
 
     async def create_share(
         self, project_id: str, settings: Optional[dict] = None
@@ -417,10 +468,12 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/shares"
 
+        payload = {"settings": settings or {}}
+
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json={"settings": settings},
+            json=payload,
         ) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -447,35 +500,41 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/shares/{share_id}"
 
+        payload = {"settings": settings or {}}
+
         async with self._session.put(
             url,
             headers=self._get_headers(),
-            json={"settings": settings},
+            json=payload,
         ) as resp:
             resp.raise_for_status()
             return None
 
-    async def list_shares(self, project_id: str) -> None:
+    async def list_shares(self, project_id: str) -> list[RoomShare]:
         """
         Corresponds to: GET /accounts/projects/:id/shares
         Returns a JSON dict with { "shares" : [{ "id", "settings" }] } on success.
         """
-        url = f"{self.base_url}/shares/{project_id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/shares"
 
         async with self._session.get(
             url,
             headers=self._get_headers(),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            data = await resp.json()
+            try:
+                return [RoomShare.model_validate(item) for item in data["shares"]]
+            except (KeyError, ValidationError) as exc:
+                raise RoomException(f"Invalid shares payload: {exc}") from exc
 
-    async def connect_share(self, share_id: str) -> None:
+    async def connect_share(self, share_id: str) -> RoomShareConnectionInfo:
         """
         Corresponds to: POST /shares/:share_id/connect
         Body: {}
         Returns a JSON dict with { "jwt", "room_url" } on success.
         """
-        url = f"{self.base_url}/shares/{share_id}"
+        url = f"{self.base_url}/shares/{share_id}/connect"
 
         async with self._session.post(
             url,
@@ -483,7 +542,11 @@ class Meshagent:
             json={},
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            data = await resp.json()
+            try:
+                return RoomShareConnectionInfo.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid share connection payload: {exc}") from exc
 
     async def create_project(
         self, name: str, settings: Optional[dict] = None
@@ -633,16 +696,166 @@ class Meshagent:
             resp.raise_for_status()
             return await resp.json()
 
-    async def get_usage(self, project_id: str) -> list[map]:
+    async def get_pricing(self) -> Dict[str, Any]:
+        """GET /pricing"""
+        url = f"{self.base_url}/pricing"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._ensure_success(resp, action="fetch pricing data")
+            return await resp.json()
+
+    async def get_status(self, project_id: str) -> bool:
+        """GET /accounts/projects/{project_id}/status"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/status"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._ensure_success(resp, action="fetch project status")
+            data = await resp.json()
+            enabled = data.get("enabled")
+            if not isinstance(enabled, bool):
+                raise RoomException(
+                    "Invalid status payload: expected boolean 'enabled'"
+                )
+            return enabled
+
+    async def get_balance(self, project_id: str) -> Balance:
+        """GET /accounts/projects/{project_id}/balance"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/balance"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._ensure_success(resp, action="fetch balance")
+            data = await resp.json()
+            try:
+                return Balance.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid balance payload: {exc}") from exc
+
+    async def get_recent_transactions(self, project_id: str) -> List[Transaction]:
+        """GET /accounts/projects/{project_id}/transactions"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/transactions"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._ensure_success(resp, action="fetch transactions")
+            data = await resp.json()
+            transactions = data.get("transactions", [])
+            if not isinstance(transactions, list):
+                raise RoomException(
+                    "Invalid transactions payload: expected 'transactions' list"
+                )
+            try:
+                return [Transaction.model_validate(item) for item in transactions]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid transaction payload: {exc}") from exc
+
+    async def set_auto_recharge(
+        self,
+        *,
+        project_id: str,
+        enabled: bool,
+        amount: float,
+        threshold: float,
+    ) -> None:
+        """POST /accounts/projects/{project_id}/recharge"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/recharge"
+        payload = {
+            "enabled": enabled,
+            "amount": amount,
+            "threshold": threshold,
+        }
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._ensure_success(resp, action="update auto recharge settings")
+
+    async def get_checkout_url(
+        self,
+        project_id: str,
+        *,
+        success_url: str,
+        cancel_url: str,
+    ) -> str:
+        """POST /accounts/projects/{project_id}/subscription"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/subscription"
+        payload = {"success_url": success_url, "cancel_url": cancel_url}
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._ensure_success(resp, action="create subscription checkout")
+            data = await resp.json()
+            checkout_url = data.get("checkout_url")
+            if not isinstance(checkout_url, str):
+                raise RoomException(
+                    "Invalid subscription payload: expected 'checkout_url' string"
+                )
+            return checkout_url
+
+    async def get_credits_checkout_url(
+        self,
+        project_id: str,
+        *,
+        success_url: str,
+        cancel_url: str,
+        quantity: float,
+    ) -> str:
+        """POST /accounts/projects/{project_id}/credits"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/credits"
+        payload = {
+            "quantity": quantity,
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+        }
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._ensure_success(resp, action="create credits checkout")
+            data = await resp.json()
+            checkout_url = data.get("checkout_url")
+            if not isinstance(checkout_url, str):
+                raise RoomException(
+                    "Invalid credits payload: expected 'checkout_url' string"
+                )
+            return checkout_url
+
+    async def get_subscription(self, project_id: str) -> Dict[str, Any]:
+        """GET /accounts/projects/{project_id}/subscription"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/subscription"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._ensure_success(resp, action="fetch subscription")
+            return await resp.json()
+
+    async def get_usage(
+        self,
+        project_id: str,
+        *,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        interval: Optional[str] = None,
+        report: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/usage
+        Allows filtering using optional start/end timestamps, interval, and report name.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/usage"
+        params: Dict[str, str] = {}
+        if start is not None:
+            params["start"] = start.isoformat()
+        if end is not None:
+            params["end"] = end.isoformat()
+        if interval is not None:
+            params["interval"] = interval
+        if report is not None:
+            params["report"] = report
 
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
-
-            return (await resp.json())["usage"]
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params or None,
+        ) as resp:
+            await self._ensure_success(resp, action="retrieve usage")
+            data = await resp.json()
+            usage = data.get("usage", [])
+            if not isinstance(usage, list):
+                raise RoomException(
+                    "Invalid usage payload: expected 'usage' to be a list"
+                )
+            return [item for item in usage if isinstance(item, dict)]
 
     async def delete_api_key(self, project_id: str, id: str) -> None:
         """
@@ -671,7 +884,7 @@ class Meshagent:
         Corresponds to: GET /accounts/projects/{project_id}/sessions/{session_id}
         Returns a JSON dict: { "id", "room_name", "created_at }
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
@@ -682,13 +895,15 @@ class Meshagent:
         Corresponds to: GET /accounts/projects/{project_id}/sessions
         Returns a JSON dict: { "sessions": [...] }
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions/active"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
-            return await _ListRoomSessionsResponse.model_validate(resp.json()).sessions
+            data = await resp.json()
+            sessions = data.get("sessions", [])
+            return [RoomSession.model_validate(session) for session in sessions]
 
-    async def list_recent_sessions(self, project_id: str) -> Dict[str, Any]:
+    async def list_recent_sessions(self, project_id: str) -> list[RoomSession]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/sessions
         Returns a JSON dict: { "sessions": [...] }
@@ -697,11 +912,13 @@ class Meshagent:
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            data = await resp.json()
+            sessions = data.get("sessions", [])
+            return [RoomSession.model_validate(session) for session in sessions]
 
     async def list_session_events(
         self, project_id: str, session_id: str
-    ) -> Dict[str, Any]:
+    ) -> list[Dict[str, Any]]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/sessions/{session_id}/events
         Returns a JSON dict: { "events": [...] }
@@ -710,7 +927,46 @@ class Meshagent:
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            data = await resp.json()
+            return data.get("events", [])
+
+    async def terminate(self, project_id: str, session_id: str) -> None:
+        """
+        Corresponds to: POST /accounts/projects/{project_id}/sessions/{session_id}/terminate
+        Returns 204 No Content on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/terminate"
+
+        async with self._session.post(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+
+    async def list_session_spans(
+        self, project_id: str, session_id: str
+    ) -> list[Dict[str, Any]]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/sessions/{session_id}/spans
+        Returns a JSON dict: { "spans": [...] }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/spans"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data.get("spans", [])
+
+    async def list_session_metrics(
+        self, project_id: str, session_id: str
+    ) -> list[Dict[str, Any]]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/sessions/{session_id}/metrics
+        Returns a JSON dict: { "metrics": [...] }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/metrics"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data.get("metrics", [])
 
     async def create_webhook(
         self,
