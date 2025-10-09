@@ -56,7 +56,7 @@ When a call to the agent or tool arrives through a webhook, the ``ServiceHost`` 
 ```Python Python
 from meshagent.api.services import ServiceHost
 
-service = ServiceHost() # defaults to port 8081
+service = ServiceHost() # port defaults to an available port if not assigned
 
 @service.path("/chat")
 class SimpleChatbot(ChatBot):
