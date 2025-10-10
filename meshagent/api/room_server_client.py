@@ -2176,7 +2176,6 @@ class PullMessage(BaseModel):
 class Image(BaseModel):
     id: str
     tags: List[str]
-    created: int
     size: int
     labels: Dict[str, str]
     manifest: Optional[Any] = None
@@ -2279,7 +2278,6 @@ class RoomContainer(BaseModel):
     name: Optional[str] = None
     command: Optional[list[str]] = None
     entrypoint: Optional[list[str]] = None
-    environment: Optional[dict[str, str]] = None
     started_by: ContainerStartedBy
     manifest: Optional[ServiceTemplateSpec] = None
 
