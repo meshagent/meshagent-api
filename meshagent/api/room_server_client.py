@@ -2281,10 +2281,9 @@ class RoomContainer(BaseModel):
     image: Optional[str] = None
     status: Optional[str] = None
     name: Optional[str] = None
-    command: Optional[list[str]] = None
-    entrypoint: Optional[list[str]] = None
     started_by: ContainerStartedBy
     manifest: Optional[ServiceTemplateSpec] = None
+    state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
 
     # Accept arbitrary extras (names, created, state, etc.)
     class Config:
