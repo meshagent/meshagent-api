@@ -2253,11 +2253,16 @@ class RunRequest(BaseModel):
     participant_name: Optional[str] = None
     ports: Dict[int, int] = Field(default_factory=dict)
     credentials: Optional[List[DockerSecret]] = None
-    tty: Optional[bool] = None
-    detach: bool = True
     variables: Optional[Dict[str, str]] = None
     name: Optional[str] = None
-    gc: Optional[bool] = False
+
+
+class ExecRequest(BaseModel):
+    request_id: Optional[str] = None
+    container_id: str
+    command: Optional[str] = None
+    tty: Optional[bool] = None
+    detach: bool = True
 
 
 class ContainerRunResult(BaseModel):
@@ -2597,7 +2602,7 @@ class ContainersClient:
 
     # ---- Run Container ----
 
-    def run(
+    async def run(
         self,
         *,
         image: str,
@@ -2611,8 +2616,7 @@ class ContainersClient:
         variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
-        gc: Optional[bool] = None,
-    ) -> LogStream[ContainerRunResult]:
+    ) -> str:
         request_id = uuid.uuid4().hex
 
         async def cancel():
@@ -2632,73 +2636,40 @@ class ContainersClient:
             participant_name=participant_name,
             ports=ports or {},
             credentials=credentials or [],
-            detach=True,
             variables=variables,
-            gc=gc,
         )
 
-        async def _run():
-            resp = await self.room.send_request(
-                "containers.run", req.model_dump(exclude_none=True)
-            )
-            if isinstance(resp, JsonResponse):
-                status = resp.json.get("status")
-                logs = [str(x) for x in resp.json.get("logs", [])]
-            else:
-                status = resp.get("status")
-                logs = [str(x) for x in resp.get("logs", [])]
-            return ContainerRunResult(
-                container_id=resp["container_id"], status=status, logs=logs
-            )
-
-        stream = self._make_stream(
-            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
+        resp = await self.room.send_request(
+            "containers.run", req.model_dump(exclude_none=True)
         )
-        return stream
+        if isinstance(resp, JsonResponse):
+            container_id: str = resp.json["container_id"]
+            return container_id
 
-    # ---- TTY ----
+        else:
+            raise RoomException(f"Unexpected response type {resp}")
 
-    def run_attached(
+    async def exec(
         self,
         *,
-        image: str,
-        command: Optional[str] = None,
-        env: Dict[str, str] | None = None,
-        mount_path: Optional[str] = None,
-        mount_subpath: Optional[str] = None,
-        role: Optional[str] = None,
-        participant_name: Optional[str] = None,
-        ports: Dict[int, int] | None = None,
-        variables: Optional[Dict[str, str]] = None,
-        credentials: List[DockerSecret] | None = None,
-        tty: bool = False,
-        name: Optional[str] = None,
-        gc: Optional[bool] = None,
+        container_id: str,
+        command: Optional[list[str]] = None,
+        tty: Optional[bool] = None,
+        detach: bool = True,
     ) -> Container:
         request_id = str(uuid.uuid4())
 
-        req = RunRequest(
-            name=name,
+        req = ExecRequest(
             request_id=request_id,
-            image=image,
             command=command,
-            env=env or {},
-            mount_path=mount_path,
-            mount_subpath=mount_subpath,
-            role=role,
-            participant_name=participant_name,
-            ports=ports or {},
-            credentials=credentials or [],
+            detach=detach,
             tty=tty,
-            detach=False,
-            variables=variables,
-            gc=gc,
         )
 
         async def run():
             try:
                 resp = await self.room.send_request(
-                    "containers.run", req.model_dump(exclude_none=True)
+                    "containers.exec", req.model_dump(exclude_none=True)
                 )
 
                 # close TTY on completion
