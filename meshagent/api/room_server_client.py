@@ -2115,32 +2115,6 @@ class ErrorDetail(BaseModel):
     message: str
 
 
-class BuildMessage(BaseModel):
-    # core message variants ---------------------------------------------------
-    stream: Optional[str] = None  # build‑step / CLI text
-    status: Optional[str] = None  # pull/push layer state
-    id: Optional[str] = Field(None, alias="id")  # layer / step identifier
-
-    # progress bar ------------------------------------------------------------
-    progress: Optional[str] = None
-    progressDetail: Optional[ProgressDetail] = None
-
-    # success / aux payload ---------------------------------------------------
-    aux: Optional[Any] = None  # e.g. {"ID": "sha256:…"} on success
-
-    # error handling ----------------------------------------------------------
-    error: Optional[str] = None
-    errorDetail: Optional[ErrorDetail] = None
-
-    # extras occasionally present (timestamps, actors, etc.) ------------------
-    time: Optional[int] = None  # seconds since epoch
-    from_: Optional[str] = Field(None, alias="from")  # reserve keyword workaround
-
-    class Config:
-        validate_by_name = True
-        extra = "allow"  # future‑proof: keep unknown keys instead of raising
-
-
 class PullMessage(BaseModel):
     """
     One JSON object emitted by the Engine while pulling *or* pushing.
@@ -2181,61 +2155,15 @@ class Image(BaseModel):
     manifest: Optional[Any] = None
 
 
-class BuildInfo(BaseModel):
-    request_id: str
-    status: Literal["running", "finished", "errored"]
-    error: Optional[str] = None
-    result: Optional[dict] = None
-
-
 class DockerSecret(BaseModel):
     registry: Optional[str] = None
     username: str
     password: str
 
 
-class BuildSourceGit(BaseModel):
-    url: str
-    ref: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    path: Optional[str] = None
-
-
-class BuildSourceContext(BaseModel):
-    encoding: str = "gzip"
-    # If you want to pass raw context bytes via send_request(data=...), put it on the call site.
-    # This model is only for the JSON header portion.
-
-
-class BuildSourceRoom(BaseModel):
-    path: str
-
-
-class BuildSource(BaseModel):
-    git: Optional[BuildSourceGit] = None
-    context: Optional[BuildSourceContext] = None
-    room: Optional[BuildSourceRoom] = None
-
-
-class BuildRequest(BaseModel):
-    tag: str
-    request_id: str
-    git: Optional[BuildSourceGit] = None
-    context: Optional[BuildSourceContext] = None
-    room: Optional[BuildSourceRoom] = None
-    credentials: List[DockerSecret] = Field(default_factory=list)
-    manifest: Optional[ServiceTemplateSpec] = None
-
-
 class ImagePullRequest(BaseModel):
-    request_id: str
     tag: str
     credentials: List[DockerSecret] = Field(default_factory=list)
-
-
-class ImagePullResult(BaseModel):
-    logs: List[str] = Field(default_factory=list)
 
 
 class ListContainersRequest(BaseModel):
@@ -2488,16 +2416,6 @@ class ContainersClient:
 
     # ---- High-level API ----
 
-    async def list_builds(self) -> List[BuildInfo]:
-        res = await self.room.send_request("containers.list_builds", {})
-        builds = res["builds"]
-        return [BuildInfo(**b) for b in builds]
-
-    async def stop_build(self, *, request_id: str) -> None:
-        await self.room.send_request(
-            "containers.stop_build", {"request_id": request_id}
-        )
-
     async def list_images(self) -> List[Image]:
         res = await self.room.send_request("containers.list_images", {})
         imgs = res["images"]
@@ -2525,79 +2443,14 @@ class ContainersClient:
 
         return log_stream
 
-    # ---- Build ----
-
-    def build(
-        self,
-        *,
-        tag: str,
-        source: BuildSource,
-        credentials: List[DockerSecret] | None = None,
-        context_bytes: Optional[bytes] = None,  # optional raw tar.gz to send
-        manifest: ServiceTemplateSpec,
-    ) -> LogStream[None]:
-        request_id = uuid.uuid4().hex
-
-        async def cancel():
-            await self.room.send_request(
-                "containers.stop_build", {"request_id": request_id}
-            )
-
-        req = BuildRequest(
-            tag=tag,
-            request_id=request_id,
-            git=source.git,
-            room=source.room,
-            context=source.context,
-            credentials=credentials or [],
-            manifest=manifest,
-        )
-
-        async def _run():
-            await self.room.send_request(
-                "containers.build",
-                req.model_dump(mode="json", by_alias=True, exclude_none=True),
-                data=context_bytes if (source.context and context_bytes) else None,
-            )
-            return None
-
-        stream = self._make_stream(
-            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
-        )
-
-        return stream
-
-    # ---- Pull Image ----
-
-    def pull_image(
+    async def pull_image(
         self, *, tag: str, credentials: List[DockerSecret] | None = None
-    ) -> LogStream[ImagePullResult]:
-        request_id = uuid.uuid4().hex
+    ) -> None:
+        req = ImagePullRequest(tag=tag, credentials=credentials or [])
 
-        async def cancel():
-            # mirrors Dart's stop_logs use; adjust to your server if different
-            await self.room.send_request(
-                "containers.stop_logs", {"request_id": request_id}
-            )
+        await self.room.send_request("containers.pull_image", req.model_dump())
 
-        req = ImagePullRequest(
-            request_id=request_id, tag=tag, credentials=credentials or []
-        )
-
-        async def _run():
-            resp = await self.room.send_request(
-                "containers.pull_image", req.model_dump()
-            )
-            if isinstance(resp, JsonResponse):
-                logs = [str(x) for x in resp.json.get("logs", [])]
-            else:
-                logs = [str(x) for x in resp.get("logs", [])]
-            return ImagePullResult(logs=logs)
-
-        stream = self._make_stream(
-            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
-        )
-        return stream
+        return None
 
     # ---- Run Container ----
 
