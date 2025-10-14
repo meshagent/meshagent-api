@@ -225,7 +225,7 @@ class Service(BaseModel):
     pull_secret: Optional[str] = None
     runtime_secrets: Optional[Dict[str, str]] = None
     environment_secrets: Optional[list[str]] = None
-    created_at: Optional[str] = None
+    created_at: Optional[datetime] = None
     ports: Optional[Dict[str, Port]] = None
     role: Optional[Literal["user", "tool", "agent"]] = None
     builtin: bool = Field(exclude=True, default=False)
@@ -1201,6 +1201,107 @@ class Meshagent:
         Returns nothing on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+
+    async def create_room_service(
+        self,
+        *,
+        project_id: str,
+        room_id: str,
+        service: Service,
+    ) -> Dict[str, Any]:
+        """
+        POST /accounts/projects/{project_id}/services
+        Body: full service spec, e.g.
+          {
+            "name": "...",
+            "image": "...",
+            "pull_secret": "...",
+            "environment": {...},
+            "environment_secrets": [...],
+            "runtime_secrets": {...},
+            "command": "...",
+            "ports": {...}
+          }
+        Returns: { "id": "<service_id>" }
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}//services"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=service.model_dump(mode="json", exclude_unset=True),
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def update_room_service(
+        self,
+        *,
+        project_id: str,
+        room_id: str,
+        service_id: str,
+        service: Dict[str, Any] | Service,
+    ) -> Dict[str, Any]:
+        """
+        PUT /accounts/projects/{project_id}/services/{service_id}
+        Body: same structure as create_service (fields you wish to change).
+        Returns: {} on success.
+        """
+
+        if isinstance(service, Service):
+            service = service.model_dump(mode="json", exclude_unset=True)
+
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services/{service_id}"
+        async with self._session.put(
+            url, headers=self._get_headers(), json=service
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def get_room_service(
+        self, *, project_id: str, room_id: str, service_id: str
+    ) -> Service:
+        """
+        GET /accounts/projects/{project_id}/services/{service_id}
+        Returns a `Service` instance.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services/{service_id}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            # Handler returns a JSON string, so we read text then validate
+            raw = await resp.text()
+            try:
+                return Service.model_validate_json(raw)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid service payload: {exc}") from exc
+
+    async def list_room_services(
+        self, *, project_id: str, room_id: str
+    ) -> List[Service]:
+        """
+        GET /accounts/projects/{project_id}/services
+        Returns a list of `Service` instances.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            try:
+                return [Service.model_validate(item) for item in data["services"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid services payload: {exc}") from exc
+
+    async def delete_room_service(
+        self, *, project_id: str, room_id: str, service_id: str
+    ) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/services/{service_id}
+        Returns nothing on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services/{service_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
