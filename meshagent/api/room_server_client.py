@@ -2183,6 +2183,7 @@ class RunRequest(BaseModel):
     credentials: Optional[List[DockerSecret]] = None
     variables: Optional[Dict[str, str]] = None
     name: Optional[str] = None
+    annotations: Optional[Dict[str, str]] = None
 
 
 class ExecRequest(BaseModel):
@@ -2566,8 +2567,15 @@ class ContainersClient:
 
     # ---- Misc ----
 
-    async def stop(self, *, container_id: str) -> None:
-        await self.room.send_request("containers.stop_container", {"id": container_id})
+    async def stop(self, *, container_id: str, force: bool = False) -> None:
+        await self.room.send_request(
+            "containers.stop_container", {"id": container_id, "force": force}
+        )
+
+    async def delete(self, *, container_id: str) -> None:
+        await self.room.send_request(
+            "containers.delete_container", {"id": container_id}
+        )
 
     async def list(self, all: Optional[bool] = None) -> List[RoomContainer]:
         res = await self.room.send_request(

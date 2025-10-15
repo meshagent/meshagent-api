@@ -188,7 +188,7 @@ class DeveloperGrant(BaseModel):
 
 
 class AdminGrant(BaseModel):
-    pass
+    config: bool = True
 
 
 class OAuthEndpoint(BaseModel):
