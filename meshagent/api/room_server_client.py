@@ -2812,7 +2812,7 @@ class SecretsClient:
         else:
             raise RoomException("Invalid response received, expected JsonResponse")
 
-    async def delete_user_secret(self, id: str, delegated_to: Optional[str] = None):
+    async def delete_user_secret(self, *, id: str, delegated_to: Optional[str] = None):
         await self.room.send_request(
             "secrets.delete_secret",
             _DeleteUserSecretRequest(id=id, delegated_to=delegated_to).model_dump(
