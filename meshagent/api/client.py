@@ -1208,7 +1208,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        room_id: str,
+        room_name: str,
         service: Service,
     ) -> Dict[str, Any]:
         """
@@ -1226,9 +1226,7 @@ class Meshagent:
           }
         Returns: { "id": "<service_id>" }
         """
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}//services"
-        )
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}//services"
         async with self._session.post(
             url,
             headers=self._get_headers(),
@@ -1241,7 +1239,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        room_id: str,
+        room_name: str,
         service_id: str,
         service: Dict[str, Any] | Service,
     ) -> Dict[str, Any]:
@@ -1254,7 +1252,7 @@ class Meshagent:
         if isinstance(service, Service):
             service = service.model_dump(mode="json", exclude_unset=True)
 
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services/{service_id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.put(
             url, headers=self._get_headers(), json=service
         ) as resp:
@@ -1262,13 +1260,13 @@ class Meshagent:
             return await resp.json()
 
     async def get_room_service(
-        self, *, project_id: str, room_id: str, service_id: str
+        self, *, project_id: str, room_name: str, service_id: str
     ) -> Service:
         """
         GET /accounts/projects/{project_id}/services/{service_id}
         Returns a `Service` instance.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services/{service_id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             # Handler returns a JSON string, so we read text then validate
@@ -1279,13 +1277,15 @@ class Meshagent:
                 raise RoomException(f"Invalid service payload: {exc}") from exc
 
     async def list_room_services(
-        self, *, project_id: str, room_id: str
+        self, *, project_id: str, room_name: str
     ) -> List[Service]:
         """
         GET /accounts/projects/{project_id}/services
         Returns a list of `Service` instances.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services"
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services"
+        )
         async with self._session.get(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
             data = await resp.json()
@@ -1295,13 +1295,13 @@ class Meshagent:
                 raise RoomException(f"Invalid services payload: {exc}") from exc
 
     async def delete_room_service(
-        self, *, project_id: str, room_id: str, service_id: str
+        self, *, project_id: str, room_name: str, service_id: str
     ) -> None:
         """
         DELETE /accounts/projects/{project_id}/services/{service_id}
         Returns nothing on success.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/services/{service_id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             resp.raise_for_status()
 
