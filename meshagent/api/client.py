@@ -5,7 +5,16 @@ from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
 from datetime import datetime, timezone
-from meshagent.api.specs.service import ServiceSpec
+from meshagent.api.specs.service import (
+    ServiceSpec,
+    ServiceMetadata,
+    ServicePortSpec,
+    ServicePortEndpointSpec,
+    ServiceStorageMountsSpec,
+    RoomStorageMountSpec,
+    ProjectStorageMountSpec,
+    ServiceApiKeySpec,
+)
 import os
 
 # ------------------------------------------------------------------
@@ -231,6 +240,118 @@ class Service(BaseModel):
     builtin: bool = Field(exclude=True, default=False)
     storage: Optional[ServiceStorageMounts] = None
     api_key: Optional[ServiceApiKey] = None
+    annotations: Optional[dict[str, str]] = None
+
+    def to_spec(self) -> ServiceSpec:
+        """
+        Construct a ServiceSpec instance from this Service.
+
+        - Sets version="v1" and kind="Service".
+        - Preserves annotations via ServiceMetadata.
+        - Emits ports as a sorted list; each key is converted to PositiveInt.
+        - Endpoint.api defaults to ApiScope.agent_default() when missing.
+        - Skips endpoints that are missing required fields (identity or path).
+        - Omits optional sections (storage, api_key, secrets, environment) when empty/None.
+        """
+        # ---------- Ports ----------
+        ports_list: list[ServicePortSpec] = []
+        if self.ports:
+            for num_str, p in self.ports.items():
+                ep_specs: list[ServicePortEndpointSpec] = []
+                if p.endpoints:
+                    for ep in p.endpoints:
+                        # ServicePortEndpointSpec requires identity and path
+                        if not ep.participant_name or not ep.path:
+                            # Skip malformed endpoints rather than raising here.
+                            continue
+                        ep_specs.append(
+                            ServicePortEndpointSpec(
+                                identity=ep.participant_name,
+                                path=ep.path,
+                                role=ep.role,
+                                # If endpoint.type is not set, inherit the parent port type
+                                type=ep.type if ep.type is not None else p.type,
+                                api=ep.api
+                                if ep.api is not None
+                                else ApiScope.agent_default(),
+                            )
+                        )
+
+                ports_list.append(
+                    ServicePortSpec(
+                        num=num_str,
+                        type=p.type,
+                        endpoints=ep_specs,
+                        liveness=p.liveness_path,
+                    )
+                )
+
+        # ---------- Storage ----------
+        storage_spec: ServiceStorageMountsSpec | None = None
+        room_specs: list[RoomStorageMountSpec] | None = None
+        project_specs: list[ProjectStorageMountSpec] | None = None
+
+        if self.storage is not None:
+            if self.storage.room:
+                room_specs = [
+                    RoomStorageMountSpec(
+                        path=rm.path,
+                        subpath=rm.subpath,
+                        read_only=rm.read_only,
+                    )
+                    for rm in self.storage.room
+                ] or None
+            if self.storage.project:
+                project_specs = [
+                    ProjectStorageMountSpec(
+                        path=pm.path,
+                        subpath=pm.subpath,
+                        read_only=pm.read_only,
+                    )
+                    for pm in self.storage.project
+                ] or None
+
+            if room_specs or project_specs:
+                storage_spec = ServiceStorageMountsSpec(
+                    room=room_specs,
+                    project=project_specs,
+                )
+
+        # ---------- API Key ----------
+        api_key_spec: ServiceApiKeySpec | None = None
+        if self.api_key is not None:
+            api_key_spec = ServiceApiKeySpec(
+                role=self.api_key.role,
+                name=self.api_key.name,
+                auto_provision=self.api_key.auto_provision,
+            )
+
+        # ---------- Metadata ----------
+        metadata = ServiceMetadata(
+            name=self.name,
+            annotations=self.annotations,
+            # These aren’t represented on Service; leave None
+            description=None,
+            repo=None,
+            icon=None,
+        )
+
+        # ---------- Assemble ServiceSpec ----------
+        return ServiceSpec(
+            version="v1",
+            kind="Service",
+            id=self.id,  # Optional in spec; include if present
+            metadata=metadata,
+            command=self.command,
+            image=self.image,
+            ports=ports_list or [],
+            role=self.role,
+            environment=self.environment or {},
+            secrets=self.environment_secrets or [],
+            pull_secret=self.pull_secret,
+            storage=storage_spec,
+            api_key=api_key_spec,
+        )
 
     @staticmethod
     def from_spec(spec: ServiceSpec):
@@ -283,8 +404,9 @@ class Service(BaseModel):
         return Service(
             id="",
             created_at=datetime.now(timezone.utc).isoformat(),
-            name=spec.name,
+            name=spec.metadata.name,
             command=spec.command,
+            annotations=spec.metadata.annotations,
             image=spec.image,
             ports=ports,
             role=spec.role,
@@ -1117,8 +1239,8 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        service: Service,
-    ) -> Dict[str, Any]:
+        service: ServiceSpec,
+    ) -> str:
         """
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
@@ -1141,32 +1263,31 @@ class Meshagent:
             json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            return await resp.json()["id"]
 
     async def update_service(
         self,
         *,
         project_id: str,
-        service_id: str,
-        service: Dict[str, Any] | Service,
-    ) -> Dict[str, Any]:
+        service: ServiceSpec,
+    ) -> None:
         """
         PUT /accounts/projects/{project_id}/services/{service_id}
         Body: same structure as create_service (fields you wish to change).
         Returns: {} on success.
         """
 
-        if isinstance(service, Service):
-            service = service.model_dump(mode="json", exclude_unset=True)
+        if service.id is None:
+            raise RoomException("Service id must be set")
 
-        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service.id}"
         async with self._session.put(
-            url, headers=self._get_headers(), json=service
+            url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            await resp.json()
 
-    async def get_service(self, *, project_id: str, service_id: str) -> Service:
+    async def get_service(self, *, project_id: str, service_id: str) -> ServiceSpec:
         """
         GET /accounts/projects/{project_id}/services/{service_id}
         Returns a `Service` instance.
@@ -1177,11 +1298,11 @@ class Meshagent:
             # Handler returns a JSON string, so we read text then validate
             raw = await resp.text()
             try:
-                return Service.model_validate_json(raw)
+                return ServiceSpec.model_validate_json(raw)
             except ValidationError as exc:
                 raise RoomException(f"Invalid service payload: {exc}") from exc
 
-    async def list_services(self, *, project_id: str) -> List[Service]:
+    async def list_services(self, *, project_id: str) -> List[ServiceSpec]:
         """
         GET /accounts/projects/{project_id}/services
         Returns a list of `Service` instances.
@@ -1191,7 +1312,7 @@ class Meshagent:
             resp.raise_for_status()
             data = await resp.json()
             try:
-                return [Service.model_validate(item) for item in data["services"]]
+                return [ServiceSpec.model_validate(item) for item in data["services"]]
             except ValidationError as exc:
                 raise RoomException(f"Invalid services payload: {exc}") from exc
 
@@ -1209,8 +1330,8 @@ class Meshagent:
         *,
         project_id: str,
         room_name: str,
-        service: Service,
-    ) -> Dict[str, Any]:
+        service: ServiceSpec,
+    ) -> str:
         """
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
@@ -1233,7 +1354,7 @@ class Meshagent:
             json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            return await resp.json()["id"]
 
     async def update_room_service(
         self,
@@ -1241,27 +1362,24 @@ class Meshagent:
         project_id: str,
         room_name: str,
         service_id: str,
-        service: Dict[str, Any] | Service,
-    ) -> Dict[str, Any]:
+        service: ServiceSpec,
+    ) -> NotImplemented:
         """
         PUT /accounts/projects/{project_id}/services/{service_id}
         Body: same structure as create_service (fields you wish to change).
         Returns: {} on success.
         """
 
-        if isinstance(service, Service):
-            service = service.model_dump(mode="json", exclude_unset=True)
-
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.put(
-            url, headers=self._get_headers(), json=service
+            url, headers=self._get_headers(), json=service.model_dump_json()
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()
+            await resp.json()
 
     async def get_room_service(
         self, *, project_id: str, room_name: str, service_id: str
-    ) -> Service:
+    ) -> ServiceSpec:
         """
         GET /accounts/projects/{project_id}/services/{service_id}
         Returns a `Service` instance.
@@ -1272,7 +1390,7 @@ class Meshagent:
             # Handler returns a JSON string, so we read text then validate
             raw = await resp.text()
             try:
-                return Service.model_validate_json(raw)
+                return ServiceSpec.model_validate_json(raw)
             except ValidationError as exc:
                 raise RoomException(f"Invalid service payload: {exc}") from exc
 
@@ -1290,7 +1408,7 @@ class Meshagent:
             resp.raise_for_status()
             data = await resp.json()
             try:
-                return [Service.model_validate(item) for item in data["services"]]
+                return [ServiceSpec.model_validate(item) for item in data["services"]]
             except ValidationError as exc:
                 raise RoomException(f"Invalid services payload: {exc}") from exc
 

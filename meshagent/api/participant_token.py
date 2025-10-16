@@ -267,7 +267,9 @@ class ParticipantGrant:
     def to_json(self) -> dict:
         return {
             "name": self.name,
-            "scope": self.scope.model_dump(mode="json", exclude_none=True)
+            "scope": self.scope.model_dump(
+                mode="json", exclude_none=True, exclude_defaults=True
+            )
             if self.name == "api"
             else self.scope,
         }

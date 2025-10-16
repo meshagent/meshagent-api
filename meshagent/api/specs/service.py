@@ -30,12 +30,21 @@ class ServiceApiKeySpec(BaseModel):
     auto_provision: Optional[bool] = True
 
 
+class ServiceMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    description: Optional[str] = None
+    repo: Optional[str] = None
+    icon: Optional[str] = None
+    annotations: Optional[dict[str, str]] = None
+
+
 class ServiceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["v1"]
+    metadata: ServiceMetadata
     kind: Literal["Service"]
     id: Optional[str] = None
-    name: str
     command: Optional[str] = None
     image: str
     ports: Optional[list["ServicePortSpec"]] = []
@@ -93,13 +102,7 @@ class ServiceTemplateMetadata(BaseModel):
     description: Optional[str] = None
     repo: Optional[str] = None
     icon: Optional[str] = None
-
-
-class ServiceApiKeySpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    role: Literal["admin"]
-    name: str
-    auto_provision: Optional[bool] = True
+    annotations: Optional[dict[str, str]] = None
 
 
 class ServiceTemplateSpec(BaseModel):
@@ -124,7 +127,13 @@ class ServiceTemplateSpec(BaseModel):
         return ServiceSpec(
             version=self.version,
             kind="Service",
-            name=self.metadata.name,
+            metadata=ServiceMetadata(
+                name=self.metadata.name,
+                description=self.metadata.description,
+                repo=self.metadata.repo,
+                icon=self.metadata.icon,
+                annotations=self.metadata.annotations,
+            ),
             command=self.command,
             image=self.image,
             ports=self.ports,
