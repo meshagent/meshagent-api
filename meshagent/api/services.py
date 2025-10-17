@@ -17,9 +17,11 @@ from meshagent.api import WebSocketClientProtocol, RoomMessage
 from meshagent.api.room_server_client import RoomClient
 
 from meshagent.api.specs.service import (
+    ContainerSpec,
     ServiceSpec,
     ServicePortSpec,
     ServicePortEndpointSpec,
+    ServiceMetadata,
 )
 
 well_known_service_path = "/.well-known/meshagent-service.json"
@@ -309,10 +311,14 @@ class ServiceHost:
         spec = ServiceSpec(
             version="v1",
             kind="Service",
-            name=self.name if self.name is not None else "<YOUR_SERVICE_NAME>",
-            command=command,
-            image=image,
-            environment=environment,
+            metadata=ServiceMetadata(
+                name=self.name if self.name is not None else "<YOUR_SERVICE_NAME>"
+            ),
+            container=ContainerSpec(
+                command=command,
+                image=image,
+                environment=environment,
+            ),
         )
 
         port = ServicePortSpec(
