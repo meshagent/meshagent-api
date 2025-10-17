@@ -429,7 +429,7 @@ class Service(BaseModel):
             annotations=spec.metadata.annotations,
             image=spec.container.image if spec.container is not None else None,
             environment={env.name: env.value for env in spec.container.environment}
-            if spec.container is not None
+            if spec.container is not None and spec.container.environment is not None
             else None,
             environment_secrets=spec.container.secrets
             if spec.container is not None
