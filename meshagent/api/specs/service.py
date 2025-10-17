@@ -3,6 +3,12 @@ from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 
 
+class EnvironmentVariable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    value: str
+
+
 class RoomStorageMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
@@ -39,21 +45,29 @@ class ServiceMetadata(BaseModel):
     annotations: Optional[dict[str, str]] = None
 
 
-class ServiceSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    version: Literal["v1"]
-    metadata: ServiceMetadata
-    kind: Literal["Service"]
-    id: Optional[str] = None
+class ContainerSpec(BaseModel):
     command: Optional[str] = None
     image: str
-    ports: Optional[list["ServicePortSpec"]] = []
-    role: Optional[Literal["user", "tool", "agent"]] = None
-    environment: Optional[dict[str, str]] = {}
+    environment: Optional[list[EnvironmentVariable]] = None
     secrets: list[str] = []
     pull_secret: Optional[str] = None
     storage: Optional[ServiceStorageMountsSpec] = None
     api_key: Optional[ServiceApiKeySpec] = None
+
+
+class ExternalServiceSpec(BaseModel):
+    url: str
+
+
+class ServiceSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal["v1"]
+    kind: Literal["Service"]
+    id: Optional[str] = None
+    metadata: ServiceMetadata
+    ports: Optional[list["ServicePortSpec"]] = []
+    container: Optional[ContainerSpec] = None
+    external: Optional[ExternalServiceSpec] = None
 
 
 class ServicePortEndpointSpec(BaseModel):
@@ -84,12 +98,6 @@ class ServiceTemplateVariable(BaseModel):
     type: Optional[Literal["email"]] = None
 
 
-class ServiceTemplateEnvironmentVariable(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    value: str
-
-
 class ServiceTemplateMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
@@ -105,24 +113,37 @@ class ServiceTemplateMetadata(BaseModel):
     annotations: Optional[dict[str, str]] = None
 
 
+class ContainerTemplateSpec(BaseModel):
+    environment: Optional[list[EnvironmentVariable]] = None
+    image: Optional[str] = None
+    command: Optional[str] = None
+    storage: Optional[ServiceTemplateMountSpec] = None
+
+
+class ExternalServiceTemplateSpec(BaseModel):
+    url: str
+
+
 class ServiceTemplateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
     metadata: ServiceTemplateMetadata
     variables: Optional[list[ServiceTemplateVariable]] = None
-    environment: Optional[list[ServiceTemplateEnvironmentVariable]] = None
     ports: list[ServicePortSpec] = []
-    image: Optional[str] = None
-    command: Optional[str] = None
-    role: Optional[Literal["user", "tool", "agent"]] = None
-    storage: Optional[ServiceTemplateMountSpec] = None
+    container: Optional[ContainerTemplateSpec] = None
+    external: Optional[ExternalServiceTemplateSpec] = None
 
     def to_service_spec(self, *, values: dict[str, str]) -> ServiceSpec:
-        env = {}
-        if self.environment is not None:
-            for e in self.environment:
-                env[e.name] = e.value.format_map(values)
+        env = []
+        if self.container is not None:
+            if self.container.environment is not None:
+                for e in self.container.environment:
+                    env.append(
+                        EnvironmentVariable(
+                            name=e.name, value=e.value.format_map(values)
+                        )
+                    )
 
         return ServiceSpec(
             version=self.version,
@@ -134,13 +155,20 @@ class ServiceTemplateSpec(BaseModel):
                 icon=self.metadata.icon,
                 annotations=self.metadata.annotations,
             ),
-            command=self.command,
-            image=self.image,
+            container=ContainerSpec(
+                command=self.container.command,
+                image=self.container.image,
+                environment=env,
+                storage=ServiceStorageMountsSpec(
+                    room=self.container.storage.room
+                    if self.container.storage is not None
+                    else None,
+                    project=self.container.storage.project
+                    if self.container.storage is not None
+                    else None,
+                ),
+            )
+            if self.container is not None
+            else None,
             ports=self.ports,
-            role=self.role,
-            environment=env,
-            storage=ServiceStorageMountsSpec(
-                room=self.storage.room if self.storage is not None else None,
-                project=self.storage.project if self.storage is not None else None,
-            ),
         )

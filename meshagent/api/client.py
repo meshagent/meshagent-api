@@ -9,6 +9,8 @@ from meshagent.api.specs.service import (
     ServiceSpec,
     ServiceMetadata,
     ServicePortSpec,
+    ContainerSpec,
+    ExternalServiceSpec,
     ServicePortEndpointSpec,
     ServiceStorageMountsSpec,
     RoomStorageMountSpec,
@@ -225,7 +227,7 @@ class ServiceApiKey(BaseModel):
 
 class Service(BaseModel):
     id: Optional[str] = None
-    image: str
+    image: Optional[str] = None
     name: str
     environment: Optional[Dict[str, str]] = None
     command: Optional[str] = None
@@ -241,6 +243,7 @@ class Service(BaseModel):
     storage: Optional[ServiceStorageMounts] = None
     api_key: Optional[ServiceApiKey] = None
     annotations: Optional[dict[str, str]] = None
+    external_url: Optional[str] = None
 
     def to_spec(self) -> ServiceSpec:
         """
@@ -286,45 +289,46 @@ class Service(BaseModel):
                     )
                 )
 
-        # ---------- Storage ----------
-        storage_spec: ServiceStorageMountsSpec | None = None
-        room_specs: list[RoomStorageMountSpec] | None = None
-        project_specs: list[ProjectStorageMountSpec] | None = None
+        if self.image is not None:
+            # ---------- Storage ----------
+            storage_spec: ServiceStorageMountsSpec | None = None
+            room_specs: list[RoomStorageMountSpec] | None = None
+            project_specs: list[ProjectStorageMountSpec] | None = None
 
-        if self.storage is not None:
-            if self.storage.room:
-                room_specs = [
-                    RoomStorageMountSpec(
-                        path=rm.path,
-                        subpath=rm.subpath,
-                        read_only=rm.read_only,
-                    )
-                    for rm in self.storage.room
-                ] or None
-            if self.storage.project:
-                project_specs = [
-                    ProjectStorageMountSpec(
-                        path=pm.path,
-                        subpath=pm.subpath,
-                        read_only=pm.read_only,
-                    )
-                    for pm in self.storage.project
-                ] or None
+            if self.storage is not None:
+                if self.storage.room:
+                    room_specs = [
+                        RoomStorageMountSpec(
+                            path=rm.path,
+                            subpath=rm.subpath,
+                            read_only=rm.read_only,
+                        )
+                        for rm in self.storage.room
+                    ] or None
+                if self.storage.project:
+                    project_specs = [
+                        ProjectStorageMountSpec(
+                            path=pm.path,
+                            subpath=pm.subpath,
+                            read_only=pm.read_only,
+                        )
+                        for pm in self.storage.project
+                    ] or None
 
-            if room_specs or project_specs:
-                storage_spec = ServiceStorageMountsSpec(
-                    room=room_specs,
-                    project=project_specs,
+                if room_specs or project_specs:
+                    storage_spec = ServiceStorageMountsSpec(
+                        room=room_specs,
+                        project=project_specs,
+                    )
+
+            # ---------- API Key ----------
+            api_key_spec: ServiceApiKeySpec | None = None
+            if self.api_key is not None:
+                api_key_spec = ServiceApiKeySpec(
+                    role=self.api_key.role,
+                    name=self.api_key.name,
+                    auto_provision=self.api_key.auto_provision,
                 )
-
-        # ---------- API Key ----------
-        api_key_spec: ServiceApiKeySpec | None = None
-        if self.api_key is not None:
-            api_key_spec = ServiceApiKeySpec(
-                role=self.api_key.role,
-                name=self.api_key.name,
-                auto_provision=self.api_key.auto_provision,
-            )
 
         # ---------- Metadata ----------
         metadata = ServiceMetadata(
@@ -342,15 +346,21 @@ class Service(BaseModel):
             kind="Service",
             id=self.id,  # Optional in spec; include if present
             metadata=metadata,
-            command=self.command,
-            image=self.image,
-            ports=ports_list or [],
-            role=self.role,
-            environment=self.environment or {},
-            secrets=self.environment_secrets or [],
-            pull_secret=self.pull_secret,
-            storage=storage_spec,
-            api_key=api_key_spec,
+            container=ContainerSpec(
+                command=self.command,
+                image=self.image,
+                ports=ports_list or [],
+                environment=self.environment or {},
+                secrets=self.environment_secrets or [],
+                pull_secret=self.pull_secret,
+                storage=storage_spec,
+                api_key=api_key_spec,
+            )
+            if self.image is not None
+            else None,
+            external=ExternalServiceSpec(url=self.external_url)
+            if self.external_url is not None
+            else None,
         )
 
     @staticmethod
@@ -377,46 +387,61 @@ class Service(BaseModel):
             ports[str(p.num)] = port
 
         room_mounts = []
-        if spec.storage is not None and spec.storage.room is not None:
-            for rs in spec.storage.room:
-                room_mounts.append(
-                    RoomStorageMount(
-                        path=rs.path, subpath=rs.subpath, read_only=rs.read_only
-                    )
-                )
-
         project_mounts = []
-        if spec.storage is not None and spec.storage.project is not None:
-            for rs in spec.storage.project:
-                project_mounts.append(
-                    ProjectStorageMount(
-                        path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+        api_key = None
+
+        if spec.container is not None:
+            if (
+                spec.container.storage is not None
+                and spec.container.storage.room is not None
+            ):
+                for rs in spec.container.storage.room:
+                    room_mounts.append(
+                        RoomStorageMount(
+                            path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+                        )
                     )
+
+            if (
+                spec.container.storage is not None
+                and spec.container.storage.project is not None
+            ):
+                for rs in spec.container.storage.project:
+                    project_mounts.append(
+                        ProjectStorageMount(
+                            path=rs.path, subpath=rs.subpath, read_only=rs.read_only
+                        )
+                    )
+
+            if spec.container.api_key is not None:
+                api_key = ServiceApiKey(
+                    role=spec.container.api_key.role,
+                    name=spec.container.api_key.name,
+                    auto_provision=spec.container.api_key.auto_provision,
                 )
 
-        api_key = None
-        if spec.api_key is not None:
-            api_key = ServiceApiKey(
-                role=spec.api_key.role,
-                name=spec.api_key.name,
-                auto_provision=spec.api_key.auto_provision,
-            )
         return Service(
             id="",
             created_at=datetime.now(timezone.utc).isoformat(),
             name=spec.metadata.name,
-            command=spec.command,
-            annotations=spec.metadata.annotations,
-            image=spec.image,
             ports=ports,
-            role=spec.role,
-            environment=spec.environment,
-            environment_secrets=spec.secrets,
-            pull_secret=spec.pull_secret,
+            command=spec.container.command if spec.container is not None else None,
+            annotations=spec.metadata.annotations,
+            image=spec.container.image if spec.container is not None else None,
+            environment={env.name: env.value for env in spec.container.environment}
+            if spec.container is not None
+            else None,
+            environment_secrets=spec.container.secrets
+            if spec.container is not None
+            else None,
+            pull_secret=spec.container.pull_secret
+            if spec.container is not None
+            else None,
             storage=ServiceStorageMounts(
                 room=[*room_mounts], project=[*project_mounts]
             ),
             api_key=api_key,
+            external_url=spec.external.url if spec.external is not None else None,
         )
 
 
