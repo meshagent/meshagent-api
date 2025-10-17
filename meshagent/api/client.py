@@ -346,10 +346,10 @@ class Service(BaseModel):
             kind="Service",
             id=self.id,  # Optional in spec; include if present
             metadata=metadata,
+            ports=ports_list or [],
             container=ContainerSpec(
                 command=self.command,
                 image=self.image,
-                ports=ports_list or [],
                 environment=self.environment or {},
                 secrets=self.environment_secrets or [],
                 pull_secret=self.pull_secret,

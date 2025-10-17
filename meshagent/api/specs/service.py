@@ -46,6 +46,7 @@ class ServiceMetadata(BaseModel):
 
 
 class ContainerSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     command: Optional[str] = None
     image: str
     environment: Optional[list[EnvironmentVariable]] = None
@@ -56,6 +57,8 @@ class ContainerSpec(BaseModel):
 
 
 class ExternalServiceSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     url: str
 
 
@@ -114,6 +117,7 @@ class ServiceTemplateMetadata(BaseModel):
 
 
 class ContainerTemplateSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     environment: Optional[list[EnvironmentVariable]] = None
     image: Optional[str] = None
     command: Optional[str] = None
@@ -121,6 +125,7 @@ class ContainerTemplateSpec(BaseModel):
 
 
 class ExternalServiceTemplateSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     url: str
 
 
