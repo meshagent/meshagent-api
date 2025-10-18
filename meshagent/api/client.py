@@ -277,8 +277,13 @@ class Service(BaseModel):
                             )
                         )
 
+                port_type = p.type
+                if port_type != "http" or port_type != "tcp":
+                    port_type = "http"
+
                 ports_list.append(
                     ServicePortSpec(
+                        type=port_type,
                         num=num_str,
                         endpoints=ep_specs,
                         liveness=p.liveness_path,
