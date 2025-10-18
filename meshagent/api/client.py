@@ -1298,6 +1298,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
+        service_id: str,
         service: ServiceSpec,
     ) -> None:
         """
@@ -1309,7 +1310,7 @@ class Meshagent:
         if service.id is None:
             raise RoomException("Service id must be set")
 
-        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service.id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.put(
             url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
