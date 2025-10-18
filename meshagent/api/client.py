@@ -278,8 +278,13 @@ class Service(BaseModel):
                             )
                         )
 
+                port_type = p.type
+                if port_type != "http" or port_type != "tcp":
+                    port_type = "http"
+
                 ports_list.append(
                     ServicePortSpec(
+                        type=port_type,
                         num=num_str,
                         endpoints=ep_specs,
                         liveness=p.liveness_path,
@@ -1299,6 +1304,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
+        service_id: str,
         service: ServiceSpec,
     ) -> None:
         """
@@ -1310,7 +1316,7 @@ class Meshagent:
         if service.id is None:
             raise RoomException("Service id must be set")
 
-        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service.id}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.put(
             url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
