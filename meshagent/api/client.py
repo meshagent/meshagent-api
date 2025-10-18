@@ -16,6 +16,7 @@ from meshagent.api.specs.service import (
     RoomStorageMountSpec,
     ProjectStorageMountSpec,
     ServiceApiKeySpec,
+    EnvironmentVariable,
 )
 import os
 
@@ -195,10 +196,6 @@ class Endpoint(BaseModel):
 class Port(BaseModel):
     liveness_path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
-
-    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
-    path: Optional[str | None] = None
-
     endpoints: Optional[list[Endpoint]] = None
 
 
@@ -283,7 +280,6 @@ class Service(BaseModel):
                 ports_list.append(
                     ServicePortSpec(
                         num=num_str,
-                        type=p.type,
                         endpoints=ep_specs,
                         liveness=p.liveness_path,
                     )
@@ -350,7 +346,12 @@ class Service(BaseModel):
             container=ContainerSpec(
                 command=self.command,
                 image=self.image,
-                environment=self.environment or {},
+                environment=[
+                    EnvironmentVariable(name=k, value=v)
+                    for k, v in self.environment.items()
+                ]
+                if self.environment is not None
+                else [],
                 secrets=self.environment_secrets or [],
                 pull_secret=self.pull_secret,
                 storage=storage_spec,
@@ -367,9 +368,12 @@ class Service(BaseModel):
     def from_spec(spec: ServiceSpec):
         ports = {}
         for p in spec.ports:
-            port = Port(liveness_path=p.liveness, type=p.type, endpoints=[])
+            port_type = p
+            # older specs allowed more values, normalize them
+            if port_type != "http" or port_type != "tcp":
+                port_type = "http"
+            port = Port(liveness_path=p.liveness, endpoints=[], type=port_type)
             for endpoint in p.endpoints:
-                type = port.type
                 if endpoint.type is not None:
                     type = endpoint.type
 

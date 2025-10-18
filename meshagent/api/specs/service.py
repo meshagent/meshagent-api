@@ -58,7 +58,6 @@ class ContainerSpec(BaseModel):
 
 class ExternalServiceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     url: str
 
 
@@ -78,14 +77,14 @@ class ServicePortEndpointSpec(BaseModel):
     path: str
     identity: str
     role: Optional[Literal["user", "tool", "agent"]] = None
-    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
+    type: Optional[Literal["mcp.sse", "meshagent.callable"]] = None
     api: Optional[ApiScope] = None
 
 
 class ServicePortSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     num: Literal["*"] | PositiveInt
-    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
+    type: Optional[Literal["http", "tcp"]] = None
     endpoints: list[ServicePortEndpointSpec] = []
     liveness: Optional[str] = None
 
