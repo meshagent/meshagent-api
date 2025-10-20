@@ -197,6 +197,7 @@ class Port(BaseModel):
     liveness_path: Optional[str | None] = None
     participant_name: Optional[str | None] = None
     endpoints: Optional[list[Endpoint]] = None
+    type: Optional[str] = None
 
 
 class RoomStorageMount(BaseModel):

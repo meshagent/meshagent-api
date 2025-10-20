@@ -323,7 +323,7 @@ class ServiceHost:
 
         port = ServicePortSpec(
             num=self.port,
-            type="meshagent.callable",
+            type="http",
         )
         spec.ports.append(port)
         for p in self.paths:
@@ -332,6 +332,7 @@ class ServiceHost:
                     path=p.path,
                     identity=p.identity if p.identity is not None else "agent",
                     api=p.permissions,
+                    type="meshagent.callable",
                 )
             )
 
