@@ -1298,7 +1298,7 @@ class Meshagent:
             json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()["id"]
+            return (await resp.json())["id"]
 
     async def update_service(
         self,
@@ -1390,7 +1390,7 @@ class Meshagent:
             json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
             resp.raise_for_status()
-            return await resp.json()["id"]
+            return (await resp.json())["id"]
 
     async def update_room_service(
         self,
