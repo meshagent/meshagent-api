@@ -90,11 +90,11 @@ class OAuthClientConfig(BaseModel):
     client_secret: Optional[str] = None
     authorization_endpoint: str
     token_endpoint: str
-    no_pcke: Optional[bool] = None
+    no_pkce: Optional[bool] = None
     scopes: list[str] = None
 
 
-class McpEndpointSpec(BaseModel):
+class MCPEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
     description: str
@@ -204,6 +204,11 @@ class ServiceTemplateSpec(BaseModel):
                 ),
             )
             if self.container is not None
+            else None,
+            external=ExternalServiceSpec(
+                url=self.external.url,
+            )
+            if self.external is not None
             else None,
             ports=self.ports,
         )
