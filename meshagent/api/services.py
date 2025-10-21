@@ -21,6 +21,7 @@ from meshagent.api.specs.service import (
     ServiceSpec,
     ServicePortSpec,
     ServicePortEndpointSpec,
+    MeshagentEndpointSpec,
     ServiceMetadata,
 )
 
@@ -330,9 +331,10 @@ class ServiceHost:
             port.endpoints.append(
                 ServicePortEndpointSpec(
                     path=p.path,
-                    identity=p.identity if p.identity is not None else "agent",
-                    api=p.permissions,
-                    type="meshagent.callable",
+                    meshagent=MeshagentEndpointSpec(
+                        identity=p.identity if p.identity is not None else "agent",
+                        api=p.permissions,
+                    ),
                 )
             )
 

@@ -72,13 +72,45 @@ class ServiceSpec(BaseModel):
     external: Optional[ExternalServiceSpec] = None
 
 
+class MeshagentEndpointSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    identity: str
+    role: Optional[Literal["user", "tool", "agent"]] = None
+    api: Optional[ApiScope] = None
+
+
+class AllowedMcpToolFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool_names: list[str] = None
+    read_only: Optional[bool] = None
+
+
+class OAuthClientConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    client_id: str
+    client_secret: Optional[str] = None
+    authorization_endpoint: str
+    token_endpoint: str
+    no_pcke: Optional[bool] = None
+    scopes: list[str] = None
+
+
+class McpEndpointSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    description: str
+    allowed_tools: Optional[list[AllowedMcpToolFilter]] = None
+    headers: Optional[dict[str, str]] = None
+    require_approval: Optional[Literal["always", "never"]] = None
+    oauth: Optional[OAuthClientConfig] = None
+    openai_connector_id: Optional[str] = None
+
+
 class ServicePortEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
-    identity: str
-    role: Optional[Literal["user", "tool", "agent"]] = None
-    type: Optional[Literal["mcp.sse", "meshagent.callable"]] = None
-    api: Optional[ApiScope] = None
+    meshagent: Optional[MeshagentEndpointSpec] = None
+    mcp: Optional[MeshagentEndpointSpec] = None
 
 
 class ServicePortSpec(BaseModel):
