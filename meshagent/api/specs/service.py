@@ -90,7 +90,7 @@ class OAuthClientConfig(BaseModel):
     client_secret: Optional[str] = None
     authorization_endpoint: str
     token_endpoint: str
-    no_pcke: Optional[bool] = None
+    no_pkce: Optional[bool] = None
     scopes: list[str] = None
 
 
@@ -109,7 +109,7 @@ class ServicePortEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     meshagent: Optional[MeshagentEndpointSpec] = None
-    mcp: Optional[MeshagentEndpointSpec] = None
+    mcp: Optional[McpEndpointSpec] = None
 
 
 class ServicePortSpec(BaseModel):
