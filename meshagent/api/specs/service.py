@@ -75,7 +75,6 @@ class ServiceSpec(BaseModel):
 class MeshagentEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     identity: str
-    role: Optional[Literal["user", "tool", "agent"]] = None
     api: Optional[ApiScope] = None
 
 
