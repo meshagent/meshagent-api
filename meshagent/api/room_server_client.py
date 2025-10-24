@@ -2472,11 +2472,6 @@ class ContainersClient:
     ) -> str:
         request_id = uuid.uuid4().hex
 
-        async def cancel():
-            await self.room.send_request(
-                "containers.stop_container", {"request_id": request_id}
-            )
-
         req = RunRequest(
             name=name,
             request_id=request_id,
@@ -2514,6 +2509,7 @@ class ContainersClient:
 
         req = ExecRequest(
             request_id=request_id,
+            container_id=container_id,
             command=command,
             detach=detach,
             tty=tty,
