@@ -100,7 +100,7 @@ class ServicePortEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     meshagent: Optional[MeshagentEndpointSpec] = None
-    mcp: Optional[MeshagentEndpointSpec] = None
+    mcp: Optional[MCPEndpointSpec] = None
 
 
 class ServicePortSpec(BaseModel):

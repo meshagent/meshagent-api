@@ -155,7 +155,6 @@ class StorageGrant(BaseModel):
 
 
 class ContainersGrant(BaseModel):
-    build: bool = True
     logs: bool = True
 
     pull: Optional[list[str]] = None
