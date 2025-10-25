@@ -235,6 +235,7 @@ class ApiScope(BaseModel):
     admin: Optional[AdminGrant] = None
     secrets: Optional[SecretsGrant] = None
 
+    # no secrets access, no admin access by default for agents
     @staticmethod
     def agent_default() -> "ApiScope":
         return ApiScope(
@@ -247,7 +248,6 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
-            secrets=SecretsGrant(),
         )
 
     @staticmethod
