@@ -1,6 +1,7 @@
 from pydantic import BaseModel, PositiveInt, ConfigDict
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
+from meshagent.api.oauth import OAuthClientConfig
 
 
 class EnvironmentVariable(BaseModel):
@@ -82,16 +83,6 @@ class AllowedMcpToolFilter(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tool_names: list[str] = None
     read_only: Optional[bool] = None
-
-
-class OAuthClientConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    client_id: str
-    client_secret: Optional[str] = None
-    authorization_endpoint: str
-    token_endpoint: str
-    no_pkce: Optional[bool] = None
-    scopes: list[str] = None
 
 
 class MCPEndpointSpec(BaseModel):

@@ -6,6 +6,7 @@ import json
 from pydantic import BaseModel
 import logging
 from .keys import parse_api_key
+from .oauth import OAuthClientConfig, ConnectorRef
 from .version import __version__
 
 logger = logging.getLogger("participant-token")
@@ -199,17 +200,25 @@ class OAuthEndpoint(BaseModel):
 class SecretsGrant(BaseModel):
     request_oauth_token: Optional[list[OAuthEndpoint]] = None
 
-    def can_request_oauth_token(self, *, authorization_endpoint: str, client_id: str):
+    def can_request_oauth_token(
+        self,
+        *,
+        connector: Optional[ConnectorRef] = None,
+        oauth: Optional[OAuthClientConfig],
+    ):
         if self.request_oauth_token is None:
             return True
 
         for t in self.request_oauth_token:
-            if (
-                t.endpoint == authorization_endpoint
-                or t.endpoint.endswith("*")
-                and authorization_endpoint.startswith(t.endpoint.removesuffix("*"))
-            ) and t.client_id == client_id:
-                return True
+            if oauth is not None:
+                if (
+                    t.endpoint == oauth.authorization_endpoint
+                    or t.endpoint.endswith("*")
+                    and oauth.authorization_endpoint.startswith(
+                        t.endpoint.removesuffix("*")
+                    )
+                ) and t.client_id == oauth.authorization_endpoint.client_id:
+                    return True
 
         return False
 

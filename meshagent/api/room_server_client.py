@@ -35,6 +35,7 @@ from meshagent.api.messaging import (
     FileResponse,
     Response,
 )
+from meshagent.api.oauth import OAuthClientConfig, ConnectorRef
 import uuid
 
 from datetime import datetime
@@ -2586,10 +2587,8 @@ class ContainersClient:
 
 
 class _GetOfflineOAuthTokenRequest(BaseModel):
-    client_id: str
-    authorization_endpoint: str
-    token_endpoint: str
-    client_secret: Optional[str]
+    connector: Optional[ConnectorRef] = None
+    oauth: Optional[OAuthClientConfig] = None
     participant_name: str
 
 
@@ -2598,19 +2597,17 @@ class _GetOfflineOAuthTokenResponse(BaseModel):
 
 
 class _RequestOAuthTokenRequest(BaseModel):
-    client_id: str
-    authorization_endpoint: str
-    token_endpoint: str
-    client_secret: Optional[str]
+    connector: Optional[ConnectorRef] = None
+    oauth: Optional[OAuthClientConfig] = None
+    redirect_uri: str
     participant_id: str
-    scopes: Optional[list[str]] = None
     timeout: int = 60 * 5
     redirect_uri: str
-    no_pkce: bool = False
+    delegate_to: Optional[str] = None
 
 
 class _RequestOAuthTokenResponse(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None
 
 
 class _DeleteUserSecretRequest(BaseModel):
@@ -2701,9 +2698,9 @@ class SecretsClient:
             self._oauth_token_request_handler(
                 OAuthTokenRequest(
                     request_id=req.request_id,
-                    authorization_endpoint=req.request.authorization_endpoint,
-                    token_endpoint=req.request.token_endpoint,
-                    scopes=req.request.scopes,
+                    authorization_endpoint=req.request.oauth.authorization_endpoint,
+                    token_endpoint=req.request.oauth.token_endpoint,
+                    scopes=req.request.oauth.scopes,
                     challenge=req.challenge,
                 )
             )
@@ -2743,21 +2740,13 @@ class SecretsClient:
     async def get_offline_oauth_token(
         self,
         *,
-        client_id: str,
-        authorization_endpoint: str,
-        token_endpoint: str,
-        client_secret: Optional[str] = None,
-        scopes: Optional[list[str]] = None,
-        timeout: int = 60 * 5,
+        connector: Optional[ConnectorRef] = None,
+        oauth: Optional[OAuthClientConfig] = None,
         participant_name: str,
     ):
         req = _GetOfflineOAuthTokenRequest(
-            client_id=client_id,
-            client_secret=client_secret,
-            authorization_endpoint=authorization_endpoint,
-            token_endpoint=token_endpoint,
-            scopes=scopes,
-            timeout=timeout,
+            connector=connector,
+            oauth=oauth,
             participant_name=participant_name,
         )
         response = await self.room.send_request(
@@ -2772,26 +2761,20 @@ class SecretsClient:
     async def request_oauth_token(
         self,
         *,
-        client_id: str,
-        authorization_endpoint: str,
-        token_endpoint: str,
-        client_secret: Optional[str] = None,
-        scopes: Optional[list[str]] = None,
+        connector: Optional[ConnectorRef] = None,
+        oauth: Optional[OAuthClientConfig] = None,
         timeout: int = 60 * 5,
         from_participant_id: str,
         redirect_uri: str,
-        no_pkce: bool = False,
-    ) -> str:
+        delegate_to: Optional[str] = None,
+    ) -> str | None:
         req = _RequestOAuthTokenRequest(
-            client_id=client_id,
-            client_secret=client_secret,
             redirect_uri=redirect_uri,
-            authorization_endpoint=authorization_endpoint,
-            token_endpoint=token_endpoint,
-            scopes=scopes,
             timeout=timeout,
             participant_id=from_participant_id,
-            no_pkce=no_pkce,
+            oauth=oauth,
+            connector=connector,
+            delegate_to=delegate_to,
         )
         response = await self.room.send_request(
             "secrets.request_oauth_token", req.model_dump(mode="json")
