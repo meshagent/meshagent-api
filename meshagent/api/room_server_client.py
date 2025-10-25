@@ -2585,7 +2585,8 @@ class ContainersClient:
 class _GetOfflineOAuthTokenRequest(BaseModel):
     connector: Optional[ConnectorRef] = None
     oauth: Optional[OAuthClientConfig] = None
-    participant_name: str
+    delegated_to: Optional[str] = None
+    delegated_by: Optional[str] = None
 
 
 class _GetOfflineOAuthTokenResponse(BaseModel):
@@ -2738,12 +2739,14 @@ class SecretsClient:
         *,
         connector: Optional[ConnectorRef] = None,
         oauth: Optional[OAuthClientConfig] = None,
-        participant_name: str,
+        delegated_to: Optional[str] = None,
+        delegated_by: Optional[str] = None,
     ):
         req = _GetOfflineOAuthTokenRequest(
             connector=connector,
             oauth=oauth,
-            participant_name=participant_name,
+            delegated_by=delegated_by,
+            delegated_to=delegated_to,
         )
         response = await self.room.send_request(
             "secrets.get_offline_oauth_token", req.model_dump(mode="json")
