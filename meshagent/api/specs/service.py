@@ -88,7 +88,7 @@ class AllowedMcpToolFilter(BaseModel):
 class MCPEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
-    description: str
+    description: Optional[str] = None
     allowed_tools: Optional[list[AllowedMcpToolFilter]] = None
     headers: Optional[dict[str, str]] = None
     require_approval: Optional[Literal["always", "never"]] = None
