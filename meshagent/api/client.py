@@ -1099,7 +1099,7 @@ class Meshagent:
           }
         Returns: { "id": "<service_id>" }
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}//services"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services"
         async with self._session.post(
             url,
             headers=self._get_headers(),
