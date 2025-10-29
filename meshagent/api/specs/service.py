@@ -37,6 +37,8 @@ class ServiceApiKeySpec(BaseModel):
     auto_provision: Optional[bool] = True
 
 
+ANNOTATION_SERVICE_ID = "meshagent.service.id"
+
 ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
 agent_type = Literal[
     "ChatBot",
@@ -86,7 +88,7 @@ class ServiceSpec(BaseModel):
     id: Optional[str] = None
     metadata: ServiceMetadata
     agents: Optional[list[AgentSpec]] = None
-    ports: Optional[list["ServicePortSpec"]] = []
+    ports: Optional[list["PortSpec"]] = []
     container: Optional[ContainerSpec] = None
     external: Optional[ExternalServiceSpec] = None
 
@@ -114,18 +116,18 @@ class MCPEndpointSpec(BaseModel):
     openai_connector_id: Optional[str] = None
 
 
-class ServicePortEndpointSpec(BaseModel):
+class EndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
     meshagent: Optional[MeshagentEndpointSpec] = None
     mcp: Optional[MCPEndpointSpec] = None
 
 
-class ServicePortSpec(BaseModel):
+class PortSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    num: Literal["*"] | PositiveInt
-    type: Optional[Literal["http", "tcp"]] = None
-    endpoints: list[ServicePortEndpointSpec] = []
+    num: Literal["*"] | PositiveInt = "*"
+    type: Optional[Literal["http", "tcp"]] = "http"
+    endpoints: list[EndpointSpec] = []
     liveness: Optional[str] = None
 
 
@@ -175,7 +177,7 @@ class ServiceTemplateSpec(BaseModel):
     metadata: ServiceTemplateMetadata
     agents: Optional[list[AgentSpec]] = None
     variables: Optional[list[ServiceTemplateVariable]] = None
-    ports: list[ServicePortSpec] = []
+    ports: list[PortSpec] = []
     container: Optional[ContainerTemplateSpec] = None
     external: Optional[ExternalServiceTemplateSpec] = None
 
@@ -193,6 +195,7 @@ class ServiceTemplateSpec(BaseModel):
         return ServiceSpec(
             version=self.version,
             kind="Service",
+            agents=self.agents,
             metadata=ServiceMetadata(
                 name=self.metadata.name,
                 description=self.metadata.description,

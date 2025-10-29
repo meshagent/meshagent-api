@@ -19,8 +19,8 @@ from meshagent.api.room_server_client import RoomClient
 from meshagent.api.specs.service import (
     ContainerSpec,
     ServiceSpec,
-    ServicePortSpec,
-    ServicePortEndpointSpec,
+    PortSpec,
+    EndpointSpec,
     MeshagentEndpointSpec,
     ServiceMetadata,
 )
@@ -322,14 +322,14 @@ class ServiceHost:
             ),
         )
 
-        port = ServicePortSpec(
+        port = PortSpec(
             num=self.port,
             type="http",
         )
         spec.ports.append(port)
         for p in self.paths:
             port.endpoints.append(
-                ServicePortEndpointSpec(
+                EndpointSpec(
                     path=p.path,
                     meshagent=MeshagentEndpointSpec(
                         identity=p.identity if p.identity is not None else "agent",
