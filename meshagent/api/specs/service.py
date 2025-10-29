@@ -37,6 +37,23 @@ class ServiceApiKeySpec(BaseModel):
     auto_provision: Optional[bool] = True
 
 
+ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
+agent_type = Literal[
+    "ChatBot",
+    "VoiceBot",
+    "Transcriber",
+    "TaskRunner",
+    "MailBot",
+    "Worker",
+]
+
+
+class AgentSpec(BaseModel):
+    name: str
+    description: Optional[str] = None
+    annotations: Optional[dict[str, str]] = None
+
+
 class ServiceMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -68,6 +85,7 @@ class ServiceSpec(BaseModel):
     kind: Literal["Service"]
     id: Optional[str] = None
     metadata: ServiceMetadata
+    agents: Optional[list[AgentSpec]] = None
     ports: Optional[list["ServicePortSpec"]] = []
     container: Optional[ContainerSpec] = None
     external: Optional[ExternalServiceSpec] = None
@@ -155,6 +173,7 @@ class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
     metadata: ServiceTemplateMetadata
+    agents: Optional[list[AgentSpec]] = None
     variables: Optional[list[ServiceTemplateVariable]] = None
     ports: list[ServicePortSpec] = []
     container: Optional[ContainerTemplateSpec] = None
