@@ -128,7 +128,13 @@ class _MakeCallRequest(BaseModel):
 
 class RequiredToolkit(Requirement):
     # Require a toolkit to be present for this tool to execute, optionally a list of specific tools in the toolkit
-    def __init__(self, *, name: str, tools: Optional[list["str"]] = None, callable: Optional[bool] = None):
+    def __init__(
+        self,
+        *,
+        name: str,
+        tools: Optional[list["str"]] = None,
+        callable: Optional[bool] = None,
+    ):
         super().__init__(name=name, callable=callable)
         self.tools = tools
 
