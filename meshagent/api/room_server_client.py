@@ -922,10 +922,10 @@ class StorageClient:
         """
 
         response = await self.room.send_request("storage.exists", {"path": path})
-        return response["exists"]
+        return response.json["exists"]
 
     async def stat(self, *, path: str) -> StorageEntry | None:
-        response = await self.room.send_request("storage.stat", {"path": path})
+        response = (await self.room.send_request("storage.stat", {"path": path})).json
         exists = response["exists"]
         if not exists:
             return None
@@ -933,8 +933,12 @@ class StorageClient:
             return StorageEntry(
                 name=response["name"],
                 is_folder=response["is_folder"],
-                created_at=datetime.fromisoformat(response["created_at"]),
-                updated_at=datetime.fromisoformat(response["updated_at"]),
+                created_at=datetime.fromisoformat(response["created_at"])
+                if response.get("created_at") is not None
+                else None,
+                updated_at=datetime.fromisoformat(response["updated_at"])
+                if response.get("updated_at") is not None
+                else None,
             )
 
     async def open(self, *, path: str, overwrite: bool = False):
@@ -1054,8 +1058,12 @@ class StorageClient:
                 lambda f: StorageEntry(
                     name=f["name"],
                     is_folder=f["is_folder"],
-                    created_at=datetime.fromisoformat(f["created_at"]),
-                    updated_at=datetime.fromisoformat(f["updated_at"]),
+                    created_at=datetime.fromisoformat(f["created_at"])
+                    if f.get("created_at") is not None
+                    else None,
+                    updated_at=datetime.fromisoformat(f["updated_at"])
+                    if f.get("updated_at") is not None
+                    else None,
                 ),
                 response["files"],
             )
