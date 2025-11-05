@@ -95,13 +95,19 @@ class RoomAccessDeniedException(RoomException):
 
 
 class Requirement(ABC):
-    def __init__(self, *, name: str):
+    def __init__(self, *, name: str, callable: Optional[bool] = None):
         self.name = name
+        if callable is None:
+            callable = name.startswith("http://") or name.startswith("https://")
+
+        self.callable = callable
 
     @staticmethod
     def from_json(r: dict) -> "Requirement":
         if "toolkit" in r:
-            return RequiredToolkit(name=r["toolkit"], tools=r["tools"])
+            return RequiredToolkit(
+                name=r["toolkit"], tools=r["tools"], callable=r.get("callable", None)
+            )
 
         if "schema" in r:
             return RequiredSchema(name=r["schema"])
@@ -127,7 +133,7 @@ class RequiredToolkit(Requirement):
         self.tools = tools
 
     def to_json(self):
-        return {"toolkit": self.name, "tools": self.tools}
+        return {"toolkit": self.name, "tools": self.tools, "callable": self.callable}
 
 
 class RequiredSchema(Requirement):
@@ -135,7 +141,7 @@ class RequiredSchema(Requirement):
         super().__init__(name=name)
 
     def to_json(self):
-        return {"schema": self.name}
+        return {"schema": self.name, "callable": self.callable}
 
 
 class _QueuedSync:
