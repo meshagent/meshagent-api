@@ -98,7 +98,7 @@ class Requirement(ABC):
     def __init__(self, *, name: str, callable: Optional[bool] = None):
         self.name = name
         if callable is None:
-            callable = name.startswith("http://") or name.startswith("https://")
+            callable = True
 
         self.callable = callable
 
