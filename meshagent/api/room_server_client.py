@@ -128,8 +128,8 @@ class _MakeCallRequest(BaseModel):
 
 class RequiredToolkit(Requirement):
     # Require a toolkit to be present for this tool to execute, optionally a list of specific tools in the toolkit
-    def __init__(self, *, name: str, tools: Optional[list["str"]] = None):
-        super().__init__(name=name)
+    def __init__(self, *, name: str, tools: Optional[list["str"]] = None, callable: Optional[bool] = None):
+        super().__init__(name=name, callable=callable)
         self.tools = tools
 
     def to_json(self):
@@ -137,8 +137,8 @@ class RequiredToolkit(Requirement):
 
 
 class RequiredSchema(Requirement):
-    def __init__(self, *, name: str):
-        super().__init__(name=name)
+    def __init__(self, *, name: str, callable: Optional[bool] = None):
+        super().__init__(name=name, callable=callable)
 
     def to_json(self):
         return {"schema": self.name, "callable": self.callable}
