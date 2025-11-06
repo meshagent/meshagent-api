@@ -174,7 +174,9 @@ class WebhookServer:
 
                     raise web.HTTPBadRequest()
 
-                ws = web.WebSocketResponse()
+                ws = web.WebSocketResponse(
+                    heartbeat=30,
+                )
                 await ws.prepare(request)
 
                 async with RoomClient(
