@@ -1126,7 +1126,7 @@ class Meshagent:
 
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.put(
-            url, headers=self._get_headers(), json=service.model_dump_json()
+            url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
             resp.raise_for_status()
             await resp.json()
