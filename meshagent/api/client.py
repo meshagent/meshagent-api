@@ -445,6 +445,7 @@ class Meshagent:
         user_id: str,
         is_admin: bool = False,
         is_developer: bool = False,
+        can_create_rooms: bool = False,
     ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/:id/users
@@ -457,6 +458,7 @@ class Meshagent:
             "user_id": user_id,
             "is_admin": is_admin,
             "is_developer": is_developer,
+            "can_create_rooms": can_create_rooms,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=body
