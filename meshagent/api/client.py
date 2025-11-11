@@ -1287,13 +1287,24 @@ class Meshagent:
             except ValidationError as exc:
                 raise RoomException(f"Invalid room payload: {exc}") from exc
 
-    async def update_room(self, *, project_id: str, room_id: str, name: str) -> None:
+    async def update_room(
+        self,
+        *,
+        project_id: str,
+        room_id: str,
+        name: str,
+        metadata: Optional[dict[str, any]] = None,
+    ) -> None:
         """
         PUT /accounts/projects/{project_id}/rooms/{room_id}
         Body: { "name": str }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}"
         payload = {"name": name}
+
+        if metadata is not None:
+            payload["metadata"] = metadata
+
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:

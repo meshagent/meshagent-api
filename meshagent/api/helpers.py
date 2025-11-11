@@ -28,7 +28,9 @@ def meshagent_base_url(base_url: Optional[str] = None):
     return os.getenv("MESHAGENT_API_URL", "https://api.meshagent.com")
 
 
-def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str:
+def websocket_room_url(
+    *, room_name: str, base_url: Optional[str] = None, create: bool = False
+) -> str:
     if base_url is None:
         api_url = os.getenv("MESHAGENT_API_URL")
         if api_url is None:
@@ -40,7 +42,7 @@ def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str
                 api_url = "ws:" + api_url.removeprefix("http:")
             base_url = api_url
 
-    return f"{base_url}/rooms/{room_name}"
+    return f"{base_url}/rooms/{room_name}?create={'true' if create else 'false'}"
 
 
 @deprecated("create a ParticipantToken directly instead")
