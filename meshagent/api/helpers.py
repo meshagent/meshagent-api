@@ -28,9 +28,7 @@ def meshagent_base_url(base_url: Optional[str] = None):
     return os.getenv("MESHAGENT_API_URL", "https://api.meshagent.com")
 
 
-def websocket_room_url(
-    *, room_name: str, base_url: Optional[str] = None
-) -> str:
+def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str:
     if base_url is None:
         api_url = os.getenv("MESHAGENT_API_URL")
         if api_url is None:
