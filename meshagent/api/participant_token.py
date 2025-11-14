@@ -19,6 +19,7 @@ class AgentsGrant(BaseModel):
     call: bool = True
     use_agents: bool = True
     use_tools: bool = True
+    allowed_toolkits: Optional[list[str]] = None
 
 
 class LivekitGrant(BaseModel):
