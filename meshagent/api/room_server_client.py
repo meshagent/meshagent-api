@@ -849,18 +849,11 @@ class LivekitClient:
         )
 
 
-class StorageEntry:
-    def __init__(
-        self,
-        name: str,
-        is_folder: bool,
-        created_at: Optional[datetime] = None,
-        updated_at: Optional[datetime] = None,
-    ):
-        self.name = name
-        self.is_folder = is_folder
-        self.updated_at = updated_at
-        self.created_at = created_at
+class StorageEntry(BaseModel):
+    name: str
+    is_folder: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 class StorageClient:
