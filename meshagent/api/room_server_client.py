@@ -482,6 +482,11 @@ class SyncClient:
     async def create(self, *, path: str, json: Optional[dict] = None) -> None:
         await self.room.send_request("room.create", {"path": path, "json": json})
 
+    async def describe(self, *, path: str, create: bool = True) -> MeshDocument:
+        res = await self.room.send_request("room.describe", {"path": path})
+        assert isinstance(res, JsonResponse)
+        return res.json
+
     async def open(self, *, path: str, create: bool = True) -> MeshDocument:
         if path in self._connecting_documents:
             await self._connecting_documents[path]
