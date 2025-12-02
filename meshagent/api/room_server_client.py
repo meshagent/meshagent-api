@@ -785,7 +785,7 @@ class AgentsClient:
         return agents
 
     async def list_toolkits(
-        self, participant_id: Optional[str] = None
+        self, *, participant_id: Optional[str] = None
     ) -> List[ToolkitDescription]:
         """
         Fetch a list of available toolkits and parse into `ToolkitDescription` objects.
@@ -1606,6 +1606,27 @@ class DeveloperClient:
         asyncio.ensure_future(
             self._room.send_request(
                 type="developer.log", request={"type": type, "data": data}
+            )
+        )
+
+    def info(self, message: str, *, extra: Optional[dict] = None):
+        asyncio.ensure_future(
+            self._room.send_request(
+                type="developer.info", request={"message": message, "extra": extra}
+            )
+        )
+
+    def warning(self, message: str, *, extra: Optional[dict] = None):
+        asyncio.ensure_future(
+            self._room.send_request(
+                type="developer.warning", request={"message": message, "extra": extra}
+            )
+        )
+
+    def error(self, message: str, *, extra: Optional[dict] = None):
+        asyncio.ensure_future(
+            self._room.send_request(
+                type="developer.error", request={"message": message, "extra": extra}
             )
         )
 
