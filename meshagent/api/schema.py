@@ -128,10 +128,12 @@ class ValueProperty(ElementProperty):
         type: SimpleValue,
         description: str | None = None,
         enum: list | None = None,
+        required: bool = False,
     ):
         super().__init__(name=name, description=description)
         self._type = type
         self._enum = enum
+        self._required = required
 
     def validate(self, schema: MeshSchema):
         if self._type not in get_args(SimpleValue):
@@ -145,6 +147,10 @@ class ValueProperty(ElementProperty):
     def type(self):
         return self._type
 
+    @property
+    def required(self):
+        return self._required
+
     def to_json(self) -> dict:
         if self._enum is not None:
             prop = {
@@ -152,9 +158,14 @@ class ValueProperty(ElementProperty):
                 "enum": self._enum,
             }
         else:
-            prop = {
-                "type": self.type,
-            }
+            if self._required:
+                prop = {
+                    "type": self.type,
+                }
+            else:
+                prop = {
+                    "type": [self.type, "null"],
+                }
 
         if self.description is not None:
             prop["description"] = self.description
@@ -262,7 +273,14 @@ class ElementType:
             properties = []
 
             for prop_name, p in type_json["properties"].items():
-                if p["type"] == "array":
+                type = p["type"]
+                if isinstance(type, list):
+                    type = type[0]
+                    required = False
+                else:
+                    required = True
+
+                if type == "array":
                     child_tag_names = []
 
                     if (
@@ -306,7 +324,12 @@ class ElementType:
                     if "description" in p:
                         pdesc = p["description"]
                     properties.append(
-                        ValueProperty(name=prop_name, description=pdesc, type=p["type"])
+                        ValueProperty(
+                            name=prop_name,
+                            description=pdesc,
+                            type=type,
+                            required=required,
+                        )
                     )
 
             return ElementType(
