@@ -1067,7 +1067,7 @@ class StorageClient:
             )
         )
 
-    async def delete(self, path: str):
+    async def delete(self, path: str, recursive: Optional[True] = None):
         """
         Deletes a file  at the given path.
 
@@ -1081,7 +1081,9 @@ class StorageClient:
             await storage_client.delete("folder/old_file.txt")
         """
 
-        await self.room.send_request("storage.delete", {"path": path})
+        await self.room.send_request(
+            "storage.delete", {"path": path, "recursive": recursive}
+        )
 
 
 class Queue:
