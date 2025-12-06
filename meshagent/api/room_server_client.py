@@ -1149,8 +1149,9 @@ class MessagingClient:
         self._events = {}
         self._on_stream_accept_callback = None
         room.protocol.register_handler("messaging.send", self._handle_message_send)
-        self._stream_writers: Dict[str, asyncio.Future] = {}
-        self._stream_readers: Dict[str, MessageStreamReader] = {}
+        self._pending_streams: Dict[str, asyncio.Future] = {}
+
+        self._remote_streams: Dict[str, MessageStream] = {}
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task = None
 
@@ -1187,10 +1188,17 @@ class MessagingClient:
 
         return None
 
+    def get_participant_by_name(self, name: str) -> RemoteParticipant | None:
+        for part in self.remote_participants:
+            if part.get_attribute("name") == name:
+                return part
+
+        return None
+
     async def enable(
         self,
         *,
-        on_stream_accept: Optional[Callable[["MessageStreamReader"], None]] = None,
+        on_stream_accept: Optional[Callable[["MessageStream"], None]] = None,
     ):
         await self.room.send_request("messaging.enable", {})
         self._on_stream_accept_callback = on_stream_accept
@@ -1350,12 +1358,14 @@ class MessagingClient:
 
         self.emit("messaging_enabled")
 
-    async def create_stream(
-        self, *, to: Participant, header: dict
-    ) -> "MessageStreamWriter":
+    async def create_stream(self, *, to: Participant, header: dict) -> "MessageStream":
         stream_id = str(uuid.uuid4())  # Generate unique ID
         future = asyncio.Future()
-        self._stream_writers[stream_id] = future
+
+        # Construct the writer
+        stream = MessageStream(stream_id=stream_id, to=to, client=self, header=None)
+        self._remote_streams[stream_id] = stream
+        self._pending_streams[stream_id] = future
 
         # Send "stream.open"
         await self.send_message(
@@ -1365,8 +1375,8 @@ class MessagingClient:
         )
 
         # Wait for remote side to accept or reject
-        writer = await future
-        return writer
+        await future
+        return stream
 
     def _on_stream_open(self, message: RoomMessage):
         logger.info("stream open request recieved")
@@ -1405,16 +1415,15 @@ class MessagingClient:
             if self._on_stream_accept_callback is None:
                 raise Exception("Streams are not allowed by this client")
 
-            # User callback so they can "attach" to the stream
-            reader = MessageStreamReader(
+            stream = MessageStream(
                 stream_id=stream_id,
                 to=from_participant,
                 client=self,
                 header=message.message,
             )
 
-            self._on_stream_accept_callback(reader)
-            self._stream_readers[stream_id] = reader
+            self._on_stream_accept_callback(stream)
+            self._remote_streams[stream_id] = stream
 
             logger.info(f"accepting stream {stream_id}")
             # Accept
@@ -1449,13 +1458,9 @@ class MessagingClient:
         Complete the Future<MessageStreamWriter>.
         """
         stream_id = message.message["stream_id"]
-        future = self._stream_writers.pop(stream_id, None)
+        future = self._pending_streams.pop(stream_id, None)
         if future and not future.done():
-            from_part_id = message.from_participant_id
-            from_part = self._participants.get(from_part_id, None)
-            # Construct the writer
-            writer = MessageStreamWriter(stream_id=stream_id, to=from_part, client=self)
-            future.set_result(writer)
+            future.set_result(True)
 
     def _on_stream_reject(self, message: RoomMessage):
         """
@@ -1467,7 +1472,8 @@ class MessagingClient:
             "error", "The stream was rejected by the remote client"
         )
 
-        future = self._stream_writers.pop(stream_id, None)
+        future = self._pending_streams.pop(stream_id, None)
+        self._remote_streams.pop(stream_id)
         if future and not future.done():
             future.set_exception(Exception(err))
 
@@ -1476,21 +1482,23 @@ class MessagingClient:
         A chunk arrived on an existing stream.
         """
         stream_id = message.message["stream_id"]
-        reader = self._stream_readers.get(stream_id, None)
+        reader = self._remote_streams.get(stream_id, None)
         if reader:
             chunk = MessageStreamChunk(
                 header=message.message["header"], data=message.attachment
             )
             reader._add_chunk(chunk)
+        else:
+            logger.warning(f"received a chunk for an unregistered stream {stream_id}")
 
     def _on_stream_close(self, message: RoomMessage):
         """
         The remote side closed the stream.
         """
         stream_id = message.message["stream_id"]
-        reader = self._stream_readers.pop(stream_id, None)
-        if reader:
-            reader._close()
+        stream = self._remote_streams.pop(stream_id, None)
+        if stream:
+            stream._close()
 
 
 class MessageStreamChunk:
@@ -1499,15 +1507,20 @@ class MessageStreamChunk:
         self.data = data
 
 
-class MessageStreamReader:
+class MessageStream:
     def __init__(
-        self, stream_id: str, to: Participant, client: MessagingClient, header: dict
+        self,
+        stream_id: str,
+        to: Participant,
+        client: MessagingClient,
+        header: Optional[dict] = None,
     ):
         self._stream_id = stream_id
         self._to = to
         self._client = client
         self._header = header
-        self._queue = asyncio.Queue()  # To buffer incoming chunks
+        self._queue = asyncio.Queue()
+        self.closed = False
 
     @property
     def header(self):
@@ -1536,19 +1549,21 @@ class MessageStreamReader:
         Internal: called by the MessagingClient when the remote side closes the stream.
         """
         # Put a sentinel None to signal the end of the stream
+        if self.closed:
+            raise RoomException("stream is closed")
+
+        self.closed = True
+
         self._queue.put_nowait(None)
-
-
-class MessageStreamWriter:
-    def __init__(self, stream_id: str, to: Participant, client: MessagingClient):
-        self._stream_id = stream_id
-        self._to = to
-        self._client = client
 
     async def write(self, chunk: MessageStreamChunk):
         """
         Sends a "stream.chunk" message to the remote participant.
         """
+
+        if self.closed:
+            raise RoomException("stream is closed")
+
         await self._client.send_message(
             to=self._to,
             type="stream.chunk",
@@ -1563,6 +1578,12 @@ class MessageStreamWriter:
         """
         Sends a "stream.close" message to the remote participant.
         """
+
+        if self.closed:
+            raise RoomException("stream is closed")
+
+        self._close()
+
         await self._client.send_message(
             to=self._to, type="stream.close", message={"stream_id": self._stream_id}
         )
