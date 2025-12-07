@@ -1347,6 +1347,14 @@ class MessagingClient:
         if part is not None:
             self.emit("participant_removed", participant=part)
 
+        for stream_id, stream in list(self._remote_streams.items()):
+            if stream.to.id == part.id:
+                stream._close()
+                logger.warning(
+                    f"stream {stream_id} closing due to disconnect of {stream.to.get_attribute('name')}"
+                )
+                self._remote_streams.pop(stream_id)
+
     def _on_messaging_enabled(self, message: RoomMessage):
         for data in message.message["participants"]:
             participant = RemoteParticipant(id=data["id"], role=data["role"])
@@ -1523,6 +1531,10 @@ class MessageStream:
         self.closed = False
 
     @property
+    def to(self):
+        return self._to
+
+    @property
     def header(self):
         return self._header
 
@@ -1548,9 +1560,8 @@ class MessageStream:
         """
         Internal: called by the MessagingClient when the remote side closes the stream.
         """
-        # Put a sentinel None to signal the end of the stream
         if self.closed:
-            raise RoomException("stream is closed")
+            return
 
         self.closed = True
 
