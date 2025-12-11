@@ -167,14 +167,15 @@ class Element(EventEmitter):
         element_type = self.doc.schema.element(tag_name)
 
         if element_type.child_property_name is not None:
+            element = self.append_child(tag_name=tag_name, attributes=attributes)
+
             if element_type.child_property_name in attributes:
                 children = attributes.pop(element_type.child_property_name)
-                element = self.append_child(tag_name=tag_name, attributes=attributes)
 
                 for child in children:
                     element.append_json(child)
 
-                return element
+            return element
 
         else:
             return self.append_child(tag_name=tag_name, attributes=attributes)
