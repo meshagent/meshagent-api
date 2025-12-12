@@ -36,6 +36,7 @@ class ServiceApiKeySpec(BaseModel):
     name: str
     auto_provision: Optional[bool] = True
 
+
 ANNOTATION_SERVICE_ID = "meshagent.service.id"
 
 ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
