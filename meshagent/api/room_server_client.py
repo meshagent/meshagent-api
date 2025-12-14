@@ -487,7 +487,7 @@ class SyncClient:
         assert isinstance(res, JsonResponse)
         return res.json
 
-    async def open(self, *, path: str, create: bool = True) -> MeshDocument:
+    async def open(self, *, path: str, create: bool = True, initial_json: Optional[dict] = None, schema: Optional[MeshSchema] = None) -> MeshDocument:
         if path in self._connecting_documents:
             await self._connecting_documents[path]
 
@@ -509,8 +509,20 @@ class SyncClient:
         # vec = doc.get_state_vector()
         # "vector": base64.standard_b64encode(vec).decode("utf-8")
         try:
+            extra = {}
+
+            if schema is not None:
+                extra["schema"] = schema.to_json()
+            
+            if initial_json is not None:
+                extra["initial_json"] = initial_json
+
             response = await self.room.send_request(
-                "room.connect", {"path": path, "create": create}
+                "room.connect", {
+                    "path": path,
+                    "create": create,
+                    **extra
+                }
             )
 
             schema_json = response["schema"]
