@@ -735,6 +735,7 @@ class AgentsClient:
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
         caller_context: Optional[Dict[str, Any]] = None,
+        attachment: Optional[bytes] = None,
     ) -> Response:
         response = await self.room.send_request(
             "agent.invoke_tool",
@@ -746,6 +747,7 @@ class AgentsClient:
                 "arguments": arguments,
                 "caller_context": caller_context,
             },
+            attachment,
         )
         return response
 
@@ -1700,6 +1702,10 @@ class DataType(ABC):
     def from_json(data: dict) -> "DataType":
         return _data_types[data["type"]].from_json(data)
 
+    @abstractmethod
+    def to_json_schema(self):
+        pass
+
 
 class IntDataType(DataType):
     def __init__(self):
@@ -1712,6 +1718,9 @@ class IntDataType(DataType):
 
     def to_json(self):
         return {"type": "int"}
+
+    def to_json_schema(self):
+        return {"type": "number"}
 
 
 _data_types["int"] = IntDataType
@@ -1729,6 +1738,9 @@ class DateDataType(DataType):
     def to_json(self):
         return {"type": "date"}
 
+    def to_json_schema(self):
+        return {"type": "string", "description": "an ISO formatted date string"}
+
 
 _data_types["date"] = DateDataType
 
@@ -1745,6 +1757,9 @@ class TimestampDataType(DataType):
     def to_json(self):
         return {"type": "timestamp"}
 
+    def to_json_schema(self):
+        return {"type": "string", "description": "an ISO formatted timestamp string"}
+
 
 _data_types["timestamp"] = TimestampDataType
 
@@ -1760,6 +1775,11 @@ class FloatDataType(DataType):
 
     def to_json(self):
         return {"type": "float"}
+
+    def to_json_schema(self):
+        return {
+            "type": "number",
+        }
 
 
 _data_types["float"] = FloatDataType
@@ -1784,6 +1804,13 @@ class VectorDataType(DataType):
             "element_type": self.element_type.to_json(),
         }
 
+    def to_json_schema(self):
+        return {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": f"a vector with length {self.size}",
+        }
+
 
 _data_types["vector"] = VectorDataType
 
@@ -1800,6 +1827,11 @@ class TextDataType(DataType):
     def to_json(self):
         return {"type": "text"}
 
+    def to_json_schema(self):
+        return {
+            "type": "string",
+        }
+
 
 _data_types["text"] = TextDataType
 
@@ -1815,6 +1847,13 @@ class BinaryDataType(DataType):
 
     def to_json(self):
         return {"type": "binary"}
+
+    def to_json_schema(self):
+        return {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": "a byte array",
+        }
 
 
 _data_types["binary"] = BinaryDataType
@@ -1843,6 +1882,18 @@ class DatabaseClient:
             "database.list_tables", {}
         )
         return response.json.get("tables", [])
+
+    async def inspect(self, *, table: str) -> dict[str, DataType]:
+        response: JsonResponse = await self.room.send_request(
+            "database.inspect", {"table": table}
+        )
+
+        schema = dict[str, DataType]()
+
+        for k, v in response.json["schema"].items():
+            schema[k] = DataType.from_json(v)
+
+        return schema
 
     async def _create_table(
         self,
