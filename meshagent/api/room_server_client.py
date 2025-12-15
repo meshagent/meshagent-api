@@ -724,7 +724,10 @@ class AgentsClient:
             request["requires"] = [*map(lambda x: x.to_json(), requires)]
 
         response = await self.room.send_request("agent.ask", request)
-        return JsonResponse(json=response["answer"])
+        if isinstance(response["answer"], str):
+            return TextResponse(json=response["answer"])
+        else:
+            return JsonResponse(json=response["answer"])
 
     async def invoke_tool(
         self,
