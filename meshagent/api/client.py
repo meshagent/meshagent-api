@@ -965,6 +965,16 @@ class Meshagent:
         ) as resp:
             resp.raise_for_status()
 
+    async def get_mailbox(self, *, project_id: str, address: str) -> Mailbox:
+        """
+        GET /accounts/projects/{project_id}/mailboxes/{address}
+        Returns a list[Mailbox].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            resp.raise_for_status()
+            return Mailbox.model_validate((await resp.json())["mailbox"])
+
     async def list_mailboxes(self, *, project_id: str) -> List[Mailbox]:
         """
         GET /accounts/projects/{project_id}/mailboxes
