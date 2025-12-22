@@ -1875,20 +1875,25 @@ class DatabaseClient:
         """
         self.room = room
 
-    async def list_tables(self) -> List[str]:
+    async def list_tables(self, *, namespace: Optional[list[str]] = None) -> List[str]:
         """
         List all tables in the database.
 
         :return: A list of table names.
         """
         response: JsonResponse = await self.room.send_request(
-            "database.list_tables", {}
+            "database.list_tables",
+            {
+                "namespace": namespace,
+            },
         )
         return response.json.get("tables", [])
 
-    async def inspect(self, *, table: str) -> dict[str, DataType]:
+    async def inspect(
+        self, *, table: str, namespace: Optional[list[str]] = None
+    ) -> dict[str, DataType]:
         response: JsonResponse = await self.room.send_request(
-            "database.inspect", {"table": table}
+            "database.inspect", {"table": table, "namespace": namespace}
         )
 
         schema = dict[str, DataType]()
@@ -1905,6 +1910,7 @@ class DatabaseClient:
         data: Optional[Any] = None,
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
     ) -> None:
         """
         Create a new table.
@@ -1923,7 +1929,13 @@ class DatabaseClient:
             for k in schema.keys():
                 schema_dict[k] = schema[k].to_json()
 
-        payload = {"name": name, "data": data, "schema": schema_dict, "mode": mode}
+        payload = {
+            "name": name,
+            "data": data,
+            "schema": schema_dict,
+            "mode": mode,
+            "namespace": namespace,
+        }
         await self.room.send_request("database.create_table", payload)
         return None
 
@@ -1934,8 +1946,11 @@ class DatabaseClient:
         schema: Optional[Dict[str, DataType]] = None,
         data: Optional[List[dict]] = None,
         mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
     ) -> None:
-        return await self._create_table(name=name, schema=schema, mode=mode, data=data)
+        return await self._create_table(
+            name=name, schema=schema, mode=mode, data=data, namespace=namespace
+        )
 
     async def create_table_from_data(
         self,
@@ -1943,33 +1958,52 @@ class DatabaseClient:
         name: str,
         data: Optional[list[dict]] = None,
         mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
     ) -> None:
-        return await self._create_table(name=name, data=data, mode=mode)
+        return await self._create_table(
+            name=name, data=data, mode=mode, namespace=namespace
+        )
 
-    async def drop_table(self, *, name: str, ignore_missing: bool = False) -> None:
+    async def drop_table(
+        self,
+        *,
+        name: str,
+        ignore_missing: bool = False,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
         """
         Drop (delete) a table.
 
         :param name: Table name.
         :param ignore_missing: If True, ignore if table doesn't exist.
         """
-        payload = {"name": name, "ignore_missing": ignore_missing}
+        payload = {
+            "name": name,
+            "ignore_missing": ignore_missing,
+            "namespace": namespace,
+        }
         await self.room.send_request("database.drop_table", payload)
         return None
 
-    async def drop_index(self, *, table: str, name: str) -> None:
+    async def drop_index(
+        self, *, table: str, name: str, namespace: Optional[list[str]] = None
+    ) -> None:
         """
         Drop (delete) a index.
 
         :param table: table name
         :param name: index name.
         """
-        payload = {"table": table, "name": name}
+        payload = {"table": table, "name": name, "namespace": namespace}
         await self.room.send_request("database.drop_index", payload)
         return None
 
     async def add_columns(
-        self, *, table: str, new_columns: Dict[str, str | DataType]
+        self,
+        *,
+        table: str,
+        new_columns: Dict[str, str | DataType],
+        namespace: Optional[list[str]] = None,
     ) -> None:
         """
         Add new columns to an existing table.
@@ -1986,24 +2020,32 @@ class DatabaseClient:
             else:
                 columns[c] = new_columns[c]
 
-        payload = {"table": table, "new_columns": columns}
+        payload = {"table": table, "new_columns": columns, "namespace": namespace}
 
         await self.room.send_request("database.add_columns", payload)
         return None
 
-    async def drop_columns(self, *, table: str, columns: List[str]) -> None:
+    async def drop_columns(
+        self, *, table: str, columns: List[str], namespace: Optional[list[str]] = None
+    ) -> None:
         """
         Drop columns from an existing table.
 
         :param table: Table name.
         :param columns: List of column names to drop.
         """
-        payload = {"table": table, "columns": columns}
+        payload = {"table": table, "columns": columns, "namespace": namespace}
 
         await self.room.send_request("database.drop_columns", payload)
         return None
 
-    async def insert(self, *, table: str, records: List[Dict[str, Any]]) -> None:
+    async def insert(
+        self,
+        *,
+        table: str,
+        records: List[Dict[str, Any]],
+        namespace: Optional[list[str]] = None,
+    ) -> None:
         """
         Insert new records into a table.
 
@@ -2014,6 +2056,7 @@ class DatabaseClient:
         payload = {
             "table": table,
             "records": encode_records(records),
+            "namespace": namespace,
         }
         await self.room.send_request("database.insert", payload)
 
@@ -2024,6 +2067,7 @@ class DatabaseClient:
         where: str,
         values: Optional[Dict[str, Any]] = None,
         values_sql: Optional[Dict[str, str]] = None,
+        namespace: Optional[list[str]] = None,
     ) -> None:
         """
         Update existing records in a table.
@@ -2038,22 +2082,32 @@ class DatabaseClient:
             "where": where,
             "values": values,
             "values_sql": values_sql,
+            "namespace": namespace,
         }
         await self.room.send_request("database.update", payload)
 
-    async def delete(self, *, table: str, where: str) -> None:
+    async def delete(
+        self, *, table: str, where: str, namespace: Optional[list[str]] = None
+    ) -> None:
         """
         Delete records from a table.
 
         :param table: Table name.
         :param where: SQL WHERE clause (e.g. "id = 123").
         """
-        payload = {"table": table, "where": where}
+        payload = {"table": table, "where": where, "namespace": namespace}
         await self.room.send_request("database.delete", payload)
 
         return None
 
-    async def merge(self, *, table: str, on: str, records: Any) -> None:
+    async def merge(
+        self,
+        *,
+        table: str,
+        on: str,
+        records: Any,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
         """
         Merge (upsert) records into a table.
 
@@ -2061,7 +2115,7 @@ class DatabaseClient:
         :param on: Column name to match on (e.g. "id").
         :param records: The record(s) to merge.
         """
-        payload = {"table": table, "on": on, "records": records}
+        payload = {"table": table, "on": on, "records": records, "namespace": namespace}
         await self.room.send_request("database.merge", payload)
         return None
 
@@ -2075,6 +2129,7 @@ class DatabaseClient:
         offset: Optional[int] = None,
         limit: Optional[int] = None,
         select: Optional[List[str]] = None,
+        namespace: Optional[list[str]] = None,
     ) -> list[Dict[str, Any]]:
         """
         Search for records in a table.
@@ -2107,12 +2162,17 @@ class DatabaseClient:
         if vector is not None:
             payload["vector"] = vector
 
+        if namespace is not None:
+            payload["namespace"] = namespace
+
         response = await self.room.send_request("database.search", payload)
         if isinstance(response, JsonResponse):
             return decode_records(response.json["results"])
         return []
 
-    async def optimize(self, *, table: str) -> None:
+    async def optimize(
+        self, *, table: str, namespace: Optional[list[str]] = None
+    ) -> None:
         """
         Optimize (compact/prune) a table.
 
@@ -2120,11 +2180,14 @@ class DatabaseClient:
         """
         payload = {
             "table": table,
+            "namespace": namespace,
         }
         await self.room.send_request("database.optimize", payload)
         return None
 
-    async def restore(self, *, table: str, version: int) -> None:
+    async def restore(
+        self, *, table: str, version: int, namespace: Optional[list[str]] = None
+    ) -> None:
         """
         restore a table version.
 
@@ -2133,11 +2196,14 @@ class DatabaseClient:
         payload = {
             "table": table,
             "version": version,
+            "namespace": namespace,
         }
         await self.room.send_request("database.restore", payload)
         return None
 
-    async def checkout(self, *, table: str, version: int) -> None:
+    async def checkout(
+        self, *, table: str, version: int, namespace: Optional[list[str]] = None
+    ) -> None:
         """
         checkout a table version.
 
@@ -2146,11 +2212,14 @@ class DatabaseClient:
         payload = {
             "table": table,
             "version": version,
+            "namespace": namespace,
         }
         await self.room.send_request("database.checkout", payload)
         return None
 
-    async def list_versions(self, *, table: str) -> list["TableVersion"]:
+    async def list_versions(
+        self, *, table: str, namespace: Optional[list[str]] = None
+    ) -> list["TableVersion"]:
         """
         list a table's versions
 
@@ -2158,12 +2227,18 @@ class DatabaseClient:
         """
         payload = {
             "table": table,
+            "namespace": namespace,
         }
         resp = await self.room.send_request("database.list_versions", payload)
         return [TableVersion.model_validate(v) for v in resp.json["versions"]]
 
     async def create_vector_index(
-        self, *, table: str, column: str, replace: Optional[bool] = None
+        self,
+        *,
+        table: str,
+        column: str,
+        replace: Optional[bool] = None,
+        namespace: Optional[list[str]] = None,
     ) -> None:
         """
         Create a vector index on a given column.
@@ -2175,12 +2250,18 @@ class DatabaseClient:
             "table": table,
             "column": column,
             "replace": replace,
+            "namespace": namespace,
         }
         await self.room.send_request("database.create_vector_index", payload)
         return None
 
     async def create_scalar_index(
-        self, *, table: str, column: str, replace: Optional[bool] = None
+        self,
+        *,
+        table: str,
+        column: str,
+        replace: Optional[bool] = None,
+        namespace: Optional[list[str]] = None,
     ) -> None:
         """
         Create a scalar index on a given column.
@@ -2192,12 +2273,18 @@ class DatabaseClient:
             "table": table,
             "column": column,
             "replace": replace,
+            "namespace": namespace,
         }
         await self.room.send_request("database.create_scalar_index", payload)
         return None
 
     async def create_full_text_search_index(
-        self, *, table: str, column: str, replace: Optional[bool] = None
+        self,
+        *,
+        table: str,
+        column: str,
+        replace: Optional[bool] = None,
+        namespace: Optional[list[str]] = None,
     ) -> None:
         """
         Create a full-text search index on a given text column.
@@ -2209,17 +2296,20 @@ class DatabaseClient:
             "table": table,
             "column": column,
             "replace": replace,
+            "namespace": namespace,
         }
         await self.room.send_request("database.create_full_text_search_index", payload)
         return None
 
-    async def list_indexes(self, *, table: str) -> list["TableIndex"]:
+    async def list_indexes(
+        self, *, table: str, namespace: Optional[list[str]] = None
+    ) -> list["TableIndex"]:
         """
         List all indexes on a table.
 
         :param table: Table name.
         """
-        payload = {"table": table}
+        payload = {"table": table, "namespace": namespace}
         response = await self.room.send_request("database.list_indexes", payload)
         if hasattr(response, "json"):
             return [TableIndex.model_validate(i) for i in response.json["indexes"]]
