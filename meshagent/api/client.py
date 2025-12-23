@@ -24,6 +24,7 @@ class OAuthClient(BaseModel):
     scope: str
     project_id: str
     metadata: dict[str, str]
+    official: bool
 
 
 class RoomConnectionInfo(BaseModel):
@@ -1631,6 +1632,7 @@ class Meshagent:
         redirect_uris: List[str],
         scope: str,
         metadata: Optional[Dict[str, Any]] = None,
+        official: bool = False,
     ) -> OAuthClient:
         """
         POST /accounts/projects/{project_id}/oauth/clients
@@ -1644,6 +1646,7 @@ class Meshagent:
             "redirect_uris": redirect_uris,
             "scope": scope,
             "metadata": metadata or {},
+            "official": official,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
@@ -1667,6 +1670,7 @@ class Meshagent:
         redirect_uris: Optional[List[str]] = None,
         scope: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        official: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         PUT /accounts/projects/{project_id}/oauth/clients/{client_id}
@@ -1687,6 +1691,8 @@ class Meshagent:
             body["scope"] = scope
         if metadata is not None:
             body["metadata"] = metadata
+        if official is not None:
+            body["official"] = official
 
         async with self._session.put(
             url, headers=self._get_headers(), json=body
@@ -1719,6 +1725,7 @@ class Meshagent:
         GET /accounts/projects/{project_id}/oauth/clients/{client_id}
         Returns the OAuthClient (no secret).
         """
+
         url = (
             f"{self.base_url}/accounts/projects/{project_id}/oauth/clients/{client_id}"
         )
