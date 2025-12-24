@@ -2,6 +2,7 @@ from .websocket_protocol import WebSocketClientProtocol
 from .room_server_client import (
     RequiredToolkit,
     RequiredSchema,
+    RequiredTable,
     Requirement,
     RoomClient,
     RoomMessage,
@@ -51,6 +52,7 @@ __all__ = [
     WebSocketClientProtocol,
     RequiredToolkit,
     RequiredSchema,
+    RequiredTable,
     Requirement,
     RoomClient,
     RoomMessage,

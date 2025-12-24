@@ -110,7 +110,21 @@ class Requirement(ABC):
             )
 
         if "schema" in r:
-            return RequiredSchema(name=r["schema"])
+            json = r.get("json")
+            return RequiredSchema(
+                name=r["schema"],
+                schema=MeshSchema.from_json(json) if json is not None else None,
+            )
+
+        if "table" in r:
+            return RequiredTable(
+                name=r["table"],
+                schema=r["schema"],
+                namespace=r.get("namespace"),
+                scalar_indexes=r.get("scalar_indexes"),
+                full_text_search_indexes=r.get("full_text_search_indexes"),
+                vector_indexes=r.get("vector_indexes"),
+            )
 
         raise RoomException("invalid requirement json")
 
@@ -143,11 +157,51 @@ class RequiredToolkit(Requirement):
 
 
 class RequiredSchema(Requirement):
-    def __init__(self, *, name: str, callable: Optional[bool] = None):
+    def __init__(
+        self,
+        *,
+        name: str,
+        callable: Optional[bool] = None,
+        schema: Optional[MeshSchema] = None,
+    ):
         super().__init__(name=name, callable=callable)
+        self.schema = schema
 
     def to_json(self):
-        return {"schema": self.name, "callable": self.callable}
+        return {
+            "schema": self.name,
+            "callable": self.callable,
+            "json": self.schema.to_json() if self.schema is not None else None,
+        }
+
+
+class RequiredTable(Requirement):
+    def __init__(
+        self,
+        *,
+        name: str,
+        schema: dict[str, "DataType"],
+        namespace: Optional[list[str]] = None,
+        scalar_indexes: Optional[list[str]] = None,
+        full_text_search_indexes: Optional[list[str]] = None,
+        vector_indexes: Optional[list[str]] = None,
+    ):
+        super().__init__(name=name)
+        self.schema = schema
+        self.namespace = namespace
+        self.scalar_indexes = scalar_indexes
+        self.full_text_search_indexes = full_text_search_indexes
+        self.vector_indexes = vector_indexes
+
+    def to_json(self):
+        return {
+            "table": self.name,
+            "schema": self.schema,
+            "namespace": self.namespace,
+            "scalar_indexes": self.scalar_indexes,
+            "full_text_search_indexes": self.full_text_search_indexes,
+            "vector_indexes": self.vector_indexes,
+        }
 
 
 class _QueuedSync:
@@ -599,22 +653,17 @@ class AgentDescription:
         description: str,
         input_schema: dict,
         output_schema: Optional[dict] = None,
-        requires: Optional[list[Requirement]] = None,
         supports_tools: bool = False,
         labels: Optional[list[str]] = None,
     ):
         if labels is None:
             labels = []
 
-        if requires is None:
-            requires = []
-
         self.name = name
         self.title = title
         self.description = description
         self.input_schema = input_schema
         self.output_schema = output_schema
-        self.requires = requires
         self.supports_tools = supports_tools
         self.labels = labels
 
@@ -787,9 +836,6 @@ class AgentsClient:
         agents_data: list[dict] = response["agents"]
         agents = []
         for a in agents_data:
-            requires_json: list[dict] = a.get("requires", [])
-            requires = list(map(lambda j: Requirement.from_json(j), requires_json))
-
             agents.append(
                 AgentDescription(
                     name=a["name"],
@@ -797,7 +843,6 @@ class AgentsClient:
                     description=a.get("description", ""),
                     input_schema=a.get("input_schema", None),
                     output_schema=a.get("output_schema", None),
-                    requires=requires,
                     supports_tools=a.get("supports_tools", False),
                     labels=a.get("labels", None),
                 )
