@@ -41,6 +41,8 @@ ANNOTATION_SERVICE_ID = "meshagent.service.id"
 
 ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
 ANNOTATION_AGENT_WIDGET = "meshagent.agent.widget"
+ANNOTATION_AGENT_DATABASE_SCHEMA = "meshagent.agent.database.schema"
+ANNOTATION_AGENT_DATABASE_NAMESPACE = "meshagent.agent.database.namespace"
 
 agent_type = Literal[
     "ChatBot",
