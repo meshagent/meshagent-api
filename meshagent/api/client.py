@@ -254,6 +254,7 @@ class ScheduledTask(BaseModel):
     schedule: str
     active: bool
     once: bool
+    annotations: dict[str, str]
 
     last_run_id: Optional[int] = None
     last_start_time: Optional[datetime] = None
@@ -262,7 +263,7 @@ class ScheduledTask(BaseModel):
     last_return_message: Optional[str] = None
 
 
-class CreateScheduledTaskRequest(BaseModel):
+class _CreateScheduledTaskRequest(BaseModel):
     id: Optional[str] = None
     room_name: str
     queue_name: str
@@ -270,17 +271,19 @@ class CreateScheduledTaskRequest(BaseModel):
     schedule: str
     active: bool = True
     once: bool = False
+    annotations: dict[str, str]
 
 
-class UpdateScheduledTaskRequest(BaseModel):
+class _UpdateScheduledTaskRequest(BaseModel):
     room_name: Optional[str] = None
     queue_name: Optional[str] = None
     payload: Optional[dict] = None  # dict or json-string
     schedule: Optional[str] = None
     active: Optional[bool] = None
+    annotations: dict[str, str]
 
 
-class ListScheduledTasksResponse(BaseModel):
+class _ListScheduledTasksResponse(BaseModel):
     tasks: List[ScheduledTask]
 
 
@@ -1851,6 +1854,7 @@ class Meshagent:
         active: bool = True,
         task_id: Optional[str] = None,
         once: bool = False,
+        annotations: Optional[dict[str, str]] = None,
     ) -> str:
         """
         POST /accounts/projects/{project_id}/scheduled-tasks
@@ -1860,7 +1864,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks"
 
-        body = CreateScheduledTaskRequest(
+        body = _CreateScheduledTaskRequest(
             id=task_id,
             room_name=room_name,
             queue_name=queue_name,
@@ -1868,6 +1872,7 @@ class Meshagent:
             schedule=schedule,
             active=active,
             once=once,
+            annotations=annotations,
         ).model_dump(mode="json", exclude_none=True)
 
         async with self._session.post(
@@ -1887,6 +1892,7 @@ class Meshagent:
         payload: Optional[Any] = None,
         schedule: Optional[str] = None,
         active: Optional[bool] = None,
+        annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/scheduled-tasks/{task_id}
@@ -1898,12 +1904,13 @@ class Meshagent:
             f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/{task_id}"
         )
 
-        body = UpdateScheduledTaskRequest(
+        body = _UpdateScheduledTaskRequest(
             room_name=room_name,
             queue_name=queue_name,
             payload=payload,
             schedule=schedule,
             active=active,
+            annotations=annotations,
         ).model_dump(mode="json", exclude_none=True)
 
         async with self._session.put(
