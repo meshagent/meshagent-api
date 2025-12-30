@@ -15,6 +15,26 @@ import os
 # ------------------------------------------------------------------
 
 
+class NotFoundError(RoomException):
+    """404 – resource does not exist."""
+
+
+class PermissionDeniedError(RoomException):
+    """403 – permission denied."""
+
+
+class ConflictError(RoomException):
+    """409 – conflicting or duplicate resource."""
+
+
+class ValidationErrorResponse(RoomException):
+    """400 – invalid request payload."""
+
+
+class ServerError(RoomException):
+    """5xx – server-side failure."""
+
+
 class OAuthClient(BaseModel):
     client_id: str
     client_secret: str
@@ -225,6 +245,45 @@ class Transaction(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class ScheduledTask(BaseModel):
+    id: str
+    project_id: str
+    room_name: str
+    queue_name: str
+    payload: dict
+    schedule: str
+    active: bool
+    once: bool
+
+    last_run_id: Optional[int] = None
+    last_start_time: Optional[datetime] = None
+    last_end_time: Optional[datetime] = None
+    last_status: Optional[str] = None
+    last_return_message: Optional[str] = None
+
+
+class CreateScheduledTaskRequest(BaseModel):
+    id: Optional[str] = None
+    room_name: str
+    queue_name: str
+    payload: dict  # dict or json-string
+    schedule: str
+    active: bool = True
+    once: bool = False
+
+
+class UpdateScheduledTaskRequest(BaseModel):
+    room_name: Optional[str] = None
+    queue_name: Optional[str] = None
+    payload: Optional[dict] = None  # dict or json-string
+    schedule: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class ListScheduledTasksResponse(BaseModel):
+    tasks: List[ScheduledTask]
+
+
 class Meshagent:
     """
     A simple asynchronous client to interact with the accounts routes.
@@ -257,6 +316,33 @@ class Meshagent:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
         }
+
+    async def _raise_for_status(
+        self,
+        resp: aiohttp.ClientResponse,
+    ) -> None:
+        if resp.status < 400:
+            return
+
+        try:
+            body = await resp.text()
+        except Exception:
+            body = "<unable to read body>"
+
+        msg = f"Status={resp.status}, body={body}"
+
+        if resp.status == 404:
+            raise NotFoundError(msg)
+        if resp.status == 403:
+            raise PermissionDeniedError(msg)
+        if resp.status == 409:
+            raise ConflictError(msg)
+        if resp.status == 400:
+            raise ValidationErrorResponse(msg)
+        if resp.status >= 500:
+            raise ServerError(msg)
+
+        raise RoomException(msg)
 
     async def _ensure_success(
         self, resp: aiohttp.ClientResponse, *, action: str
@@ -328,7 +414,7 @@ class Meshagent:
             url,
             headers=self._get_headers(),
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             payload = await resp.json()
             return cast(ProjectRole, payload["role"])
 
@@ -349,7 +435,7 @@ class Meshagent:
             headers=self._get_headers(),
             json=payload,
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def delete_share(self, project_id: str, share_id: str) -> None:
@@ -362,7 +448,7 @@ class Meshagent:
             url,
             headers=self._get_headers(),
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return None
 
     async def update_share(
@@ -381,7 +467,7 @@ class Meshagent:
             headers=self._get_headers(),
             json=payload,
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return None
 
     async def list_shares(self, project_id: str) -> list[RoomShare]:
@@ -395,7 +481,7 @@ class Meshagent:
             url,
             headers=self._get_headers(),
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [RoomShare.model_validate(item) for item in data["shares"]]
@@ -415,7 +501,7 @@ class Meshagent:
             headers=self._get_headers(),
             json={},
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return RoomShareConnectionInfo.model_validate(data)
@@ -437,7 +523,7 @@ class Meshagent:
             headers=self._get_headers(),
             json={"name": name, "settings": settings},
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def add_user_to_project(
@@ -464,7 +550,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=body
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def remove_user_from_project(
@@ -477,7 +563,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
 
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def update_project_settings(
@@ -491,7 +577,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=settings
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def get_users_in_project(self, project_id: str) -> Dict[str, Any]:
@@ -502,7 +588,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
@@ -513,7 +599,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/profiles/{user_id}"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def update_user_profile(
@@ -530,7 +616,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=body
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def list_projects(self) -> Dict[str, Any]:
@@ -541,7 +627,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def get_project(self, project_id: str) -> Dict[str, Any]:
@@ -552,7 +638,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def create_api_key(
@@ -569,7 +655,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def get_pricing(self) -> Dict[str, Any]:
@@ -741,7 +827,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys/{id}"
 
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             # The server returns status 204 with no content, so no need to parse JSON.
 
     async def list_api_keys(self, project_id: str) -> Dict[str, Any]:
@@ -752,7 +838,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def get_session(self, project_id: str, session_id: str) -> Dict[str, Any]:
@@ -763,7 +849,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def list_active_sessions(self, project_id: str) -> list[RoomSession]:
@@ -774,7 +860,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/active"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             sessions = data.get("sessions", [])
             return [RoomSession.model_validate(session) for session in sessions]
@@ -787,7 +873,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             sessions = data.get("sessions", [])
             return [RoomSession.model_validate(session) for session in sessions]
@@ -802,7 +888,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/events"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             return data.get("events", [])
 
@@ -814,7 +900,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/terminate"
 
         async with self._session.post(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def list_session_spans(
         self, project_id: str, session_id: str
@@ -826,7 +912,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/spans"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             return data.get("spans", [])
 
@@ -840,7 +926,7 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/metrics"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             return data.get("metrics", [])
 
@@ -873,7 +959,7 @@ class Meshagent:
         async with self._session.post(
             endpoint, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             # If the server returns JSON with newly created webhook info, parse it:
             return await resp.json()
 
@@ -908,7 +994,7 @@ class Meshagent:
         async with self._session.put(
             endpoint, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def list_webhooks(self, project_id: str) -> Dict[str, Any]:
@@ -919,7 +1005,7 @@ class Meshagent:
         endpoint = f"{self.base_url}/accounts/projects/{project_id}/webhooks"
 
         async with self._session.get(endpoint, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def delete_webhook(self, project_id: str, webhook_id: str) -> None:
@@ -932,7 +1018,7 @@ class Meshagent:
         )
 
         async with self._session.delete(endpoint, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def create_mailbox(
         self, *, project_id: str, address: str, room: str, queue: str
@@ -949,7 +1035,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def update_mailbox(
         self, *, project_id: str, address: str, room: str, queue: str
@@ -964,7 +1050,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def get_mailbox(self, *, project_id: str, address: str) -> Mailbox:
         """
@@ -973,7 +1059,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return Mailbox.model_validate((await resp.json())["mailbox"])
 
     async def list_mailboxes(self, *, project_id: str) -> List[Mailbox]:
@@ -983,7 +1069,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [Mailbox.model_validate(item) for item in data["mailboxes"]]
@@ -997,7 +1083,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def create_service(
         self,
@@ -1026,7 +1112,7 @@ class Meshagent:
             headers=self._get_headers(),
             json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return (await resp.json())["id"]
 
     async def update_service(
@@ -1049,7 +1135,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             await resp.json()
 
     async def get_service(self, *, project_id: str, service_id: str) -> ServiceSpec:
@@ -1059,7 +1145,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             # Handler returns a JSON string, so we read text then validate
             raw = await resp.text()
             try:
@@ -1074,7 +1160,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [ServiceSpec.model_validate(item) for item in data["services"]]
@@ -1088,7 +1174,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def create_room_service(
         self,
@@ -1120,7 +1206,7 @@ class Meshagent:
             headers=self._get_headers(),
             json=service.model_dump(mode="json", exclude_unset=True),
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return (await resp.json())["id"]
 
     async def update_room_service(
@@ -1141,7 +1227,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             await resp.json()
 
     async def get_room_service(
@@ -1153,7 +1239,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             # Handler returns a JSON string, so we read text then validate
             raw = await resp.text()
             try:
@@ -1172,7 +1258,7 @@ class Meshagent:
             f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services"
         )
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [ServiceSpec.model_validate(item) for item in data["services"]]
@@ -1188,7 +1274,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def create_secret(
         self,
@@ -1209,7 +1295,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return (await resp.json())["id"]
 
     async def update_secret(
@@ -1231,7 +1317,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def delete_secret(self, *, project_id: str, secret_id: str) -> None:
         """
@@ -1240,7 +1326,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def list_secrets(self, project_id: str) -> List[SecretLike]:
         """
@@ -1249,7 +1335,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             raw = await resp.json()
             return [_parse_secret(item) for item in raw["secrets"]]
 
@@ -1277,7 +1363,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             try:
                 return Room.model_validate(await resp.json())
             except ValidationError as exc:
@@ -1292,7 +1378,7 @@ class Meshagent:
         async with self._session.get(url, headers=self._get_headers()) as resp:
             if resp.status == 404:
                 raise RoomException("room not found")
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             try:
                 return Room.model_validate(await resp.json())
             except ValidationError as exc:
@@ -1319,7 +1405,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def delete_room(self, *, project_id: str, room_id: str) -> None:
         """
@@ -1327,7 +1413,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
         """
@@ -1338,7 +1424,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json={}
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return RoomConnectionInfo.model_validate(await resp.json())
 
     async def create_room_grant(
@@ -1364,7 +1450,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def create_room_grant_by_email(
         self,
@@ -1389,7 +1475,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def update_room_grant(
         self,
@@ -1416,7 +1502,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def delete_room_grant(
         self, *, project_id: str, room_id: str, user_id: str
@@ -1432,7 +1518,7 @@ class Meshagent:
             f"/room-grants/{quote(room_id, safe='')}/{quote(user_id, safe='')}"
         )
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
 
     async def get_room_grant(
         self, *, project_id: str, room_id: str, user_id: str
@@ -1448,7 +1534,7 @@ class Meshagent:
             f"/room-grants/{quote(room_id, safe='')}/{quote(user_id, safe='')}"
         )
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return ProjectRoomGrant.model_validate(data)
@@ -1472,7 +1558,7 @@ class Meshagent:
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [Room.model_validate(item) for item in data["rooms"]]
@@ -1496,7 +1582,7 @@ class Meshagent:
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [
@@ -1528,7 +1614,7 @@ class Meshagent:
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [
@@ -1544,7 +1630,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        room_id: str,
+        room_name: str,
         limit: int = 50,
         offset: int = 0,
     ) -> List[ProjectRoomGrant]:
@@ -1557,12 +1643,12 @@ class Meshagent:
         params = {"limit": str(limit), "offset": str(offset)}
         url = (
             f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/by-room/{quote(room_id, safe='')}"
+            f"/room-grants/by-room/{quote(room_name, safe='')}"
         )
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             try:
                 return [
@@ -1590,7 +1676,7 @@ class Meshagent:
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             items = data.get("rooms", [])
             out: List[ProjectRoomGrantCount] = []
@@ -1615,7 +1701,7 @@ class Meshagent:
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             data = await resp.json()
             items = data.get("users", [])
             out: List[ProjectUserGrantCount] = []
@@ -1651,7 +1737,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             raw = await resp.json()
             try:
                 return OAuthClient.model_validate(raw)
@@ -1697,7 +1783,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=body
         ) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             return await resp.json()
 
     async def list_oauth_clients(self, *, project_id: str) -> List[OAuthClient]:
@@ -1707,7 +1793,7 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/oauth/clients"
         async with self._session.get(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             raw = await resp.json()
             try:
                 return [
@@ -1732,7 +1818,7 @@ class Meshagent:
         async with self._session.get(url, headers=self._get_headers()) as resp:
             if resp.status == 404:
                 raise RoomException("oauth client not found")
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
             raw = await resp.json()
             try:
                 return OAuthClient.model_validate(raw)
@@ -1748,4 +1834,134 @@ class Meshagent:
             f"{self.base_url}/accounts/projects/{project_id}/oauth/clients/{client_id}"
         )
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            resp.raise_for_status()
+            await self._raise_for_status(resp)
+
+    # ---------------------------
+    # Scheduled Tasks
+    # ---------------------------
+
+    async def create_scheduled_task(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        queue_name: str,
+        payload: Any,
+        schedule: str,
+        active: bool = True,
+        task_id: Optional[str] = None,
+        once: bool = False,
+    ) -> str:
+        """
+        POST /accounts/projects/{project_id}/scheduled-tasks
+
+        payload can be dict (preferred) or json-string.
+        Returns the created ScheduledTask when the server returns it.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks"
+
+        body = CreateScheduledTaskRequest(
+            id=task_id,
+            room_name=room_name,
+            queue_name=queue_name,
+            payload=payload,
+            schedule=schedule,
+            active=active,
+            once=once,
+        ).model_dump(mode="json", exclude_none=True)
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
+            await self._ensure_success(resp, action="create scheduled task")
+            data = await resp.json()
+            return data["task_id"]
+
+    async def update_scheduled_task(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        room_name: Optional[str] = None,
+        queue_name: Optional[str] = None,
+        payload: Optional[Any] = None,
+        schedule: Optional[str] = None,
+        active: Optional[bool] = None,
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/scheduled-tasks/{task_id}
+
+        Patch-like update. Any omitted fields are left unchanged.
+        Returns the updated ScheduledTask when the server returns it; otherwise fetches it.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/{task_id}"
+        )
+
+        body = UpdateScheduledTaskRequest(
+            room_name=room_name,
+            queue_name=queue_name,
+            payload=payload,
+            schedule=schedule,
+            active=active,
+        ).model_dump(mode="json", exclude_none=True)
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
+            await self._ensure_success(resp, action="update scheduled task")
+
+    async def delete_scheduled_task(self, *, project_id: str, task_id: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/scheduled-tasks/{task_id}
+        Returns 204 No Content on success.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/{task_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._ensure_success(resp, action="delete scheduled task")
+            return None
+
+    async def list_scheduled_tasks(
+        self,
+        *,
+        project_id: str,
+        room_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        active: Optional[bool] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[ScheduledTask]:
+        """
+        GET /accounts/projects/{project_id}/scheduled-tasks?room_name=&task_id=&active=&limit=&offset=
+        Returns a list[ScheduledTask].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks"
+        params: Dict[str, str] = {
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        if room_name is not None:
+            params["room_name"] = room_name
+        if task_id is not None:
+            params["task_id"] = task_id
+        if active is not None:
+            params["active"] = "true" if active else "false"
+
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._ensure_success(resp, action="list scheduled tasks")
+            data = await resp.json()
+
+        tasks_raw = data.get("tasks", [])
+        if not isinstance(tasks_raw, list):
+            raise RoomException(
+                "Invalid scheduled-tasks payload: expected 'tasks' to be a list"
+            )
+
+        try:
+            return [ScheduledTask.model_validate(item) for item in tasks_raw]
+        except ValidationError as exc:
+            raise RoomException(f"Invalid scheduled-tasks payload: {exc}") from exc
