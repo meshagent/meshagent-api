@@ -94,14 +94,24 @@ class RoomAccessDeniedException(RoomException):
         super().__init__(message, status_code=403)
 
 
+_builtins = {
+    "thread",
+    "document",
+    "transcript",
+    "storage",
+}
+
+
 class Requirement(ABC):
     def __init__(
         self, *, name: str, callable: Optional[bool] = None, timeout: float = 30
     ):
         self.timeout = timeout
         self.name = name
-        if callable is None:
+        if callable is None and name in _builtins:
             callable = True
+        else:
+            callable = False
 
         self.callable = callable
 
