@@ -95,6 +95,13 @@ class ServiceHost:
 
         return deco
 
+    def has_path(self, path: str):
+        for p in self.paths:
+            if p.path == path:
+                return True
+
+        return False
+
     def add_path(
         self,
         path: str,
