@@ -95,7 +95,10 @@ class RoomAccessDeniedException(RoomException):
 
 
 class Requirement(ABC):
-    def __init__(self, *, name: str, callable: Optional[bool] = None):
+    def __init__(
+        self, *, name: str, callable: Optional[bool] = None, timeout: float = 30
+    ):
+        self.timeout = timeout
         self.name = name
         if callable is None:
             callable = True
@@ -148,8 +151,9 @@ class RequiredToolkit(Requirement):
         name: str,
         tools: Optional[list["str"]] = None,
         callable: Optional[bool] = None,
+        timeout: float = None,
     ):
-        super().__init__(name=name, callable=callable)
+        super().__init__(name=name, callable=callable, timeout=timeout)
         self.tools = tools
 
     def to_json(self):
@@ -163,8 +167,9 @@ class RequiredSchema(Requirement):
         name: str,
         callable: Optional[bool] = None,
         schema: Optional[MeshSchema] = None,
+        timeout: float = None,
     ):
-        super().__init__(name=name, callable=callable)
+        super().__init__(name=name, callable=callable, timeout=timeout)
         self.schema = schema
 
     def to_json(self):
