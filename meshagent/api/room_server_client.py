@@ -401,7 +401,6 @@ class RoomClient:
         await self.sync.stop()
         await self.messaging.stop()
         await self.protocol.__aexit__(None, None, None)
-
         return
 
     @property
@@ -2583,6 +2582,7 @@ class Container:
     def __init__(self, *, room: RoomClient, request_id: str, task: asyncio.Task):
         self._room = room
         self._request_id = request_id
+        self._error_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._output_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._closed = asyncio.ensure_future(task)
         self._task = task
@@ -2591,6 +2591,7 @@ class Container:
 
     def _on_task_done(self, t):
         self._output_q.put_nowait(None)
+        self._error_q.put_nowait(None)
 
     @property
     def result(self):
@@ -2623,7 +2624,14 @@ class Container:
             },
         )
 
-    async def output(self) -> AsyncIterator[bytes]:
+    async def stderr(self) -> AsyncIterator[bytes]:
+        while True:
+            chunk = await self._error_q.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    async def stdoutput(self) -> AsyncIterator[bytes]:
         while True:
             chunk = await self._output_q.get()
             if chunk is None:
@@ -2641,6 +2649,10 @@ class Container:
     # Internal
     def _push_output(self, data: bytes):
         self._output_q.put_nowait(data)
+
+    # Internal
+    def _push_err(self, data: bytes):
+        self._error_q.put_nowait(data)
 
 
 # ---------------------------
@@ -2689,7 +2701,10 @@ class ContainersClient:
             logger.warning("received output from missing container %s", req_id)
             return  # tty closed or missing
 
-        if channel == 0:
+        if channel == 2:
+            tty._push_err(payload)
+
+        elif channel == 1:
             tty._push_output(payload)
 
     async def _handle_progress(
@@ -2821,6 +2836,7 @@ class ContainersClient:
                     if isinstance(resp, JsonResponse)
                     else resp.get("status", "")
                 )
+
                 return status
             finally:
                 self._ttys.pop(request_id, None)
