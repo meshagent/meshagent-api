@@ -2644,7 +2644,7 @@ class Container:
                 return
             yield chunk
 
-    async def stdoutput(self) -> AsyncIterator[bytes]:
+    async def stdout(self) -> AsyncIterator[bytes]:
         while True:
             chunk = await self._output_q.get()
             if chunk is None:
@@ -2796,7 +2796,6 @@ class ContainersClient:
         role: Optional[str] = None,
         participant_name: Optional[str] = None,
         ports: Dict[int, int] | None = None,
-        variables: Optional[Dict[str, str]] = None,
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
     ) -> str:
@@ -2814,7 +2813,6 @@ class ContainersClient:
             participant_name=participant_name,
             ports=ports or {},
             credentials=credentials or [],
-            variables=variables,
         )
 
         resp = await self.room.send_request(
