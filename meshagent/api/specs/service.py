@@ -32,7 +32,7 @@ class ImageStorageMountSpec(BaseModel):
     read_only: bool = True
 
 
-class ServiceStorageMountsSpec(BaseModel):
+class ContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
@@ -85,7 +85,7 @@ class ContainerSpec(BaseModel):
     environment: Optional[list[EnvironmentVariable]] = None
     secrets: list[str] = []
     pull_secret: Optional[str] = None
-    storage: Optional[ServiceStorageMountsSpec] = None
+    storage: Optional[ContainerMountSpec] = None
     api_key: Optional[ServiceApiKeySpec] = None
 
 
@@ -155,7 +155,7 @@ class ServiceTemplateVariable(BaseModel):
     type: Optional[Literal["email"]] = None
 
 
-class ServiceTemplateMountSpec(BaseModel):
+class ServiceTemplateContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
@@ -176,7 +176,7 @@ class ContainerTemplateSpec(BaseModel):
     environment: Optional[list[EnvironmentVariable]] = None
     image: Optional[str] = None
     command: Optional[str] = None
-    storage: Optional[ServiceTemplateMountSpec] = None
+    storage: Optional[ServiceTemplateContainerMountSpec] = None
 
 
 class ExternalServiceTemplateSpec(BaseModel):
@@ -221,7 +221,7 @@ class ServiceTemplateSpec(BaseModel):
                 command=self.container.command,
                 image=self.container.image,
                 environment=env,
-                storage=ServiceStorageMountsSpec(
+                storage=ContainerMountSpec(
                     room=self.container.storage.room
                     if self.container.storage is not None
                     else None,

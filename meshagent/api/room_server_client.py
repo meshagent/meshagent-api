@@ -1,4 +1,5 @@
 from meshagent.api.protocol import Protocol, ClientProtocol
+from meshagent.api.specs.service import ContainerMountSpec
 import json
 import asyncio
 import logging
@@ -2461,7 +2462,7 @@ class ListContainersRequest(BaseModel):
     all: Optional[bool] = None
 
 
-class RunRequest(BaseModel):
+class _RunRequest(BaseModel):
     request_id: Optional[str] = None
     image: str
     command: Optional[str] = None
@@ -2474,9 +2475,10 @@ class RunRequest(BaseModel):
     credentials: Optional[List[DockerSecret]] = None
     name: Optional[str] = None
     annotations: Optional[Dict[str, str]] = None
+    mounts: Optional[ContainerMountSpec] = None
 
 
-class ExecRequest(BaseModel):
+class _ExecRequest(BaseModel):
     request_id: Optional[str] = None
     container_id: str
     command: Optional[str] = None
@@ -2798,10 +2800,11 @@ class ContainersClient:
         ports: Dict[int, int] | None = None,
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
+        mounts: Optional[ContainerMountSpec] = None,
     ) -> str:
         request_id = uuid.uuid4().hex
 
-        req = RunRequest(
+        req = _RunRequest(
             name=name,
             request_id=request_id,
             image=image,
@@ -2813,6 +2816,7 @@ class ContainersClient:
             participant_name=participant_name,
             ports=ports or {},
             credentials=credentials or [],
+            mounts=mounts,
         )
 
         resp = await self.room.send_request(
@@ -2834,7 +2838,7 @@ class ContainersClient:
     ) -> Container:
         request_id = str(uuid.uuid4())
 
-        req = ExecRequest(
+        req = _ExecRequest(
             request_id=request_id,
             container_id=container_id,
             command=command,
