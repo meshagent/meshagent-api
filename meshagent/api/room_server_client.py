@@ -1,5 +1,4 @@
 from meshagent.api.protocol import Protocol, ClientProtocol
-from meshagent.api.specs.service import ServiceTemplateSpec
 import json
 import asyncio
 import logging
@@ -2473,7 +2472,6 @@ class RunRequest(BaseModel):
     participant_name: Optional[str] = None
     ports: Dict[int, int] = Field(default_factory=dict)
     credentials: Optional[List[DockerSecret]] = None
-    variables: Optional[Dict[str, str]] = None
     name: Optional[str] = None
     annotations: Optional[Dict[str, str]] = None
 
@@ -2502,7 +2500,6 @@ class RoomContainer(BaseModel):
     status: Optional[str] = None
     name: Optional[str] = None
     started_by: ContainerStartedBy
-    manifest: Optional[ServiceTemplateSpec] = None
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
 
     # Accept arbitrary extras (names, created, state, etc.)

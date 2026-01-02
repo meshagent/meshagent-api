@@ -24,10 +24,19 @@ class ProjectStorageMountSpec(BaseModel):
     read_only: bool = True
 
 
+class ImageStorageMountSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    image: str
+    path: str
+    subpath: Optional[str] = None
+    read_only: bool = True
+
+
 class ServiceStorageMountsSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
+    images: Optional[list[ImageStorageMountSpec]] = None
 
 
 class ServiceApiKeySpec(BaseModel):
@@ -150,6 +159,7 @@ class ServiceTemplateMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
+    images: Optional[list[ImageStorageMountSpec]] = None
 
 
 class ServiceTemplateMetadata(BaseModel):
@@ -216,6 +226,9 @@ class ServiceTemplateSpec(BaseModel):
                     if self.container.storage is not None
                     else None,
                     project=self.container.storage.project
+                    if self.container.storage is not None
+                    else None,
+                    images=self.container.storage.images
                     if self.container.storage is not None
                     else None,
                 ),
