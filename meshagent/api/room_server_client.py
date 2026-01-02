@@ -2483,7 +2483,6 @@ class ExecRequest(BaseModel):
     container_id: str
     command: Optional[str] = None
     tty: Optional[bool] = None
-    detach: bool = True
 
 
 class ContainerRunResult(BaseModel):
@@ -2586,12 +2585,16 @@ class Container:
         self._output_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._closed = asyncio.ensure_future(task)
         self._task = task
-
+        self._ready = asyncio.Future[bool]()
         task.add_done_callback(self._on_task_done)
 
     def _on_task_done(self, t):
         self._output_q.put_nowait(None)
         self._error_q.put_nowait(None)
+        if not self._ready:
+            self._ready.set_exception(
+                RoomException("container did not start successfully")
+            )
 
     @property
     def result(self):
@@ -2601,13 +2604,26 @@ class Container:
     def request_id(self):
         return self._request_id
 
+    async def close_stdin(self) -> None:
+        await self._ready
+        # If server supports TTY input; adjust route name if different.
+        await self._room.send_request(
+            "containers.container_input",
+            {"request_id": self._request_id, "channel": 255},
+            data=b"",
+        )
+
     async def write(self, data: bytes) -> None:
+        await self._ready
         # If server supports TTY input; adjust route name if different.
         await self._room.send_request(
             "containers.container_input",
             {"request_id": self._request_id, "channel": 1},
             data=data,
         )
+
+    async def wait_for_ready(self):
+        await self._ready
 
     async def resize(self, *, width: int, height: int) -> None:
         """
@@ -2645,6 +2661,9 @@ class Container:
             {"request_id": self._request_id, "channel": 5},
             data={},
         )
+
+    def _mark_ready(self):
+        self._ready.set_result(True)
 
     # Internal
     def _push_output(self, data: bytes):
@@ -2696,6 +2715,7 @@ class ContainersClient:
 
         req_id: str = header["request_id"]
         channel: int = int(header["channel"])
+
         tty = self._ttys.get(req_id)
         if tty is None:
             logger.warning("received output from missing container %s", req_id)
@@ -2706,6 +2726,11 @@ class ContainersClient:
 
         elif channel == 1:
             tty._push_output(payload)
+
+        elif channel == -1:
+            control = json.loads(payload)
+            if control["started"]:
+                tty._mark_ready()
 
     async def _handle_progress(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
@@ -2811,7 +2836,6 @@ class ContainersClient:
         container_id: str,
         command: Optional[list[str]] = None,
         tty: Optional[bool] = None,
-        detach: bool = True,
     ) -> Container:
         request_id = str(uuid.uuid4())
 
@@ -2819,7 +2843,6 @@ class ContainersClient:
             request_id=request_id,
             container_id=container_id,
             command=command,
-            detach=detach,
             tty=tty,
         )
 
