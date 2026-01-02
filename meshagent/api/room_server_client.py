@@ -2572,7 +2572,7 @@ class LogStream(Generic[T]):
 # ---------------------------
 
 
-class Container:
+class ExecSession:
     """
     Provides async input/output streams for an interactive container session.
     """
@@ -2692,7 +2692,7 @@ class ContainersClient:
             "containers.progress", self._handle_progress
         )
 
-        self._ttys: Dict[str, Container] = {}
+        self._ttys: Dict[str, ExecSession] = {}
         self._log_streams = dict[str, LogStream]()
 
     # ---- Event handlers ----
@@ -2835,7 +2835,7 @@ class ContainersClient:
         container_id: str,
         command: Optional[list[str]] = None,
         tty: Optional[bool] = None,
-    ) -> Container:
+    ) -> ExecSession:
         request_id = str(uuid.uuid4())
 
         req = _ExecRequest(
@@ -2863,7 +2863,7 @@ class ContainersClient:
             finally:
                 self._ttys.pop(request_id, None)
 
-        container = Container(
+        container = ExecSession(
             room=self.room, request_id=request_id, task=asyncio.create_task(run())
         )
         self._ttys[request_id] = container
