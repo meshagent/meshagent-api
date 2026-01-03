@@ -80,10 +80,10 @@ class ServiceMetadata(BaseModel):
 
 class ContainerSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    command: Optional[str] = None
     image: str
+    command: Optional[str] = None
     environment: Optional[list[EnvironmentVariable]] = None
-    secrets: list[str] = []
+    secrets: Optional[list[str]] = None
     pull_secret: Optional[str] = None
     storage: Optional[ContainerMountSpec] = None
     api_key: Optional[ServiceApiKeySpec] = None

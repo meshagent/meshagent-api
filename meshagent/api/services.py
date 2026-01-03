@@ -23,6 +23,7 @@ from meshagent.api.specs.service import (
     EndpointSpec,
     MeshagentEndpointSpec,
     ServiceMetadata,
+    AgentSpec,
 )
 
 well_known_service_path = "/.well-known/meshagent-service.json"
@@ -77,6 +78,7 @@ class ServiceHost:
         self._supports_websockets = True
 
         self.name = name
+        self.agents = list[AgentSpec]()
 
     def path(
         self,
@@ -328,6 +330,8 @@ class ServiceHost:
                 environment=environment,
             ),
         )
+
+        spec.agents = [*self.agents]
 
         port = PortSpec(
             num=self.port,
