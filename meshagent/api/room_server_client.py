@@ -2476,6 +2476,7 @@ class _RunRequest(BaseModel):
     name: Optional[str] = None
     annotations: Optional[Dict[str, str]] = None
     mounts: Optional[ContainerMountSpec] = None
+    writable_root_fs: Optional[bool] = None
 
 
 class _ExecRequest(BaseModel):
@@ -2801,6 +2802,7 @@ class ContainersClient:
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
         mounts: Optional[ContainerMountSpec] = None,
+        writable_root_fs: Optional[bool] = None,
     ) -> str:
         request_id = uuid.uuid4().hex
 
@@ -2817,6 +2819,7 @@ class ContainersClient:
             ports=ports or {},
             credentials=credentials or [],
             mounts=mounts,
+            writable_root_fs=writable_root_fs,
         )
 
         resp = await self.room.send_request(

@@ -223,6 +223,10 @@ class SecretsGrant(BaseModel):
         return False
 
 
+class TunnelsGrant(BaseModel):
+    ports: Optional[list[str]] = None
+
+
 class ApiScope(BaseModel):
     livekit: Optional[LivekitGrant] = None
     queues: Optional[QueuesGrant] = None
@@ -235,6 +239,7 @@ class ApiScope(BaseModel):
     agents: Optional[AgentsGrant] = None
     admin: Optional[AdminGrant] = None
     secrets: Optional[SecretsGrant] = None
+    tunnels: Optional[TunnelsGrant] = None
 
     # no secrets access, no admin access by default for agents
     @staticmethod
@@ -265,6 +270,7 @@ class ApiScope(BaseModel):
             agents=AgentsGrant(),
             admin=AdminGrant(),
             secrets=SecretsGrant(),
+            tunnels=TunnelsGrant(),
         )
 
 

@@ -142,6 +142,7 @@ class PortSpec(BaseModel):
     type: Optional[Literal["http", "tcp"]] = "http"
     endpoints: list[EndpointSpec] = []
     liveness: Optional[str] = None
+    host_port: Optional[PositiveInt] = None
 
 
 class ServiceTemplateVariable(BaseModel):
