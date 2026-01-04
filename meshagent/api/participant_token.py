@@ -243,7 +243,7 @@ class ApiScope(BaseModel):
 
     # no secrets access, no admin access by default for agents
     @staticmethod
-    def agent_default() -> "ApiScope":
+    def agent_default(*, tunnels: bool=False) -> "ApiScope":
         return ApiScope(
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
@@ -254,6 +254,7 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            tunnels=TunnelsGrant() if tunnels else None
         )
 
     @staticmethod
