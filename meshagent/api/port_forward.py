@@ -6,9 +6,7 @@ from dataclasses import dataclass
 
 import aiohttp
 
-
-from meshagent.cli.helper import meshagent_base_url
-
+from meshagent.api.helpers import meshagent_base_url
 
 @dataclass
 class LocalExposeHandle:
