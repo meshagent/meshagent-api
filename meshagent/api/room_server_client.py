@@ -1788,6 +1788,25 @@ class IntDataType(DataType):
 _data_types["int"] = IntDataType
 
 
+class BoolDataType(DataType):
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def from_json(data: dict):
+        assert data["type"] == "bool"
+        return BoolDataType()
+
+    def to_json(self):
+        return {"type": "bool"}
+
+    def to_json_schema(self):
+        return {"type": "boolean"}
+
+
+_data_types["bool"] = BoolDataType
+
+
 class DateDataType(DataType):
     def __init__(self):
         super().__init__()
@@ -2189,6 +2208,7 @@ class DatabaseClient:
         limit: Optional[int] = None,
         select: Optional[List[str]] = None,
         namespace: Optional[list[str]] = None,
+        columns: Optional[list[str]] = None,
     ) -> list[Dict[str, Any]]:
         """
         Search for records in a table.
@@ -2223,6 +2243,9 @@ class DatabaseClient:
 
         if namespace is not None:
             payload["namespace"] = namespace
+
+        if columns is not None:
+            payload["columns"] = columns
 
         response = await self.room.send_request("database.search", payload)
         if isinstance(response, JsonResponse):
