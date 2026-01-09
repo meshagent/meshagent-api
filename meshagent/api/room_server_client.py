@@ -2157,7 +2157,8 @@ class DatabaseClient:
         await self.room.send_request("database.add_columns", payload)
         return None
 
-    async def alter_columns(
+    # TODO: not ready yet on lance side
+    async def _alter_columns(
         self,
         *,
         table: str,
