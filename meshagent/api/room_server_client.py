@@ -1754,15 +1754,27 @@ _data_types = dict()
 
 
 class DataType(ABC):
-    pass
+    def __init__(
+        self, *, nullable: Optional[bool] = None, metadata: Optional[dict] = None
+    ):
+        self.nullable = nullable
+        self.metadata = metadata
 
     @abstractmethod
     def to_json(self) -> dict:
-        pass
+        return {
+            "nullable": self.nullable,
+            "metadata": self.metadata,
+        }
 
     @staticmethod
     def from_json(data: dict) -> "DataType":
         return _data_types[data["type"]].from_json(data)
+
+    def _maybe_nullable_schema(self, t: str):
+        if self.nullable:
+            return [t, "null"]
+        return t
 
     @abstractmethod
     def to_json_schema(self):
@@ -1770,96 +1782,110 @@ class DataType(ABC):
 
 
 class IntDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "int"
-        return IntDataType()
+        return IntDataType(nullable=data.get("nullable"), metadata=data.get("metadata"))
 
     def to_json(self):
-        return {"type": "int"}
+        return {"type": "int", **super().to_json()}
 
     def to_json_schema(self):
-        return {"type": "number"}
+        return {"type": self._maybe_nullable_schema("number")}
 
 
 _data_types["int"] = IntDataType
 
 
 class BoolDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "bool"
-        return BoolDataType()
+        return BoolDataType(
+            nullable=data.get("nullable"), metadata=data.get("metadata")
+        )
 
     def to_json(self):
-        return {"type": "bool"}
+        return {"type": "bool", **super().to_json()}
 
     def to_json_schema(self):
-        return {"type": "boolean"}
+        return {"type": self._maybe_nullable_schema("boolean")}
 
 
 _data_types["bool"] = BoolDataType
 
 
 class DateDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "date"
-        return DateDataType()
+        return DateDataType(
+            nullable=data.get("nullable"), metadata=data.get("metadata")
+        )
 
     def to_json(self):
-        return {"type": "date"}
+        return {"type": "date", **super().to_json()}
 
     def to_json_schema(self):
-        return {"type": "string", "description": "an ISO formatted date string"}
+        return {
+            "type": self._maybe_nullable_schema("string"),
+            "description": "an ISO formatted date string",
+        }
 
 
 _data_types["date"] = DateDataType
 
 
 class TimestampDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "timestamp"
-        return TimestampDataType()
+        return TimestampDataType(
+            nullable=data.get("nullable"), metadata=data.get("metadata")
+        )
 
     def to_json(self):
-        return {"type": "timestamp"}
+        return {"type": "timestamp", **super().to_json()}
 
     def to_json_schema(self):
-        return {"type": "string", "description": "an ISO formatted timestamp string"}
+        return {
+            "type": self._maybe_nullable_schema("string"),
+            "description": "an ISO formatted timestamp string",
+        }
 
 
 _data_types["timestamp"] = TimestampDataType
 
 
 class FloatDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "float"
-        return FloatDataType()
+        return FloatDataType(
+            nullable=data.get("nullable"), metadata=data.get("metadata")
+        )
 
     def to_json(self):
-        return {"type": "float"}
+        return {"type": "float", **super().to_json()}
 
     def to_json_schema(self):
         return {
-            "type": "number",
+            "type": self._maybe_nullable_schema("number"),
         }
 
 
@@ -1867,7 +1893,8 @@ _data_types["float"] = FloatDataType
 
 
 class VectorDataType(DataType):
-    def __init__(self, *, size: int, element_type: DataType):
+    def __init__(self, *, size: int, element_type: DataType, **kwargs):
+        super().__init__(**kwargs)
         self.size = size
         self.element_type = element_type
 
@@ -1875,7 +1902,10 @@ class VectorDataType(DataType):
     def from_json(data: dict):
         assert data["type"] == "vector"
         return VectorDataType(
-            size=data["size"], element_type=DataType.from_json(data["element_type"])
+            size=data["size"],
+            element_type=DataType.from_json(
+                data["element_type"],
+            ),
         )
 
     def to_json(self):
@@ -1883,12 +1913,13 @@ class VectorDataType(DataType):
             "type": "vector",
             "size": self.size,
             "element_type": self.element_type.to_json(),
+            **super().to_json(),
         }
 
     def to_json_schema(self):
         return {
             "type": "array",
-            "items": {"type": "number"},
+            "items": {"type": self._maybe_nullable_schema("number")},
             "description": f"a vector with length {self.size}",
         }
 
@@ -1897,20 +1928,25 @@ _data_types["vector"] = VectorDataType
 
 
 class TextDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "text"
-        return TextDataType()
+        return TextDataType(
+            nullable=data.get("nullable"), metadata=data.get("metadata")
+        )
 
     def to_json(self):
-        return {"type": "text"}
+        return {
+            "type": "text",
+            **super().to_json(),
+        }
 
     def to_json_schema(self):
         return {
-            "type": "string",
+            "type": self._maybe_nullable_schema("string"),
         }
 
 
@@ -1918,21 +1954,26 @@ _data_types["text"] = TextDataType
 
 
 class BinaryDataType(DataType):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @staticmethod
     def from_json(data: dict):
         assert data["type"] == "binary"
-        return BinaryDataType()
+        return BinaryDataType(
+            nullable=data.get("nullable"), metadata=data.get("metadata")
+        )
 
     def to_json(self):
-        return {"type": "binary"}
+        return {
+            "type": "binary",
+            **super().to_json(),
+        }
 
     def to_json_schema(self):
         return {
             "type": "array",
-            "items": {"type": "number"},
+            "items": {"type": self._maybe_nullable_schema("number")},
             "description": "a byte array",
         }
 
@@ -1989,6 +2030,7 @@ class DatabaseClient:
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        metadata: Optional[dict] = None,
     ) -> None:
         """
         Create a new table.
@@ -2013,6 +2055,7 @@ class DatabaseClient:
             "schema": schema_dict,
             "mode": mode,
             "namespace": namespace,
+            "metadata": metadata,
         }
         await self.room.send_request("database.create_table", payload)
         return None
@@ -2025,9 +2068,15 @@ class DatabaseClient:
         data: Optional[List[dict]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        metadata: Optional[dict] = None,
     ) -> None:
         return await self._create_table(
-            name=name, schema=schema, mode=mode, data=data, namespace=namespace
+            name=name,
+            schema=schema,
+            mode=mode,
+            data=data,
+            namespace=namespace,
+            metadata=metadata,
         )
 
     async def create_table_from_data(
@@ -2037,9 +2086,14 @@ class DatabaseClient:
         data: Optional[list[dict]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        metadata: Optional[dict] = None,
     ) -> None:
         return await self._create_table(
-            name=name, data=data, mode=mode, namespace=namespace
+            name=name,
+            data=data,
+            mode=mode,
+            namespace=namespace,
+            metadata=metadata,
         )
 
     async def drop_table(
@@ -2101,6 +2155,33 @@ class DatabaseClient:
         payload = {"table": table, "new_columns": columns, "namespace": namespace}
 
         await self.room.send_request("database.add_columns", payload)
+        return None
+
+    async def alter_columns(
+        self,
+        *,
+        table: str,
+        columns: Dict[str, DataType],
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        """
+        Add new columns to an existing table.
+
+        :param table: Table name.
+        :param new_columns: Dict of {column_name: default_value_expression}.
+        """
+
+        cs = {}
+
+        for c in columns.keys():
+            if isinstance(columns[c], DataType):
+                cs[c] = columns[c].to_json()
+            else:
+                raise RoomException("columns must be of type DataType")
+
+        payload = {"table": table, "columns": cs, "namespace": namespace}
+
+        await self.room.send_request("database.alter_columns", payload)
         return None
 
     async def drop_columns(
@@ -2208,7 +2289,6 @@ class DatabaseClient:
         limit: Optional[int] = None,
         select: Optional[List[str]] = None,
         namespace: Optional[list[str]] = None,
-        columns: Optional[list[str]] = None,
     ) -> list[Dict[str, Any]]:
         """
         Search for records in a table.
@@ -2243,9 +2323,6 @@ class DatabaseClient:
 
         if namespace is not None:
             payload["namespace"] = namespace
-
-        if columns is not None:
-            payload["columns"] = columns
 
         response = await self.room.send_request("database.search", payload)
         if isinstance(response, JsonResponse):
