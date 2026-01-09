@@ -203,11 +203,13 @@ class _CreateMailboxRequest(BaseModel):
     room: str
     queue: str
     address: str
+    public: bool
 
 
 class _UpdateMailboxRequest(BaseModel):
     room: str
     queue: str
+    public: bool
 
 
 class Mailbox(BaseModel):
@@ -219,6 +221,7 @@ class Mailbox(BaseModel):
     address: str
     room: str
     queue: str
+    public: bool
 
 
 class Balance(BaseModel):
@@ -1024,7 +1027,13 @@ class Meshagent:
             await self._raise_for_status(resp)
 
     async def create_mailbox(
-        self, *, project_id: str, address: str, room: str, queue: str
+        self,
+        *,
+        project_id: str,
+        address: str,
+        room: str,
+        queue: str,
+        public: bool = False,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/mailboxes
@@ -1033,7 +1042,10 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes"
         payload = _CreateMailboxRequest(
-            address=address, room=room, queue=queue
+            address=address,
+            room=room,
+            queue=queue,
+            public=public,
         ).model_dump(mode="json")
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
@@ -1041,7 +1053,13 @@ class Meshagent:
             await self._raise_for_status(resp)
 
     async def update_mailbox(
-        self, *, project_id: str, address: str, room: str, queue: str
+        self,
+        *,
+        project_id: str,
+        address: str,
+        room: str,
+        queue: str,
+        public: bool = False,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/mailboxes/{address}
@@ -1049,7 +1067,9 @@ class Meshagent:
         Returns {} on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
-        payload = _UpdateMailboxRequest(room=room, queue=queue).model_dump(mode="json")
+        payload = _UpdateMailboxRequest(
+            room=room, queue=queue, public=public
+        ).model_dump(mode="json")
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:
