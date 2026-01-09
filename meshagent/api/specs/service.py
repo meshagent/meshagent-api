@@ -91,7 +91,7 @@ class ContainerSpec(BaseModel):
 
 class ExternalServiceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    url: str
+    url: Optional[str] = None
 
 
 class ServiceSpec(BaseModel):
