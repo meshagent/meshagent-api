@@ -154,6 +154,7 @@ class ServiceTemplateVariable(BaseModel):
     optional: bool = False
     # Optional hint for variable type; absent in many templates
     type: Optional[Literal["email"]] = None
+    annotations: Optional[dict[str, str]] = None
 
 
 class ServiceTemplateContainerMountSpec(BaseModel):
