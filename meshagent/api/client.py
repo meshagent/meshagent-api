@@ -308,11 +308,17 @@ class Meshagent:
         self.base_url = base_url.rstrip("/")
         self.token = token  # The "Bearer" token
 
-        session = aiohttp.ClientSession()
-        self._session = session
+        self._session = aiohttp.ClientSession()
 
     async def close(self):
-        await self._session.close()
+        if not self._session.closed:
+            await self._session.close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
 
     def _get_headers(self) -> Dict[str, str]:
         """
