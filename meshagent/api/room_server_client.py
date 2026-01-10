@@ -2578,6 +2578,7 @@ class _RunRequest(BaseModel):
     annotations: Optional[Dict[str, str]] = None
     mounts: Optional[ContainerMountSpec] = None
     writable_root_fs: Optional[bool] = None
+    private: Optional[bool] = None
 
 
 class _ExecRequest(BaseModel):
@@ -2605,6 +2606,7 @@ class RoomContainer(BaseModel):
     name: Optional[str] = None
     started_by: ContainerStartedBy
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
+    private: bool
 
     # Accept arbitrary extras (names, created, state, etc.)
     class Config:
@@ -2904,6 +2906,7 @@ class ContainersClient:
         name: Optional[str] = None,
         mounts: Optional[ContainerMountSpec] = None,
         writable_root_fs: Optional[bool] = None,
+        private: Optional[bool] = None,
     ) -> str:
         request_id = uuid.uuid4().hex
 
@@ -2921,6 +2924,7 @@ class ContainersClient:
             credentials=credentials or [],
             mounts=mounts,
             writable_root_fs=writable_root_fs,
+            private=private,
         )
 
         resp = await self.room.send_request(
