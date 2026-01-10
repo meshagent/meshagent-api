@@ -1,4 +1,4 @@
-from pydantic import BaseModel, PositiveInt, ConfigDict
+from pydantic import BaseModel, PositiveInt, ConfigDict, model_validator
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
@@ -104,6 +104,12 @@ class ServiceSpec(BaseModel):
     ports: Optional[list["PortSpec"]] = []
     container: Optional[ContainerSpec] = None
     external: Optional[ExternalServiceSpec] = None
+
+    @model_validator(mode="after")
+    def require_one_of(cls, m):
+        if m.external is None and m.container is None:
+            raise ValueError("Either 'external' or 'container' must be set")
+        return m
 
 
 class MeshagentEndpointSpec(BaseModel):
