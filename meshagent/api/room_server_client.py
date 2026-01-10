@@ -2757,7 +2757,7 @@ class ExecSession:
                 return
             yield chunk
 
-    async def kill(self):
+    async def stop(self):
         # send a kill message on channel 5
         await self._room.send_request(
             "containers.container_input",
@@ -2775,6 +2775,14 @@ class ExecSession:
     # Internal
     def _push_err(self, data: bytes):
         self._error_q.put_nowait(data)
+
+    async def kill(self):
+        await self._room.send_request(
+            "containers.stop_exec",
+            {
+                "request_id": self._request_id,
+            },
+        )
 
 
 # ---------------------------
