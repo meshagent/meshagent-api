@@ -2330,6 +2330,43 @@ class DatabaseClient:
             return decode_records(response.json["results"])
         return []
 
+    async def count(
+        self,
+        *,
+        table: str,
+        text: Optional[str] = None,
+        vector: Optional[list[float]] = None,
+        where: Optional[str] | dict = None,
+        namespace: Optional[list[str]] = None,
+    ) -> list[Dict[str, Any]]:
+        """
+        Search for records in a table.
+
+        :param table: Table name.
+        :param text: The search text
+        :param where: A filter clause or values to match
+        """
+
+        if isinstance(where, dict):
+            where = " AND ".join(
+                map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
+            )
+        payload = {
+            "table": table,
+            "where": where,
+            "text": text,
+        }
+        if vector is not None:
+            payload["vector"] = vector
+
+        if namespace is not None:
+            payload["namespace"] = namespace
+
+        response = await self.room.send_request("database.count", payload)
+        if isinstance(response, JsonResponse):
+            return response.json["count"]
+        return []
+
     async def optimize(
         self, *, table: str, namespace: Optional[list[str]] = None
     ) -> None:
