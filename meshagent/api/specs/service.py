@@ -47,6 +47,7 @@ class ServiceApiKeySpec(BaseModel):
 
 
 ANNOTATION_SERVICE_ID = "meshagent.service.id"
+ANNOTATION_SERVICE_README = "meshagent.service.readme"
 
 ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
 ANNOTATION_AGENT_WIDGET = "meshagent.agent.widget"
