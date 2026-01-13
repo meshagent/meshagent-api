@@ -2582,7 +2582,6 @@ class Image(BaseModel):
     tags: List[str]
     size: int
     labels: Dict[str, str]
-    manifest: Optional[Any] = None
 
 
 class DockerSecret(BaseModel):
