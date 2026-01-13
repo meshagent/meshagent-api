@@ -4,10 +4,16 @@ from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
 
 
+class TokenValue(BaseModel):
+    identity: str
+    api: Optional[ApiScope] = None
+
+
 class EnvironmentVariable(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
-    value: str
+    value: Optional[str] = None
+    token: Optional[TokenValue] = None
 
 
 class RoomStorageMountSpec(BaseModel):
@@ -53,7 +59,6 @@ ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
 ANNOTATION_AGENT_WIDGET = "meshagent.agent.widget"
 ANNOTATION_AGENT_DATABASE_SCHEMA = "meshagent.agent.database.schema"
 ANNOTATION_AGENT_SCHEDULE = "meshagent.agent.schedule"
-ANNOTATION_AGENT_SHELL_IMAGE = "meshagent.agent.shell.image"
 ANNOTATION_AGENT_SHELL_COMMAND = "meshagent.agent.shell.command"
 
 agent_type = Literal[
@@ -91,6 +96,8 @@ class ContainerSpec(BaseModel):
     pull_secret: Optional[str] = None
     storage: Optional[ContainerMountSpec] = None
     api_key: Optional[ServiceApiKeySpec] = None
+    on_demand: Optional[bool] = None
+    writable_root_fs: Optional[bool] = None
 
 
 class ExternalServiceSpec(BaseModel):
