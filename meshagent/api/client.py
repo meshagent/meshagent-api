@@ -1139,7 +1139,7 @@ class Meshagent:
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json=service.model_dump(mode="json", exclude_unset=True),
+            json=service.model_dump(mode="json"),
         ) as resp:
             await self._raise_for_status(resp)
             return (await resp.json())["id"]
@@ -1233,7 +1233,7 @@ class Meshagent:
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json=service.model_dump(mode="json", exclude_unset=True),
+            json=service.model_dump(mode="json"),
         ) as resp:
             await self._raise_for_status(resp)
             return (await resp.json())["id"]
