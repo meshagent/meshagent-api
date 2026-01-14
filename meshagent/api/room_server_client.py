@@ -788,7 +788,7 @@ class AgentsClient:
 
         response = await self.room.send_request("agent.ask", request)
         if isinstance(response["answer"], str):
-            return TextResponse(json=response["answer"])
+            return TextResponse(text=response["answer"])
         else:
             return JsonResponse(json=response["answer"])
 
