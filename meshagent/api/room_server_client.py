@@ -3075,13 +3075,20 @@ class _GetOfflineOAuthTokenResponse(BaseModel):
     access_token: Optional[str] = None
 
 
+class SecretRequestInfo(BaseModel):
+    url: str
+    type: str
+    participant_id: str
+    timeout: int = 60 * 5
+    delegate_to: Optional[str] = None
+
+
 class _RequestOAuthTokenRequest(BaseModel):
     connector: Optional[ConnectorRef] = None
     oauth: Optional[OAuthClientConfig] = None
     redirect_uri: str
     participant_id: str
     timeout: int = 60 * 5
-    redirect_uri: str
     delegate_to: Optional[str] = None
 
 
@@ -3095,6 +3102,16 @@ class _DeleteUserSecretRequest(BaseModel):
 
 
 class _DeleteUserSecretResponse(BaseModel):
+    pass
+
+
+class _DeleteRequestedSecretRequest(BaseModel):
+    url: str
+    type: str
+    delegated_to: Optional[str] = None
+
+
+class _DeleteRequestedSecretResponse(BaseModel):
     pass
 
 
@@ -3132,6 +3149,17 @@ class _ClientRequestOAuthTokenResponse(BaseModel):
     error: Optional[str] = None
 
 
+class _ClientRequestSecretRequest(BaseModel):
+    request_id: str
+    request: SecretRequestInfo
+
+
+class _ClientRequestSecretResponse(BaseModel):
+    # secret will be passed back as data in message
+    request_id: str
+    error: Optional[str] = None
+
+
 @dataclass
 class OAuthTokenRequest:
     request_id: str
@@ -3139,6 +3167,28 @@ class OAuthTokenRequest:
     token_endpoint: str
     challenge: str
     scopes: Optional[list[str]] = None
+
+
+@dataclass
+class SecretRequest:
+    request_id: str
+    url: str
+    type: str
+    delegate_to: Optional[str] = None
+
+
+class _SetSecretRequest(BaseModel):
+    secret_id: Optional[str] = Field(default=None)
+    type: Optional[str] = Field(default=None)
+    name: Optional[str] = Field(default=None)
+    delegated_to: Optional[str] = Field(default=None)
+
+
+class _GetSecretRequest(BaseModel):
+    secret_id: Optional[str] = Field(default=None)
+    type: Optional[str] = Field(default=None)
+    name: Optional[str] = Field(default=None)
+    delegated_to: Optional[str] = Field(default=None)
 
 
 class SecretsClient:
@@ -3149,14 +3199,22 @@ class SecretsClient:
         oauth_token_request_handler: Optional[
             Callable[[OAuthTokenRequest], Awaitable]
         ] = None,
+        secret_request_handler: Optional[Callable[[SecretRequest], Awaitable]] = None,
     ):
         self.room = room
         # Hook server -> client events
         self.room.protocol.register_handler(
             "secrets.request_oauth_token", self._handle_client_oauth_token_request
         )
+
+        self.room.protocol.register_handler(
+            "secrets.request_secret", self._handle_request_secret_request
+        )
+
         self._oauth_token_request_handler = oauth_token_request_handler
+        self._secret_request_handler = secret_request_handler
         self._pending_authorization_requests = []
+        self._pending_secret_requests = []
 
     async def _handle_client_oauth_token_request(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -3187,6 +3245,34 @@ class SecretsClient:
         task.add_done_callback(on_done)
         self._pending_authorization_requests.append(task)
 
+    async def _handle_request_secret_request(
+        self, protocol: Protocol, message_id: int, type: str, data: bytes
+    ) -> None:
+        request, bytes = unpack_message(data=data)
+        req = _ClientRequestSecretRequest.model_validate(request)
+
+        if self._secret_request_handler is None:
+            raise RoomException("No secret handler registered")
+
+        def on_done(t: asyncio.Task):
+            try:
+                t.result()
+            finally:
+                self._pending_secret_requests.remove(t)
+
+        task = asyncio.create_task(
+            self._secret_request_handler(
+                SecretRequest(
+                    request_id=req.request_id,
+                    url=req.request.url,
+                    type=req.request.type,
+                    delegate_to=req.request.delegate_to,
+                )
+            )
+        )
+        task.add_done_callback(on_done)
+        self._pending_secret_requests.append(task)
+
     async def provide_oauth_authorization(
         self,
         *,
@@ -3212,6 +3298,34 @@ class SecretsClient:
             {
                 "error": error,
                 "request_id": request_id,
+            },
+        )
+
+    async def provide_secret(
+        self,
+        *,
+        request_id: str,
+        data: bytes,
+    ) -> None:
+        await self.room.send_request(
+            "secrets.provide_secret",
+            {
+                "request_id": request_id,
+            },
+            data=data,
+        )
+
+    async def reject_secret(
+        self,
+        *,
+        request_id: str,
+        error: str,
+    ) -> None:
+        await self.room.send_request(
+            "secrets.provide_secret",
+            {
+                "request_id": request_id,
+                "error": error,
             },
         )
 
@@ -3266,7 +3380,7 @@ class SecretsClient:
         else:
             raise RoomException("Invalid response received, expected JsonResponse")
 
-    async def list_user_secrets(self) -> list[SecretInfo]:
+    async def list_secrets(self) -> list[SecretInfo]:
         response = await self.room.send_request(
             "secrets.list_secrets", _ListUserSecretsRequest().model_dump(mode="json")
         )
@@ -3276,10 +3390,113 @@ class SecretsClient:
         else:
             raise RoomException("Invalid response received, expected JsonResponse")
 
-    async def delete_user_secret(self, *, id: str, delegated_to: Optional[str] = None):
+    async def delete_secret(self, *, id: str, delegated_to: Optional[str] = None):
         await self.room.send_request(
             "secrets.delete_secret",
             _DeleteUserSecretRequest(id=id, delegated_to=delegated_to).model_dump(
                 mode="json"
             ),
+        )
+
+    async def delete_requested_secret(
+        self,
+        *,
+        url: str,
+        type: str,
+        delegated_to: Optional[str] = None,
+    ) -> None:
+        await self.room.send_request(
+            "secrets.delete_requested_secret",
+            _DeleteRequestedSecretRequest(
+                url=url,
+                type=type,
+                delegated_to=delegated_to,
+            ).model_dump(mode="json"),
+        )
+
+    async def request_secret(
+        self,
+        *,
+        url: str,
+        type: str,
+        timeout: int = 60 * 5,
+        from_participant_id: str,
+        delegate_to: Optional[str] = None,
+    ) -> bytes:
+        req = SecretRequestInfo(
+            url=url,
+            type=type,
+            participant_id=from_participant_id,
+            timeout=timeout,
+            delegate_to=delegate_to,
+        )
+        response = await self.room.send_request(
+            "secrets.request_secret", req.model_dump(mode="json")
+        )
+        if isinstance(response, FileResponse):
+            return response.data
+        raise RoomException("Invalid response received, expected FileResponse")
+
+    async def set_secret(
+        self,
+        *,
+        secret_id: Optional[str] = None,
+        type: Optional[str] = None,
+        name: Optional[str] = None,
+        delegated_to: Optional[str] = None,
+        data: Optional[bytes] = None,
+    ) -> None:
+        """
+        Store/update a secret for the current user (or delegated target).
+        """
+        req = _SetSecretRequest(
+            secret_id=secret_id,
+            type=type,
+            name=name,
+            delegated_to=delegated_to,
+        )
+
+        response = await self.room.send_request(
+            "secrets.set_secret",
+            req.model_dump(mode="json"),
+            data=data,
+        )
+
+        if isinstance(response, (EmptyResponse, JsonResponse)):
+            return
+        raise RoomException(
+            "Invalid response received, expected EmptyResponse or JsonResponse"
+        )
+
+    async def get_secret(
+        self,
+        *,
+        secret_id: Optional[str] = None,
+        type: Optional[str] = None,
+        name: Optional[str] = None,
+        delegated_to: Optional[str] = None,
+    ) -> Optional[FileResponse]:
+        """
+        Fetch secret bytes. Returns FileResponse (name/mime_type/data) or None if not found.
+        """
+        req = _GetSecretRequest(
+            secret_id=secret_id,
+            type=type,
+            name=name,
+            delegated_to=delegated_to,
+        )
+
+        response = await self.room.send_request(
+            "secrets.get_secret",
+            req.model_dump(mode="json"),
+        )
+
+        if isinstance(response, EmptyResponse):
+            return None
+
+        if isinstance(response, FileResponse):
+            return response
+
+        raise RoomException(
+            "Invalid response received, expected FileResponse or EmptyResponse"
         )
