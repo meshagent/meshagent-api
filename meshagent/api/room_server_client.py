@@ -3,6 +3,8 @@ from meshagent.api.specs.service import ContainerMountSpec
 import json
 import asyncio
 import logging
+import os
+from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
 from pydantic import BaseModel, Field, JsonValue, ConfigDict
 from typing import (
@@ -42,6 +44,8 @@ from datetime import datetime
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+from meshagent.api.urls import websocket_room_url
 
 
 def decode_records(records: list[dict]):
@@ -325,11 +329,25 @@ class RoomClient:
     def __init__(
         self,
         *,
-        protocol: ClientProtocol,
+        protocol: Optional[ClientProtocol] = None,
         oauth_token_request_handler: Optional[
             Callable[["OAuthTokenRequest"], Awaitable]
         ] = None,
     ):
+        if protocol is None:
+            room_name = os.getenv("MESHAGENT_ROOM")
+            token = os.getenv("MESHAGENT_TOKEN")
+
+            if room_name is not None and token is not None:
+                protocol = WebSocketClientProtocol(
+                    url=websocket_room_url(room_name=room_name), token=token
+                )
+
+        if protocol is None:
+            raise RoomException(
+                "protocol or environment variables must be configured to create a room client"
+            )
+
         self.protocol = protocol
         self.protocol.register_handler("room_ready", self._handle_ready)
         self.protocol.register_handler("room.status", self._handle_status)

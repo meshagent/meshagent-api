@@ -7,6 +7,8 @@ from .websocket_protocol import WebSocketClientProtocol
 import re
 from warnings import deprecated
 
+import meshagent.api.urls as urls
+
 
 def validate_schema_name(name: str):
     if name.find(".") != -1:
@@ -25,22 +27,11 @@ async def deploy_schema(
 
 
 def meshagent_base_url(base_url: Optional[str] = None):
-    return os.getenv("MESHAGENT_API_URL", "https://api.meshagent.com")
+    return urls.meshagent_base_url(base_url=base_url)
 
 
 def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str:
-    if base_url is None:
-        api_url = os.getenv("MESHAGENT_API_URL")
-        if api_url is None:
-            base_url = "wss://api.meshagent.com"
-        else:
-            if api_url.startswith("https:"):
-                api_url = "wss:" + api_url.removeprefix("https:")
-            elif api_url.startswith("http:"):
-                api_url = "ws:" + api_url.removeprefix("http:")
-            base_url = api_url
-
-    return f"{base_url}/rooms/{room_name}"
+    return urls.websocket_room_url(room_name=room_name, base_url=base_url)
 
 
 @deprecated("create a ParticipantToken directly instead")
