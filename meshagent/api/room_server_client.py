@@ -22,6 +22,8 @@ from typing import (
 
 import base64
 
+from meshagent.api.chan import ChanClosed
+
 from meshagent.api.messaging import Request
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
@@ -673,9 +675,14 @@ class SyncClient:
         if path in self._connected_documents:
             doc = self._connected_documents[path]
 
-            runtime.apply_backend_changes(doc.ref.id, payload.decode("utf-8"))
-            if not doc.ref.synchronized.done():
-                doc.ref.synchronized.set_result(True)
+            try:
+                runtime.apply_backend_changes(doc.ref.id, payload.decode("utf-8"))
+                if not doc.ref.synchronized.done():
+                    doc.ref.synchronized.set_result(True)
+
+            except ChanClosed:
+                # ignore channel closing during sync (happens if connection is closed after receiving changes from server)
+                pass
         else:
             logger.debug("received change for a document that is not connected:" + path)
 
