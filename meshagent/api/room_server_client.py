@@ -645,10 +645,6 @@ class SyncClient:
         return doc
 
     async def close(self, *, path: str) -> None:
-        await asyncio.sleep(
-            5
-        )  # TODO: flush pending changes instead of waiting for them
-
         if path not in self._connected_documents:
             raise RoomException("Not connected to " + path)
 
