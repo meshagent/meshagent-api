@@ -75,6 +75,9 @@ class Element(EventEmitter):
     def doc(self) -> "Document":
         return self._doc
 
+    def get_elements_by_tag_name(self, tag_name: str) -> list["Element"]:
+        return [*(e for e in self.get_children() if e.tag_name == tag_name)]
+
     def get_node_by_id(self, id: str) -> "Element | None":
         if id == self.id:
             return self

@@ -547,11 +547,14 @@ class SyncClient:
         return open_documents
 
     async def _main(self):
-        async for q in self._sync_ch:
-            logger.info("client sync sending for {path}".format(path=q.path))
-            await self.room.send_request(
-                "room.sync", {"path": q.path}, q.base64.encode("utf-8")
-            )
+        import contextlib
+
+        with contextlib.suppress(asyncio.CancelledError):
+            async for q in self._sync_ch:
+                logger.info("client sync sending for {path}".format(path=q.path))
+                await self.room.send_request(
+                    "room.sync", {"path": q.path}, q.base64.encode("utf-8")
+                )
 
     async def start(self):
         if self._main_task is not None:
@@ -563,7 +566,7 @@ class SyncClient:
         self._sync_ch.close()
 
         if self._main_task is not None:
-            asyncio.gather(self._main_task)
+            await asyncio.gather(self._main_task)
 
     async def create(self, *, path: str, json: Optional[dict] = None) -> None:
         await self.room.send_request("room.create", {"path": path, "json": json})
