@@ -1091,6 +1091,22 @@ class Meshagent:
             await self._raise_for_status(resp)
             return Mailbox.model_validate((await resp.json())["mailbox"])
 
+    async def list_room_mailboxes(
+        self, *, project_id: str, room_name: str
+    ) -> List[Mailbox]:
+        """
+        GET /accounts/projects/{project_id}/mailboxes
+        Returns a list[Mailbox].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/mailboxes"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [Mailbox.model_validate(item) for item in data["mailboxes"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid mailboxes payload: {exc}") from exc
+
     async def list_mailboxes(self, *, project_id: str) -> List[Mailbox]:
         """
         GET /accounts/projects/{project_id}/mailboxes
