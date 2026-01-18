@@ -66,7 +66,7 @@ class ServiceHost:
         self.host = host
         self.webhook_secret = webhook_secret
         if port is None:
-            port = os.getenv("MESHAGENT_PORT", 8081)
+            port = os.getenv("MESHAGENT_PORT")
             if port is not None:
                 port = int(port)
                 self._auto_port = False
