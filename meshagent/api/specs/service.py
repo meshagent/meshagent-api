@@ -234,7 +234,11 @@ class ServiceTemplateSpec(BaseModel):
                 description=self.metadata.description,
                 repo=self.metadata.repo,
                 icon=self.metadata.icon,
-                annotations=self.metadata.annotations,
+                annotations={
+                    "meshagent.service.template.source": self.model_dump_json(),
+                    "meshagent.service.template.values": values,
+                    **self.metadata.annotations,
+                },
             ),
             container=ContainerSpec(
                 command=self.container.command,

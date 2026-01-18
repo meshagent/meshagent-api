@@ -7,6 +7,7 @@ from meshagent.api.helpers import meshagent_base_url
 from datetime import datetime
 from meshagent.api.specs.service import (
     ServiceSpec,
+    ServiceTemplateSpec,
 )
 import os
 
@@ -1158,7 +1159,7 @@ class Meshagent:
             json=service.model_dump(mode="json"),
         ) as resp:
             await self._raise_for_status(resp)
-            return (await resp.json())["id"]
+            return ServiceSpec.model_validate_json(await resp.json())
 
     async def update_service(
         self,
@@ -1181,7 +1182,63 @@ class Meshagent:
             url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
             await self._raise_for_status(resp)
-            await resp.json()
+            return ServiceSpec.model_validate_json(await resp.json())
+
+    async def create_service_from_template(
+        self, *, project_id: str, template: ServiceTemplateSpec, values: Dict[str, str]
+    ) -> str:
+        """
+        POST /accounts/projects/{project_id}/services
+        Body: full service spec, e.g.
+          {
+            "name": "...",
+            "image": "...",
+            "pull_secret": "...",
+            "environment": {...},
+            "environment_secrets": [...],
+            "runtime_secrets": {...},
+            "command": "...",
+            "ports": {...}
+          }
+        Returns: { "id": "<service_id>" }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/services"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json={
+                "template": template.model_dump(mode="json"),
+                "values": values,
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceSpec.model_validate_json(await resp.json())
+
+    async def update_service_from_template(
+        self,
+        *,
+        project_id: str,
+        service_id: str,
+        template: ServiceTemplateSpec,
+        values: Dict[str, str],
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/services/{service_id}
+        Body: same structure as create_service (fields you wish to change).
+        Returns: {} on success.
+        """
+
+        url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json={
+                "template": template.model_dump(mode="json"),
+                "values": values,
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceSpec.model_validate_json(await resp.json())
 
     async def get_service(self, *, project_id: str, service_id: str) -> ServiceSpec:
         """
@@ -1261,7 +1318,7 @@ class Meshagent:
         room_name: str,
         service_id: str,
         service: ServiceSpec,
-    ) -> NotImplemented:
+    ) -> None:
         """
         PUT /accounts/projects/{project_id}/services/{service_id}
         Body: same structure as create_service (fields you wish to change).
@@ -1274,6 +1331,70 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
             await resp.json()
+
+    async def create_room_service_from_template(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        template: ServiceTemplateSpec,
+        values: Dict[str, str],
+    ) -> ServiceSpec:
+        """
+        POST /accounts/projects/{project_id}/services
+        Body: full service spec, e.g.
+          {
+            "name": "...",
+            "image": "...",
+            "pull_secret": "...",
+            "environment": {...},
+            "environment_secrets": [...],
+            "runtime_secrets": {...},
+            "command": "...",
+            "ports": {...}
+          }
+        Returns: { "id": "<service_id>" }
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json={
+                "template": template.model_dump(mode="json"),
+                "values": values,
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceSpec.model_validate_json(await resp.json())
+
+    async def update_room_service_from_template(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        service_id: str,
+        template: ServiceTemplateSpec,
+        values: Dict[str, str],
+    ) -> ServiceSpec:
+        """
+        PUT /accounts/projects/{project_id}/services/{service_id}
+        Body: same structure as create_service (fields you wish to change).
+        Returns: {} on success.
+        """
+
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json={
+                "template": template.model_dump(mode="json"),
+                "values": values,
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceSpec.model_validate_json(await resp.json())
 
     async def get_room_service(
         self, *, project_id: str, room_name: str, service_id: str
