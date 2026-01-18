@@ -233,7 +233,7 @@ class ServiceHost:
 
                 agent = p.cls()
                 logger.info(
-                    f"{getattr(agent, 'name', '')} answering call and joining room"
+                    f"{room.local_participant.get_attribute('name')} answering call and joining room"
                 )
 
                 await agent.start(room=room)
