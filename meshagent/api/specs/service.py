@@ -62,6 +62,10 @@ ANNOTATION_AGENT_DATABASE_SCHEMA = "meshagent.agent.database.schema"
 ANNOTATION_AGENT_SCHEDULE = "meshagent.agent.schedule"
 ANNOTATION_AGENT_SHELL_COMMAND = "meshagent.agent.shell.command"
 
+ANNOTATION_ROOM_USER_ADDED = "meshagent.room.user.grant.create"
+ANNOTATION_ROOM_USER_REMOVED = "meshagent.room.user.grant.delete"
+ANNOTATION_ROOM_USER_UPDATED = "meshagent.room.user.grant.update"
+
 agent_type = Literal[
     "ChatBot",
     "VoiceBot",
