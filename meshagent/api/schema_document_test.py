@@ -81,6 +81,26 @@ def test_get_children_by_tag_name_():
         assert len(copy.root.get_children_by_tag_name("x")) == 0
 
 
+def test_element_grep():
+    with DocumentRuntime() as rt:
+        doc = rt.new_document(schema=schema)
+
+        child = doc.root.append_child("child")
+        child["attr"] = "Hello"
+
+    child2 = doc.root.append_child("child2")
+    child2["attr"] = "World"
+
+    child3 = doc.root.append_child("child")
+    child3["attr"] = "Hello Again"
+
+    assert doc.root.grep("child2") == [child2]
+    assert doc.root.grep("attr") == [child, child2, child3]
+    assert doc.root.grep("Hello") == [child, child3]
+    assert doc.root.grep("World", before=1) == [child, child2]
+    assert doc.root.grep("World", after=1) == [child2, child3]
+
+
 def test_doc_from_json():
     with DocumentRuntime() as rt:
         copy = rt.new_document(schema=schema, json=expected)

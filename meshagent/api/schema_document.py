@@ -1,6 +1,7 @@
 import uuid
 from typing import Callable, Any, Optional
 import json
+import re
 from meshagent.api.schema import MeshSchema, ElementType, ChildProperty
 
 import logging
@@ -299,6 +300,80 @@ class Element(EventEmitter):
     def get_children_by_tag_name(self, tag_name: str) -> list["Element"]:
         children = [x for x in self.get_children() if x.tag_name == tag_name]
         return children
+
+    def grep(
+        self,
+        pattern: str,
+        ignore_case: bool = False,
+        before: int = 0,
+        after: int = 0,
+    ) -> list["Element"]:
+        flags = re.IGNORECASE if ignore_case else 0
+        regex = re.compile(pattern, flags)
+        return self._grep_regex(regex, before, after)
+
+    def _grep_regex(
+        self, regex, before: int, after: int, seen: set[str] | None = None
+    ) -> list["Element"]:
+        def value_to_text(value: Any) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (dict, list)):
+                return json.dumps(value)
+            return str(value)
+
+        def matches(element: "Element") -> bool:
+            if regex.search(element.tag_name):
+                return True
+
+            for name, value in element._data["attributes"].items():
+                if regex.search(name):
+                    return True
+                if value is None:
+                    continue
+                if regex.search(value_to_text(value)):
+                    return True
+
+            return False
+
+        def add_element(target: "Element") -> None:
+            key = target.id if target.id is not None else f"__obj__{id(target)}"
+            if key in seen_ids:
+                return
+            seen_ids.add(key)
+            results.append(target)
+
+        if seen is None:
+            seen_ids: set[str] = set()
+        else:
+            seen_ids = seen
+
+        results: list["Element"] = []
+        if matches(self):
+            add_element(self)
+
+            if (before > 0 or after > 0) and self.parent is not None:
+                siblings = [
+                    child
+                    for child in self.parent.get_children()
+                    if isinstance(child, Element)
+                ]
+                try:
+                    index = siblings.index(self)
+                except ValueError:
+                    index = -1
+
+                if index >= 0:
+                    start = max(0, index - before)
+                    end = min(len(siblings) - 1, index + after)
+                    for sibling in siblings[start : end + 1]:
+                        add_element(sibling)
+
+        for child in self.get_children():
+            if isinstance(child, Element):
+                results.extend(child._grep_regex(regex, before, after, seen_ids))
+
+        return results
 
     def to_json(self, include_ids: bool = False) -> dict:
         props = dict()
