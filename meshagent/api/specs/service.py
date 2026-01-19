@@ -2,6 +2,7 @@ from pydantic import BaseModel, PositiveInt, ConfigDict, model_validator
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
+import json
 
 
 class TokenValue(BaseModel):
@@ -236,7 +237,7 @@ class ServiceTemplateSpec(BaseModel):
                 icon=self.metadata.icon,
                 annotations={
                     "meshagent.service.template.source": self.model_dump_json(),
-                    "meshagent.service.template.values": values,
+                    "meshagent.service.template.values": json.dumps(values),
                     **self.metadata.annotations,
                 },
             ),
