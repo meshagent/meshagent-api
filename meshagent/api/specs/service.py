@@ -207,6 +207,8 @@ class ContainerTemplateSpec(BaseModel):
     image: Optional[str] = None
     command: Optional[str] = None
     storage: Optional[ServiceTemplateContainerMountSpec] = None
+    on_demand: Optional[bool] = None
+    writable_root_fs: Optional[bool] = None
 
 
 class ExternalServiceTemplateSpec(BaseModel):
@@ -266,6 +268,8 @@ class ServiceTemplateSpec(BaseModel):
                     if self.container.storage is not None
                     else None,
                 ),
+                writeable_root_fs=self.container.writable_root_fs,
+                on_demand=self.container.on_demand,
             )
             if self.container is not None
             else None,
