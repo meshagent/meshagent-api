@@ -65,6 +65,8 @@ ANNOTATION_AGENT_SHELL_COMMAND = "meshagent.agent.shell.command"
 # events, adding this annotation to an agent's annotations will subscribe to the event
 # the annotation's value should be the name of a queue to place the event into.
 # use a worker agent to process the event
+ANNOTATION_ROOM_SERVICE_CREATED = "meshagent.events.room.service.created"
+ANNOTATION_ROOM_SERVICE_UPDATED = "meshagent.events.room.service.updated"
 ANNOTATION_ROOM_USER_ADDED = "meshagent.events.room.user.grant.create"
 ANNOTATION_ROOM_USER_REMOVED = "meshagent.events.room.user.grant.delete"
 ANNOTATION_ROOM_USER_UPDATED = "meshagent.events.room.user.grant.update"
