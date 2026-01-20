@@ -216,6 +216,31 @@ class ExternalServiceTemplateSpec(BaseModel):
     url: str
 
 
+def format_yaml_value(original: Optional[str], values: dict[str, str]):
+    if original is None:
+        return None
+
+    if original.startswith("!template "):
+        from jinja2 import Template
+
+        template = Template(original.removeprefix("!template "))
+        return template.render(**values)
+
+    else:
+        return original
+
+
+def format_yaml_map(original: Optional[dict[str, str]], values: dict[str, str]):
+    if original is None:
+        return None
+    output = {}
+
+    for k, v in original.items():
+        output[k] = format_yaml_value(v, values)
+
+    return output
+
+
 class ServiceTemplateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["v1"]
@@ -234,28 +259,39 @@ class ServiceTemplateSpec(BaseModel):
                 for e in self.container.environment:
                     env.append(
                         EnvironmentVariable(
-                            name=e.name, value=e.value.format_map(values)
+                            name=e.name, value=format_yaml_value(e.value, values)
                         )
                     )
 
         return ServiceSpec(
             version=self.version,
             kind="Service",
-            agents=self.agents,
+            agents=[
+                *(
+                    AgentSpec(
+                        name=format_yaml_value(a.name, values),
+                        description=format_yaml_value(a.description, values),
+                        annotations=format_yaml_map(a.annotations, values),
+                    )
+                    for a in self.agents
+                )
+            ]
+            if self.agents is not None
+            else None,
             metadata=ServiceMetadata(
-                name=self.metadata.name,
-                description=self.metadata.description,
-                repo=self.metadata.repo,
-                icon=self.metadata.icon,
+                name=format_yaml_value(self.metadata.name, values),
+                description=format_yaml_value(self.metadata.description, values),
+                repo=format_yaml_value(self.metadata.repo, values),
+                icon=format_yaml_value(self.metadata.icon, values),
                 annotations={
                     "meshagent.service.template.source": self.model_dump_json(),
                     "meshagent.service.template.values": json.dumps(values),
-                    **self.metadata.annotations,
+                    **(format_yaml_map(self.metadata.annotations, values) or {}),
                 },
             ),
             container=ContainerSpec(
-                command=self.container.command,
-                image=self.container.image,
+                command=format_yaml_value(self.container.command, values),
+                image=format_yaml_value(self.container.image, values),
                 environment=env,
                 storage=ContainerMountSpec(
                     room=self.container.storage.room
@@ -268,13 +304,13 @@ class ServiceTemplateSpec(BaseModel):
                     if self.container.storage is not None
                     else None,
                 ),
-                writeable_root_fs=self.container.writable_root_fs,
+                writable_root_fs=self.container.writable_root_fs,
                 on_demand=self.container.on_demand,
             )
             if self.container is not None
             else None,
             external=ExternalServiceSpec(
-                url=self.external.url,
+                url=format_yaml_value(self.external.url, values),
             )
             if self.external is not None
             else None,

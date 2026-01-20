@@ -15,7 +15,8 @@ dependencies = [
   "jsonschema~=4.23",
   "pycrdt~=0.12.26",
   "opentelemetry-distro~=0.54b1",
-  "pydantic~=2.11.7"
+  "pydantic~=2.11.7",
+  "jinja2~=3.1.6"
 ]
 classifiers = [
   # You can add your classifiers here if needed.
