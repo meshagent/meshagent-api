@@ -1147,7 +1147,6 @@ class Meshagent:
     async def render_template(
         self,
         *,
-        project_id: str,
         template: str,
         values: dict[str, str],
     ) -> ServiceTemplateSpec:
