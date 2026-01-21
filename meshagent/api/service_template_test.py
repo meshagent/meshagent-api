@@ -48,7 +48,7 @@ def test_service_template_spec_renders_jinja_values():
     assert service.agents[0].annotations is not None
     assert service.agents[0].annotations["role"] == "support"
 
-    source = service.metadata.annotations["meshagent.service.template.source"]
+    source = service.metadata.annotations["meshagent.service.template.yaml"]
     values_json = service.metadata.annotations["meshagent.service.template.values"]
     assert json.loads(values_json) == values
     assert "ServiceTemplate" in source
@@ -176,7 +176,7 @@ container:
     assert service.metadata.description is None
     assert service.metadata.repo is None
     assert service.metadata.icon is None
-    assert service.metadata.annotations["meshagent.service.template.source"]
+    assert service.metadata.annotations["meshagent.service.template.yaml"]
     assert service.metadata.annotations["meshagent.service.template.values"] == "{}"
     assert len(service.metadata.annotations) == 2
     assert service.agents[0].description is None

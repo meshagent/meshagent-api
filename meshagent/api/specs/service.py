@@ -316,7 +316,6 @@ class ServiceTemplateSpec(BaseModel):
                 repo=self.metadata.repo,
                 icon=self.metadata.icon,
                 annotations={
-                    "meshagent.service.template.source": self.model_dump_json(),
                     **(self.metadata.annotations or {}),
                 },
             ),
@@ -366,6 +365,8 @@ class ServiceTemplateSpec(BaseModel):
 
         if spec.metadata.annotations is None:
             spec.metadata.annotations = {}
+
+        spec.metadata.annotations["meshagent.service.template.yaml"] = yaml
 
         spec.metadata.annotations["meshagent.service.template.values"] = json.dumps(
             values
