@@ -94,6 +94,19 @@ class ProjectRoomGrant(BaseModel):
     permissions: ApiScope
 
 
+class User(BaseModel):
+    id: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: str
+
+
+class UserRoomGrant(BaseModel):
+    room: Room
+    user: User
+    permissions: ApiScope
+
+
 class ProjectRoomGrantCount(BaseModel):
     room: Room
     count: int
