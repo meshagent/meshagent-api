@@ -210,7 +210,7 @@ def _parse_secret(raw: dict) -> SecretLike:
         )
 
 
-ProjectRole = Literal["member", "admin", "developer"]
+ProjectRole = Literal["member", "admin", "developer", "none"]
 
 
 class _CreateMailboxRequest(BaseModel):
