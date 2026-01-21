@@ -259,7 +259,9 @@ class ServiceTemplateSpec(BaseModel):
                 for e in self.container.environment:
                     env.append(
                         EnvironmentVariable(
-                            name=e.name, value=format_yaml_value(e.value, values)
+                            name=e.name,
+                            value=format_yaml_value(e.value, values),
+                            token=e.token,
                         )
                     )
 
@@ -294,16 +296,12 @@ class ServiceTemplateSpec(BaseModel):
                 image=format_yaml_value(self.container.image, values),
                 environment=env,
                 storage=ContainerMountSpec(
-                    room=self.container.storage.room
-                    if self.container.storage is not None
-                    else None,
-                    project=self.container.storage.project
-                    if self.container.storage is not None
-                    else None,
-                    images=self.container.storage.images
-                    if self.container.storage is not None
-                    else None,
-                ),
+                    room=self.container.storage.room,
+                    project=self.container.storage.project,
+                    images=self.container.storage.images,
+                )
+                if self.container.storage is not None
+                else None,
                 writable_root_fs=self.container.writable_root_fs,
                 on_demand=self.container.on_demand,
             )
