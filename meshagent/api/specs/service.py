@@ -346,12 +346,12 @@ class ServiceTemplateSpec(BaseModel):
 
     @staticmethod
     def from_yaml(yaml: str, values: dict[str, str] = {}) -> "ServiceTemplateSpec":
+        from jinja2 import Template
+
         class _ApplyTagLoader(SafeLoader):
             pass
 
         def _tagged_scalar(loader, tag_suffix, node):
-            from jinja2 import Template
-
             value = loader.construct_scalar(node)
             template = Template(value)
             return template.render(**values)
@@ -361,7 +361,11 @@ class ServiceTemplateSpec(BaseModel):
         def load_yaml(y: str):
             return YAML.load(y, Loader=_ApplyTagLoader)
 
-        spec = ServiceTemplateSpec.model_validate(load_yaml(yaml))
+        template = Template(yaml)
+
+        rendered = template.render(**values)
+
+        spec = ServiceTemplateSpec.model_validate(load_yaml(rendered))
 
         if spec.metadata.annotations is None:
             spec.metadata.annotations = {}

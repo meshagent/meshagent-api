@@ -10,18 +10,18 @@ def test_service_template_spec_renders_jinja_values():
     version: v1
     kind: ServiceTemplate
     metadata:
-        name: !template "{{service_name}}"
-        description: !template "Hello {{user}}"
+        name: "{{service_name}}"
+        description: "Hello {{user}}"
         repo: "https://example.com/{{service_name}}"
         annotations:
-            "greeting": !template "hi {{user}}"
+            "greeting": "hi {{user}}"
     agents:
-      - name: !template "agent-{{service_name}}"
-        description: !template "handles {{role}}"
+      - name: "agent-{{service_name}}"
+        description: "handles {{role}}"
         annotations:
-            role: !template "{{role}}"
+            role: "{{role}}"    
     external:
-        url: !template "https://{{host}}/api"
+        url: "https://{{host}}/api"
 
 
     """
@@ -40,7 +40,7 @@ def test_service_template_spec_renders_jinja_values():
     assert service.external is not None
     assert service.metadata.name == "Concierge"
     assert service.metadata.description == "Hello Rina"
-    assert service.metadata.repo == "https://example.com/{{service_name}}"
+    assert service.metadata.repo == "https://example.com/Concierge"
     assert service.metadata.annotations["greeting"] == "hi Rina"
     assert service.external.url == "https://meshagent.dev/api"
     assert service.agents[0].name == "agent-Concierge"
@@ -59,16 +59,16 @@ def test_service_template_spec_from_yaml():
 version: v1
 kind: ServiceTemplate
 metadata:
-  name: !template "{{service_name}}"
-  description: !template "Hello {{user}}"
+  name: "{{service_name}}"
+  description: "Hello {{user}}"
   repo: null
   annotations:
-    greeting: !template "hi {{user}}"
+    greeting: "hi {{user}}"
 agents:
-  - name: !template "agent-{{service_name}}"
-    description: !template "handles {{role}}"
+  - name: "agent-{{service_name}}"
+    description: "handles {{role}}"
 external:
-  url: !template "https://{{host}}/api"
+  url: "https://{{host}}/api"
 """
 
     values = {
@@ -105,7 +105,7 @@ def test_service_template_spec_replaces_email_in_command():
 
     container:
         image: us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz
-        command: !template >-
+        command: >-
             meshagent multi service -c "chatbot --require-uuid
             --agent-name=PropertyAssistant --image-generation=gpt-image-1
             --require-storage --require-toolkit=propertyemail
