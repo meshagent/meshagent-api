@@ -1,36 +1,30 @@
 import json
 
-from pydantic_yaml import parse_yaml_raw_as
-
 from meshagent.api.specs.service import (
-    AgentSpec,
-    ContainerTemplateSpec,
-    EnvironmentVariable,
-    ExternalServiceTemplateSpec,
-    ServiceTemplateMetadata,
     ServiceTemplateSpec,
 )
 
 
 def test_service_template_spec_renders_jinja_values():
-    template = ServiceTemplateSpec(
-        version="v1",
-        kind="ServiceTemplate",
-        metadata=ServiceTemplateMetadata(
-            name="!template {{service_name}}",
-            description="!template Hello {{user}}",
-            repo="https://example.com/{{service_name}}",
-            annotations={"greeting": "!template hi {{user}}"},
-        ),
-        agents=[
-            AgentSpec(
-                name="!template agent-{{service_name}}",
-                description="!template handles {{role}}",
-                annotations={"role": "!template {{role}}"},
-            )
-        ],
-        external=ExternalServiceTemplateSpec(url="!template https://{{host}}/api"),
-    )
+    yml = """
+    version: v1
+    kind: ServiceTemplate
+    metadata:
+        name: !template "{{service_name}}"
+        description: !template "Hello {{user}}"
+        repo: "https://example.com/{{service_name}}"
+        annotations:
+            "greeting": !template "hi {{user}}"
+    agents:
+      - name: !template "agent-{{service_name}}"
+        description: !template "handles {{role}}"
+        annotations:
+            role: !template "{{role}}"
+    external:
+        url: !template "https://{{host}}/api"
+
+
+    """
 
     values = {
         "service_name": "Concierge",
@@ -39,7 +33,7 @@ def test_service_template_spec_renders_jinja_values():
         "host": "meshagent.dev",
     }
 
-    service = template.to_service_spec(values=values)
+    service = ServiceTemplateSpec.from_yaml(yaml=yml, values=values).to_service_spec()
 
     assert service.metadata.annotations is not None
     assert service.agents is not None
@@ -65,19 +59,18 @@ def test_service_template_spec_from_yaml():
 version: v1
 kind: ServiceTemplate
 metadata:
-  name: "!template {{service_name}}"
-  description: "!template Hello {{user}}"
+  name: !template "{{service_name}}"
+  description: !template "Hello {{user}}"
   repo: null
   annotations:
-    greeting: "!template hi {{user}}"
+    greeting: !template "hi {{user}}"
 agents:
-  - name: "!template agent-{{service_name}}"
-    description: "!template handles {{role}}"
+  - name: !template "agent-{{service_name}}"
+    description: !template "handles {{role}}"
 external:
-  url: "!template https://{{host}}/api"
+  url: !template "https://{{host}}/api"
 """
 
-    template = parse_yaml_raw_as(ServiceTemplateSpec, yaml_spec.encode())
     values = {
         "service_name": "Concierge",
         "user": "Rina",
@@ -85,7 +78,9 @@ external:
         "host": "meshagent.dev",
     }
 
-    service = template.to_service_spec(values=values)
+    service = ServiceTemplateSpec.from_yaml(
+        yaml=yaml_spec, values=values
+    ).to_service_spec()
 
     assert service.metadata.annotations is not None
     assert service.agents is not None
@@ -99,38 +94,46 @@ external:
 
 
 def test_service_template_spec_replaces_email_in_command():
-    template = ServiceTemplateSpec(
-        version="v1",
-        kind="ServiceTemplate",
-        metadata=ServiceTemplateMetadata(
-            name="PropertyAssistant",
-            description="Email template",
-            repo=None,
-            annotations=None,
-        ),
-        container=ContainerTemplateSpec(
-            image="us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz",
-            command=(
-                '!template meshagent multi service -c "chatbot --require-uuid '
-                "--agent-name=PropertyAssistant --image-generation=gpt-image-1 "
-                "--require-storage --require-toolkit=propertyemail --require-table-write=propertyinsurance "
-                "--require-table-write=propertyexpenses --mcp --web-search "
-                "-rr='agents/PropertyAssistant/assistantrules.txt' --rule='you have access to "
-                "the email tool, and you can send out emails.'; mailbot --reply-all "
-                "--enable-attachments --room-rules='/agents/PropertyAssistant/emailrules.txt' "
-                "--rule='never respnod in JSON or HTML, only in text.' --agent-name=PropertyAssistant "
-                "--require-table-write=propertyinsurance --require-table-write=propertyexpenses "
-                "--queue={{email}} --require-uuid --reply-all --require-storage "
-                "--email-address={{email}} --require-web-search --toolkit-name=propertyemail; "
-                "worker --require-storage --room-rules='/agents/PropertyAssistant/workerrules.txt' "
-                "--agent-name=PropertyAssistant --require-toolkit=propertyemail --queue=sendupdate "
-                "--require-table-read=propertyinsurance --require-table-read=propertyexpenses "
-                "--rule='Use the read_file tool to read PDFs.'\""
-            ),
-        ),
-    )
+    yaml_spec = """
+    version: v1
+    kind: ServiceTemplate
+    metadata:
+        name: PropertyAssistant
+        description: Email template
+        repo: null
+        annotations: null
 
-    service = template.to_service_spec(values={"email": "owner@example.com"})
+    container:
+        image: us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz
+        command: !template >-
+            meshagent multi service -c "chatbot --require-uuid
+            --agent-name=PropertyAssistant --image-generation=gpt-image-1
+            --require-storage --require-toolkit=propertyemail
+            --require-table-write=propertyinsurance
+            --require-table-write=propertyexpenses --mcp --web-search
+            -rr='agents/PropertyAssistant/assistantrules.txt'
+            --rule='you have access to the email tool, and you can send out emails.';
+            mailbot --reply-all --enable-attachments
+            --room-rules='/agents/PropertyAssistant/emailrules.txt'
+            --rule='never respnod in JSON or HTML, only in text.'
+            --agent-name=PropertyAssistant
+            --require-table-write=propertyinsurance
+            --require-table-write=propertyexpenses
+            --queue={{email}} --require-uuid --reply-all --require-storage
+            --email-address={{email}} --require-web-search
+            --toolkit-name=propertyemail;
+            worker --require-storage
+            --room-rules='/agents/PropertyAssistant/workerrules.txt'
+            --agent-name=PropertyAssistant
+            --require-toolkit=propertyemail --queue=sendupdate
+            --require-table-read=propertyinsurance
+            --require-table-read=propertyexpenses
+            --rule='Use the read_file tool to read PDFs.'"
+        """
+
+    service = ServiceTemplateSpec.from_yaml(
+        yaml=yaml_spec, values={"email": "owner@example.com"}
+    ).to_service_spec()
 
     assert service.container is not None
     assert service.container.command is not None
@@ -140,31 +143,31 @@ def test_service_template_spec_replaces_email_in_command():
 
 
 def test_service_template_spec_handles_none_values():
-    template = ServiceTemplateSpec(
-        version="v1",
-        kind="ServiceTemplate",
-        metadata=ServiceTemplateMetadata(
-            name="Plain Service",
-            description=None,
-            repo=None,
-            icon=None,
-            annotations=None,
-        ),
-        agents=[
-            AgentSpec(
-                name="Support",
-                description=None,
-                annotations=None,
-            )
-        ],
-        container=ContainerTemplateSpec(
-            image="meshagent/example",
-            command=None,
-            environment=[EnvironmentVariable(name="EMPTY", value=None)],
-        ),
-    )
+    yaml_spec = """
+version: v1
+kind: ServiceTemplate
 
-    service = template.to_service_spec(values={})
+metadata:
+  name: Plain Service
+  description: null
+  repo: null
+  icon: null
+  annotations: null
+
+agents:
+  - name: Support
+    description: null
+    annotations: null
+
+container:
+  image: meshagent/example
+  command: null
+  environment:
+    - name: EMPTY
+      value: null
+    """
+
+    service = ServiceTemplateSpec.from_yaml(yaml=yaml_spec, values={}).to_service_spec()
 
     assert service.metadata.annotations is not None
     assert service.agents is not None

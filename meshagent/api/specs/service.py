@@ -4,24 +4,8 @@ from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
 import json
 
-import yaml
+import yaml as YAML
 from yaml.loader import SafeLoader
-
-
-class _PreserveTagLoader(SafeLoader):
-    pass
-
-
-def _tagged_scalar(loader, tag_suffix, node):
-    value = loader.construct_scalar(node)
-    return f"!{tag_suffix} {value}"
-
-
-_PreserveTagLoader.add_multi_constructor("!", _tagged_scalar)
-
-
-def load_yaml(y: str):
-    return yaml.load(y, Loader=_PreserveTagLoader)
 
 
 class TokenValue(BaseModel):
@@ -163,7 +147,7 @@ class ServiceSpec(BaseModel):
 
     @staticmethod
     def from_yaml(yaml: str) -> "ServiceSpec":
-        return ServiceSpec.model_validate(load_yaml(yaml))
+        return ServiceSpec.model_validate(YAML.safe_load(yaml))
 
 
 class MeshagentEndpointSpec(BaseModel):
@@ -298,7 +282,7 @@ class ServiceTemplateSpec(BaseModel):
     container: Optional[ContainerTemplateSpec] = None
     external: Optional[ExternalServiceTemplateSpec] = None
 
-    def to_service_spec(self, *, values: dict[str, str]) -> ServiceSpec:
+    def to_service_spec(self) -> ServiceSpec:
         env = []
         if self.container is not None:
             if self.container.environment is not None:
@@ -306,7 +290,7 @@ class ServiceTemplateSpec(BaseModel):
                     env.append(
                         EnvironmentVariable(
                             name=e.name,
-                            value=format_yaml_value(e.value, values),
+                            value=e.value,
                             token=e.token,
                         )
                     )
@@ -317,9 +301,9 @@ class ServiceTemplateSpec(BaseModel):
             agents=[
                 *(
                     AgentSpec(
-                        name=format_yaml_value(a.name, values),
-                        description=format_yaml_value(a.description, values),
-                        annotations=format_yaml_map(a.annotations, values),
+                        name=a.name,
+                        description=a.description,
+                        annotations=a.annotations,
                     )
                     for a in self.agents
                 )
@@ -327,19 +311,18 @@ class ServiceTemplateSpec(BaseModel):
             if self.agents is not None
             else None,
             metadata=ServiceMetadata(
-                name=format_yaml_value(self.metadata.name, values),
-                description=format_yaml_value(self.metadata.description, values),
-                repo=format_yaml_value(self.metadata.repo, values),
-                icon=format_yaml_value(self.metadata.icon, values),
+                name=self.metadata.name,
+                description=self.metadata.description,
+                repo=self.metadata.repo,
+                icon=self.metadata.icon,
                 annotations={
                     "meshagent.service.template.source": self.model_dump_json(),
-                    "meshagent.service.template.values": json.dumps(values),
-                    **(format_yaml_map(self.metadata.annotations, values) or {}),
+                    **(self.metadata.annotations or {}),
                 },
             ),
             container=ContainerSpec(
-                command=format_yaml_value(self.container.command, values),
-                image=format_yaml_value(self.container.image, values),
+                command=self.container.command,
+                image=self.container.image,
                 environment=env,
                 storage=ContainerMountSpec(
                     room=self.container.storage.room,
@@ -355,7 +338,7 @@ class ServiceTemplateSpec(BaseModel):
             if self.container is not None
             else None,
             external=ExternalServiceSpec(
-                url=format_yaml_value(self.external.url, values),
+                url=self.external.url,
             )
             if self.external is not None
             else None,
@@ -363,5 +346,29 @@ class ServiceTemplateSpec(BaseModel):
         )
 
     @staticmethod
-    def from_yaml(yaml: str) -> "ServiceTemplateSpec":
-        return ServiceTemplateSpec.model_validate(load_yaml(yaml))
+    def from_yaml(yaml: str, values: dict[str, str] = {}) -> "ServiceTemplateSpec":
+        class _ApplyTagLoader(SafeLoader):
+            pass
+
+        def _tagged_scalar(loader, tag_suffix, node):
+            from jinja2 import Template
+
+            value = loader.construct_scalar(node)
+            template = Template(value)
+            return template.render(**values)
+
+        _ApplyTagLoader.add_multi_constructor("!template", _tagged_scalar)
+
+        def load_yaml(y: str):
+            return YAML.load(y, Loader=_ApplyTagLoader)
+
+        spec = ServiceTemplateSpec.model_validate(load_yaml(yaml))
+
+        if spec.metadata.annotations is None:
+            spec.metadata.annotations = {}
+
+        spec.metadata.annotations["meshagent.service.template.values"] = json.dumps(
+            values
+        )
+
+        return spec

@@ -1198,7 +1198,7 @@ class Meshagent:
             return ServiceSpec.model_validate_json(await resp.json())
 
     async def create_service_from_template(
-        self, *, project_id: str, template: ServiceTemplateSpec, values: Dict[str, str]
+        self, *, project_id: str, template: str, values: Dict[str, str]
     ) -> str:
         """
         POST /accounts/projects/{project_id}/services
@@ -1220,7 +1220,7 @@ class Meshagent:
             url,
             headers=self._get_headers(),
             json={
-                "template": template.model_dump(mode="json"),
+                "template": template,
                 "values": values,
             },
         ) as resp:
@@ -1232,7 +1232,7 @@ class Meshagent:
         *,
         project_id: str,
         service_id: str,
-        template: ServiceTemplateSpec,
+        template: str,
         values: Dict[str, str],
     ) -> None:
         """
@@ -1246,7 +1246,7 @@ class Meshagent:
             url,
             headers=self._get_headers(),
             json={
-                "template": template.model_dump(mode="json"),
+                "template": template,
                 "values": values,
             },
         ) as resp:
