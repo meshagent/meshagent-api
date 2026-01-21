@@ -59,11 +59,19 @@ class ImageStorageMountSpec(BaseModel):
     read_only: bool = True
 
 
+class FileStorageMountSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    text: str
+    read_only: bool = True
+
+
 class ContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
+    files: Optional[list[FileStorageMountSpec]] = None
 
 
 class ServiceApiKeySpec(BaseModel):
@@ -214,6 +222,7 @@ class ServiceTemplateContainerMountSpec(BaseModel):
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
+    files: Optional[list[FileStorageMountSpec]] = None
 
 
 class ServiceTemplateMetadata(BaseModel):
@@ -225,9 +234,22 @@ class ServiceTemplateMetadata(BaseModel):
     annotations: Optional[dict[str, str]] = None
 
 
+class TemplateEnvironmentVariable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    value: Optional[str] = None
+    token: Optional[TokenValue] = None
+
+
+class AgentTemplateSpec(BaseModel):
+    name: str
+    description: Optional[str] = None
+    annotations: Optional[dict[str, str]] = None
+
+
 class ContainerTemplateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    environment: Optional[list[EnvironmentVariable]] = None
+    environment: Optional[list[TemplateEnvironmentVariable]] = None
     image: Optional[str] = None
     command: Optional[str] = None
     storage: Optional[ServiceTemplateContainerMountSpec] = None
@@ -270,9 +292,9 @@ class ServiceTemplateSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["ServiceTemplate"]
     metadata: ServiceTemplateMetadata
-    agents: Optional[list[AgentSpec]] = None
+    agents: Optional[list[AgentTemplateSpec]] = None
     variables: Optional[list[ServiceTemplateVariable]] = None
-    ports: list[PortSpec] = []
+    ports: Optional[list[PortSpec]] = None
     container: Optional[ContainerTemplateSpec] = None
     external: Optional[ExternalServiceTemplateSpec] = None
 
@@ -323,6 +345,7 @@ class ServiceTemplateSpec(BaseModel):
                     room=self.container.storage.room,
                     project=self.container.storage.project,
                     images=self.container.storage.images,
+                    files=self.container.storage.files,
                 )
                 if self.container.storage is not None
                 else None,
