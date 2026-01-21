@@ -4,10 +4,30 @@ from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
 import json
 
+import yaml
+from yaml.loader import SafeLoader
+
+
+class _PreserveTagLoader(SafeLoader):
+    pass
+
+
+def _tagged_scalar(loader, tag_suffix, node):
+    value = loader.construct_scalar(node)
+    return f"!{tag_suffix} {value}"
+
+
+_PreserveTagLoader.add_multi_constructor("!", _tagged_scalar)
+
+
+def load_yaml(y: str):
+    return yaml.load(y, Loader=_PreserveTagLoader)
+
 
 class TokenValue(BaseModel):
     identity: str
     api: Optional[ApiScope] = None
+    role: Optional[str] = None
 
 
 class EnvironmentVariable(BaseModel):
@@ -132,6 +152,10 @@ class ServiceSpec(BaseModel):
         if m.external is None and m.container is None:
             raise ValueError("Either 'external' or 'container' must be set")
         return m
+
+    @staticmethod
+    def from_yaml(yaml: str) -> "ServiceSpec":
+        return ServiceSpec.model_validate(load_yaml(yaml))
 
 
 class MeshagentEndpointSpec(BaseModel):
@@ -314,3 +338,7 @@ class ServiceTemplateSpec(BaseModel):
             else None,
             ports=self.ports,
         )
+
+    @staticmethod
+    def from_yaml(yaml: str) -> "ServiceTemplateSpec":
+        return ServiceTemplateSpec.model_validate(load_yaml(yaml))
