@@ -1144,6 +1144,34 @@ class Meshagent:
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
+    async def render_template(
+        self,
+        *,
+        project_id: str,
+        template: str,
+        values: dict[str, str],
+    ) -> ServiceTemplateSpec:
+        """
+        POST /templates/render
+        Body: full service spec, e.g.
+          {
+            "template" : ""
+            "values": {...}
+          }
+        Returns: {}
+        """
+        url = f"{self.base_url}/templates/render"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json={
+                "template": template,
+                "values": values,
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceTemplateSpec.model_validate_json(await resp.json())
+
     async def create_service(
         self,
         *,
