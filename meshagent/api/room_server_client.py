@@ -791,31 +791,6 @@ class AgentsClient:
         )
         return None
 
-    async def ask(
-        self,
-        *,
-        agent: str,
-        arguments: dict,
-        on_behalf_of: Optional[RemoteParticipant] = None,
-        requires: Optional[list[Requirement]] = None,
-    ) -> Response:
-        request = {
-            "agent": agent,
-            "arguments": arguments,
-        }
-
-        if on_behalf_of is not None:
-            request["on_behalf_of_id"] = on_behalf_of.id
-
-        if requires is not None:
-            request["requires"] = [*map(lambda x: x.to_json(), requires)]
-
-        response = await self.room.send_request("agent.ask", request)
-        if isinstance(response["answer"], str):
-            return TextResponse(text=response["answer"])
-        else:
-            return JsonResponse(json=response["answer"])
-
     async def invoke_tool(
         self,
         *,
@@ -864,28 +839,6 @@ class AgentsClient:
             request.get_data(),
         )
         return response
-
-    async def list_agents(self) -> List[AgentDescription]:
-        """
-        Fetch a list of available agents and parse into `AgentDescription` objects.
-        """
-        response = await self.room.send_request("agent.list_agents", {})
-        # 'response["agents"]' is assumed to be a list of dicts
-        agents_data: list[dict] = response["agents"]
-        agents = []
-        for a in agents_data:
-            agents.append(
-                AgentDescription(
-                    name=a["name"],
-                    title=a.get("title", ""),
-                    description=a.get("description", ""),
-                    input_schema=a.get("input_schema", None),
-                    output_schema=a.get("output_schema", None),
-                    supports_tools=a.get("supports_tools", False),
-                    labels=a.get("labels", None),
-                )
-            )
-        return agents
 
     async def list_toolkits(
         self, *, participant_id: Optional[str] = None
