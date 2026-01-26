@@ -2620,6 +2620,7 @@ class RoomContainer(BaseModel):
     started_by: ContainerStartedBy
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
     private: bool
+    service_id: Optional[str] = None
 
     # Accept arbitrary extras (names, created, state, etc.)
     class Config:
@@ -2958,11 +2959,27 @@ class ContainersClient:
         else:
             raise RoomException(f"Unexpected response type {resp}")
 
+    async def run_service(
+        self, *, service_id: str, env: Optional[dict[str, str]] = None
+    ) -> str:
+        req = {
+            "service_id": service_id,
+            "env": env,
+        }
+
+        resp = await self.room.send_request("containers.run_service", req)
+        if isinstance(resp, JsonResponse):
+            container_id: str = resp.json["container_id"]
+            return container_id
+
+        else:
+            raise RoomException(f"Unexpected response type {resp}")
+
     async def exec(
         self,
         *,
         container_id: str,
-        command: Optional[list[str]] = None,
+        command: Optional[str] = None,
         tty: Optional[bool] = None,
     ) -> ExecSession:
         request_id = str(uuid.uuid4())
