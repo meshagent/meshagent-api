@@ -1,5 +1,5 @@
 from meshagent.api.protocol import Protocol, ClientProtocol
-from meshagent.api.specs.service import ContainerMountSpec
+from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
 import json
 import asyncio
 import logging
@@ -374,6 +374,7 @@ class RoomClient:
         self.secrets = SecretsClient(
             room=self, oauth_token_request_handler=oauth_token_request_handler
         )
+        self.services = ServicesClient(room=self)
 
         self._room_url = None
         self._room_name = None
@@ -774,6 +775,32 @@ class ToolkitDescription:
             "thumbnail_url": self.thumbnail_url,
             "tools": list(map(lambda x: x.to_json(), self.tools)),
         }
+
+
+class _ListServicesResponse(BaseModel):
+    services: list[ServiceSpec]
+
+
+class ServicesClient:
+    def __init__(self, *, room: RoomClient):
+        self.room = room
+
+    async def list(
+        self,
+    ) -> List[ServiceSpec]:
+        """
+        Fetch a list of services.
+        """
+
+        response = await self.room.send_request(
+            "services.list",
+            {},
+        )
+
+        if not isinstance(response, JsonResponse):
+            raise RoomException("Invalid return type from list services call")
+
+        return _ListServicesResponse.model_validate(response.json).services
 
 
 class AgentsClient:
