@@ -8,7 +8,7 @@ def meshagent_base_url(base_url: Optional[str] = None):
 
 def websocket_room_url(*, room_name: str, base_url: Optional[str] = None) -> str:
     if base_url is None:
-        api_url = os.getenv("MESHAGENT_API_URL")
+        api_url = os.getenv("MESHAGENT_ROOM_URL", os.getenv("MESHAGENT_API_URL"))
         if api_url is None:
             base_url = "wss://api.meshagent.com"
         else:
