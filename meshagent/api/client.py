@@ -1377,7 +1377,7 @@ class Meshagent:
         *,
         project_id: str,
         room_name: str,
-        template: ServiceTemplateSpec,
+        template: str,
         values: Dict[str, str],
     ) -> ServiceSpec:
         """
@@ -1402,12 +1402,12 @@ class Meshagent:
             url,
             headers=self._get_headers(),
             json={
-                "template": template.model_dump(mode="json"),
+                "template": template,
                 "values": values,
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return ServiceSpec.model_validate(await resp.json())
 
     async def update_room_service_from_template(
         self,
@@ -1415,7 +1415,7 @@ class Meshagent:
         project_id: str,
         room_name: str,
         service_id: str,
-        template: ServiceTemplateSpec,
+        template: str,
         values: Dict[str, str],
     ) -> ServiceSpec:
         """
@@ -1429,12 +1429,12 @@ class Meshagent:
             url,
             headers=self._get_headers(),
             json={
-                "template": template.model_dump(mode="json"),
+                "template": template,
                 "values": values,
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return ServiceSpec.model_validate(await resp.json())
 
     async def get_room_service(
         self, *, project_id: str, room_name: str, service_id: str
