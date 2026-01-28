@@ -4,6 +4,7 @@ from pydantic import BaseModel, ValidationError, JsonValue, Field, ConfigDict
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.http import new_client_session
 from datetime import datetime
 from meshagent.api.specs.service import (
     ServiceSpec,
@@ -314,6 +315,7 @@ class Meshagent:
         *,
         base_url: str = meshagent_base_url(),
         token: str = os.getenv("MESHAGENT_API_KEY"),
+        session: aiohttp.ClientSession | None = None,
     ):
         """
         :param base_url: The root URL of your server, e.g. 'http://localhost:8080'.
@@ -321,11 +323,11 @@ class Meshagent:
         """
         self.base_url = base_url.rstrip("/")
         self.token = token  # The "Bearer" token
-
-        self._session = aiohttp.ClientSession()
+        self._session_external = session is not None
+        self._session = session or new_client_session()
 
     async def close(self):
-        if not self._session.closed:
+        if not self._session_external and not self._session.closed:
             await self._session.close()
 
     async def __aenter__(self):

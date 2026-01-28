@@ -3,6 +3,7 @@ import json
 from .participant_token import ParticipantToken, ApiScope
 from typing import Optional
 import os
+import aiohttp
 from .websocket_protocol import WebSocketClientProtocol
 import re
 from warnings import deprecated
@@ -68,7 +69,11 @@ def participant_token(
 
 @deprecated("create WebSocketClientProtocol directly instead")
 def websocket_protocol(
-    *, participant_name: str, room_name: str, role: Optional[str] = None
+    *,
+    participant_name: str,
+    room_name: str,
+    role: Optional[str] = None,
+    session: aiohttp.ClientSession | None = None,
 ):
     url = websocket_room_url(room_name=room_name)
     token_jwt = os.getenv("MESHAGENT_TOKEN", None)
@@ -78,7 +83,7 @@ def websocket_protocol(
         )
         token_jwt = token.to_jwt(token=os.getenv("MESHAGENT_SECRET"))
 
-    return WebSocketClientProtocol(url=url, token=token_jwt)
+    return WebSocketClientProtocol(url=url, token=token_jwt, session=session)
 
 
 # Pre-compile the pattern once if you’ll call this many times

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import urllib
 from meshagent.api.version import __version__
+from meshagent.api.http import new_client_session
 from typing import Optional
 
 from meshagent.api.protocol import Protocol, ClientProtocol
@@ -12,19 +13,31 @@ logger = logging.getLogger("protocol.websocket")
 
 
 class WebSocketClientProtocol(ClientProtocol):
-    def __init__(self, *, url: str, token: str, heartbeat: float = 30):
+    def __init__(
+        self,
+        *,
+        url: str,
+        token: str,
+        heartbeat: float = 30,
+        session: ClientSession | None = None,
+    ):
         super().__init__(token=token)
         self._url = url
         self._heartbeat = heartbeat
+        self._session = session
+        self._session_external = session is not None
 
     @property
     def url(self):
         return self._url
 
     async def __aenter__(self):
-        self._session = ClientSession()
+        if self._session is None:
+            self._session = new_client_session()
+            self._session_external = False
 
-        await self._session.__aenter__()
+        if not self._session_external:
+            await self._session.__aenter__()
 
         url_parts = urllib.parse.urlparse(self._url)
         query_dict = urllib.parse.parse_qs(url_parts.query)
@@ -70,7 +83,8 @@ class WebSocketClientProtocol(ClientProtocol):
         if not self._ws.closed:
             await self._ws.close()
         await self._ws_recv_task
-        await self._session.__aexit__(exc_type, exc, tb)
+        if not self._session_external:
+            await self._session.__aexit__(exc_type, exc, tb)
         await self._ws_ctx.__aexit__(exc_type, exc, tb)
         await super().__aexit__(exc_type, exc, tb)
 

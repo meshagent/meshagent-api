@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 import os
+import aiohttp
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
 from pydantic import BaseModel, Field, JsonValue, ConfigDict
@@ -332,6 +333,7 @@ class RoomClient:
         self,
         *,
         protocol: Optional[ClientProtocol] = None,
+        session: aiohttp.ClientSession | None = None,
         oauth_token_request_handler: Optional[
             Callable[["OAuthTokenRequest"], Awaitable]
         ] = None,
@@ -342,7 +344,9 @@ class RoomClient:
 
             if room_name is not None and token is not None:
                 protocol = WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room_name), token=token
+                    url=websocket_room_url(room_name=room_name),
+                    token=token,
+                    session=session,
                 )
 
         if protocol is None:

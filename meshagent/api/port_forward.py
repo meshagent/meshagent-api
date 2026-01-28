@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import aiohttp
 
 from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.http import new_client_session
 
 
 @dataclass
@@ -60,7 +61,7 @@ async def port_forward(
         sock_read=None,
     )
 
-    session = aiohttp.ClientSession(timeout=timeout)
+    session = new_client_session(timeout=timeout)
 
     async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         ws: aiohttp.ClientWebSocketResponse | None = None
