@@ -594,6 +594,32 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
+    async def update_project_user(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        is_admin: bool,
+        is_developer: bool,
+        can_create_rooms: bool,
+    ) -> Dict[str, Any]:
+        """
+        Corresponds to: PUT /accounts/projects/:project_id/users/:user_id
+        Body: { "is_admin", "is_developer", "can_create_rooms" }
+        Returns a JSON dict with { "ok": True } on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
+        body = {
+            "is_admin": is_admin,
+            "is_developer": is_developer,
+            "can_create_rooms": can_create_rooms,
+        }
+        async with self._session.put(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await resp.json()
+
     async def update_project_settings(
         self, project_id: str, settings: dict
     ) -> Dict[str, Any]:
