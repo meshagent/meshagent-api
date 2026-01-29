@@ -145,7 +145,7 @@ class ServiceMetadata(BaseModel):
 class ContainerSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     image: str
-    
+
     command: Optional[str] = None
     environment: Optional[list[EnvironmentVariable]] = None
     secrets: Optional[list[str]] = Field(
