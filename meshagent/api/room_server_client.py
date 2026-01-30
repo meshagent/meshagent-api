@@ -1991,6 +1991,19 @@ class _ListIndexesRequest(_TableRequest):
     pass
 
 
+class SqlTableReference(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+    alias: Optional[str] = None
+
+
+class _SqlRequest(BaseModel):
+    query: str
+    tables: List[SqlTableReference]
+    parameters: Optional[Dict[str, Any]] = None
+    param_values: Optional[Dict[str, Any]] = None
+
+
 class DatabaseClient:
     """
     A client for interacting with the 'database' extension on the room server.
@@ -2271,6 +2284,39 @@ class DatabaseClient:
         )
         await self.room.send_request("database.merge", request_model.model_dump())
         return None
+
+    async def sql(
+        self,
+        *,
+        query: str,
+        tables: List[SqlTableReference | str],
+        parameters: Optional[Dict[str, Any]] = None,
+        param_values: Optional[Dict[str, Any]] = None,
+    ) -> list[Dict[str, Any]]:
+        """
+        Execute a SQL query against one or more tables.
+
+        :param query: SQL statement to execute.
+        :param tables: Tables to register for the query.
+        :param parameters: Named SQL parameters for string replacement.
+        :param param_values: Typed parameters for DataFusion parameter binding.
+        """
+        table_refs = [
+            SqlTableReference(name=table) if isinstance(table, str) else table
+            for table in tables
+        ]
+        request_model = _SqlRequest(
+            query=query,
+            tables=table_refs,
+            parameters=parameters,
+            param_values=param_values,
+        )
+        response = await self.room.send_request(
+            "database.sql", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return decode_records(response.json["results"])
+        return []
 
     async def search(
         self,
