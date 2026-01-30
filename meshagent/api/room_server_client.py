@@ -2000,8 +2000,7 @@ class SqlTableReference(BaseModel):
 class _SqlRequest(BaseModel):
     query: str
     tables: List[SqlTableReference]
-    parameters: Optional[Dict[str, Any]] = None
-    param_values: Optional[Dict[str, Any]] = None
+    params: Optional[Dict[str, Any]] = None
 
 
 class DatabaseClient:
@@ -2290,16 +2289,14 @@ class DatabaseClient:
         *,
         query: str,
         tables: List[SqlTableReference | str],
-        parameters: Optional[Dict[str, Any]] = None,
-        param_values: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
     ) -> list[Dict[str, Any]]:
         """
         Execute a SQL query against one or more tables.
 
         :param query: SQL statement to execute.
         :param tables: Tables to register for the query.
-        :param parameters: Named SQL parameters for string replacement.
-        :param param_values: Typed parameters for DataFusion parameter binding.
+        :param params: Typed parameters for DataFusion parameter binding.
         """
         table_refs = [
             SqlTableReference(name=table) if isinstance(table, str) else table
@@ -2308,8 +2305,7 @@ class DatabaseClient:
         request_model = _SqlRequest(
             query=query,
             tables=table_refs,
-            parameters=parameters,
-            param_values=param_values,
+            params=params,
         )
         response = await self.room.send_request(
             "database.sql", request_model.model_dump()
