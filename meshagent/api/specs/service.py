@@ -274,6 +274,18 @@ class PortSpec(BaseModel):
             "expose a host port for this service, allows traffic to be tunneled to the container with port forwarding"
         ),
     )
+    published: Optional[bool] = Field(
+        None,
+        description=(
+            "allow traffic to be routed directly to this container from the internet, useful for implementing patterns such as webhooks"
+        ),
+    )
+    public: Optional[bool] = Field(
+        None,
+        description=(
+            "if a port is not public it will require a participant token to be passed as a Bearer token in the Authorization header"
+        ),
+    )
 
 
 class ServiceTemplateVariable(BaseModel):
