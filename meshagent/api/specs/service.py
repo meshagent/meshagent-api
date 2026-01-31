@@ -1,4 +1,4 @@
-from pydantic import BaseModel, PositiveInt, ConfigDict, model_validator
+from pydantic import BaseModel, PositiveInt, ConfigDict, Field, model_validator
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
@@ -9,9 +9,18 @@ from yaml.loader import SafeLoader
 
 
 class TokenValue(BaseModel):
-    identity: str
-    api: Optional[ApiScope] = None
-    role: Optional[str] = None
+    identity: str = Field(..., description="the name to use in the participant token")
+    api: Optional[ApiScope] = Field(
+        None,
+        description=(
+            "the api permissions that should be granted to this token, set to null "
+            "or omit to use default permissions"
+        ),
+    )
+    role: Optional[str] = Field(
+        None,
+        description="a role to use in the participant token, such as user, agent, or tool",
+    )
 
 
 class EnvironmentVariable(BaseModel):
@@ -22,28 +31,51 @@ class EnvironmentVariable(BaseModel):
 
 
 class RoomStorageMountSpec(BaseModel):
+    """mounts room storage at the specified path using a FUSE mount"""
+
     model_config = ConfigDict(extra="forbid")
-    path: str
-    subpath: Optional[str] = None
+    path: str = Field(
+        ...,
+        description="the path within the container for the room's storage to be mounted to",
+    )
+    subpath: Optional[str] = Field(
+        None, description="mount only a portion of the rooms storage"
+    )
     read_only: bool = False
 
 
 class ProjectStorageMountSpec(BaseModel):
+    """mounts shared project storage at the specified path using a FUSE mount"""
+
     model_config = ConfigDict(extra="forbid")
-    path: str
-    subpath: Optional[str] = None
+    path: str = Field(
+        ...,
+        description="the path within the container for the project storage to be mounted to",
+    )
+    subpath: Optional[str] = Field(
+        None, description="mount only a portion of the project's storage"
+    )
     read_only: bool = True
 
 
 class ImageStorageMountSpec(BaseModel):
+    """mounts a the content of a Docker / OCI image at the specified path within the container"""
+
     model_config = ConfigDict(extra="forbid")
-    image: str
-    path: str
-    subpath: Optional[str] = None
+    image: str = Field(..., description="the tag of an image that will be mounted")
+    path: str = Field(
+        ...,
+        description="the path within the container for the image volume to be mounted to",
+    )
+    subpath: Optional[str] = Field(
+        None, description="mount only a portion of the image volume"
+    )
     read_only: bool = True
 
 
 class FileStorageMountSpec(BaseModel):
+    """mounts a static file into the container at the specified path"""
+
     model_config = ConfigDict(extra="forbid")
     path: str
     text: str
@@ -113,13 +145,24 @@ class ServiceMetadata(BaseModel):
 class ContainerSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     image: str
+
     command: Optional[str] = None
     environment: Optional[list[EnvironmentVariable]] = None
-    secrets: Optional[list[str]] = None
-    pull_secret: Optional[str] = None
-    storage: Optional[ContainerMountSpec] = None
+    secrets: Optional[list[str]] = Field(
+        None,
+        description="ids of secrets that contains environment variables for this service to use",
+    )
+    pull_secret: Optional[str] = Field(
+        None,
+        description=(
+            "the id of a pull secret, can be used to pull private container images"
+        ),
+    )
+    storage: Optional[ContainerMountSpec] = Field(
+        None, description="storage mounts that should be provided to this container"
+    )
     api_key: Optional[ServiceApiKeySpec] = None
-    on_demand: Optional[bool] = None
+    on_demand: Optional[bool] = Field(None, description="an on demand service")
     writable_root_fs: Optional[bool] = None
 
 
@@ -133,11 +176,26 @@ class ServiceSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["Service"]
     id: Optional[str] = None
-    metadata: ServiceMetadata
-    agents: Optional[list[AgentSpec]] = None
-    ports: Optional[list["PortSpec"]] = []
-    container: Optional[ContainerSpec] = None
-    external: Optional[ExternalServiceSpec] = None
+    metadata: ServiceMetadata = Field(..., description="service metadata")
+    agents: Optional[list[AgentSpec]] = Field(
+        None, description="a list of agents that will be exposed by this service"
+    )
+    ports: Optional[list["PortSpec"]] = Field(
+        default_factory=list,
+        description="a list of ports that are exposed by this service",
+    )
+    container: Optional[ContainerSpec] = Field(
+        None,
+        description=(
+            "container based services run agents in sandboxed containers inside the room"
+        ),
+    )
+    external: Optional[ExternalServiceSpec] = Field(
+        None,
+        description=(
+            "external services allow discovery of externally hosted agents, mcp servers, and tools"
+        ),
+    )
 
     @model_validator(mode="after")
     def require_one_of(cls, m):
@@ -152,8 +210,17 @@ class ServiceSpec(BaseModel):
 
 class MeshagentEndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    identity: str
-    api: Optional[ApiScope] = None
+
+    identity: str = Field(
+        ...,
+        description="the name to use for the participant token provided to this endpoint",
+    )
+    api: Optional[ApiScope] = Field(
+        None,
+        description=(
+            "customize the permissions available to this endpoint, omit to use default agent permissions"
+        ),
+    )
 
 
 class AllowedMcpToolFilter(BaseModel):
@@ -175,8 +242,16 @@ class MCPEndpointSpec(BaseModel):
 
 class EndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    path: str
-    meshagent: Optional[MeshagentEndpointSpec] = None
+    path: str = Field(
+        ...,
+        description="the path that should receive a webhook call when the service starts",
+    )
+    meshagent: Optional[MeshagentEndpointSpec] = Field(
+        None,
+        description=(
+            "meshagent endpoints will be automatically notified when the service starts in order to call an agent or tool into the room"
+        ),
+    )
     mcp: Optional[MCPEndpointSpec] = None
 
 
@@ -184,9 +259,33 @@ class PortSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     num: Literal["*"] | PositiveInt = "*"
     type: Optional[Literal["http", "tcp"]] = "http"
-    endpoints: list[EndpointSpec] = []
-    liveness: Optional[str] = None
-    host_port: Optional[PositiveInt] = None
+    endpoints: list[EndpointSpec] = Field(
+        default_factory=list, description="a list of endpoints exposed under this port"
+    )
+    liveness: Optional[str] = Field(
+        None,
+        description=(
+            "a path that will accept a HTTP request and should return 200 when the port is live"
+        ),
+    )
+    host_port: Optional[PositiveInt] = Field(
+        None,
+        description=(
+            "expose a host port for this service, allows traffic to be tunneled to the container with port forwarding"
+        ),
+    )
+    published: Optional[bool] = Field(
+        None,
+        description=(
+            "allow traffic to be routed directly to this container from the internet, useful for implementing patterns such as webhooks"
+        ),
+    )
+    public: Optional[bool] = Field(
+        None,
+        description=(
+            "if a port is not public it will require a participant token to be passed as a Bearer token in the Authorization header"
+        ),
+    )
 
 
 class ServiceTemplateVariable(BaseModel):

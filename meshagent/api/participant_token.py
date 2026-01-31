@@ -227,6 +227,10 @@ class TunnelsGrant(BaseModel):
     ports: Optional[list[str]] = None
 
 
+class ServicesGrant(BaseModel):
+    list: bool = True
+
+
 class ApiScope(BaseModel):
     livekit: Optional[LivekitGrant] = None
     queues: Optional[QueuesGrant] = None
@@ -240,6 +244,7 @@ class ApiScope(BaseModel):
     admin: Optional[AdminGrant] = None
     secrets: Optional[SecretsGrant] = None
     tunnels: Optional[TunnelsGrant] = None
+    services: Optional[ServicesGrant] = None
 
     # no secrets access, no admin access by default for agents
     @staticmethod
@@ -254,6 +259,7 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            services=ServicesGrant(),
             tunnels=TunnelsGrant() if tunnels else None,
         )
 
@@ -272,6 +278,7 @@ class ApiScope(BaseModel):
             admin=AdminGrant(),
             secrets=SecretsGrant(),
             tunnels=TunnelsGrant(),
+            services=ServicesGrant(),
         )
 
 

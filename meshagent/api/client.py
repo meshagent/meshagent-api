@@ -4,6 +4,7 @@ from pydantic import BaseModel, ValidationError, JsonValue, Field, ConfigDict
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.http import new_client_session
 from datetime import datetime
 from meshagent.api.specs.service import (
     ServiceSpec,
@@ -314,6 +315,7 @@ class Meshagent:
         *,
         base_url: str = meshagent_base_url(),
         token: str = os.getenv("MESHAGENT_API_KEY"),
+        session: aiohttp.ClientSession | None = None,
     ):
         """
         :param base_url: The root URL of your server, e.g. 'http://localhost:8080'.
@@ -321,11 +323,11 @@ class Meshagent:
         """
         self.base_url = base_url.rstrip("/")
         self.token = token  # The "Bearer" token
-
-        self._session = aiohttp.ClientSession()
+        self._session_external = session is not None
+        self._session = session or new_client_session()
 
     async def close(self):
-        if not self._session.closed:
+        if not self._session_external and not self._session.closed:
             await self._session.close()
 
     async def __aenter__(self):
@@ -589,6 +591,32 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
 
         async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return await resp.json()
+
+    async def update_project_user(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        is_admin: bool,
+        is_developer: bool,
+        can_create_rooms: bool,
+    ) -> Dict[str, Any]:
+        """
+        Corresponds to: PUT /accounts/projects/:project_id/users/:user_id
+        Body: { "is_admin", "is_developer", "can_create_rooms" }
+        Returns a JSON dict with { "ok": True } on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
+        body = {
+            "is_admin": is_admin,
+            "is_developer": is_developer,
+            "can_create_rooms": can_create_rooms,
+        }
+        async with self._session.put(
+            url, headers=self._get_headers(), json=body
+        ) as resp:
             await self._raise_for_status(resp)
             return await resp.json()
 
@@ -1377,7 +1405,7 @@ class Meshagent:
         *,
         project_id: str,
         room_name: str,
-        template: ServiceTemplateSpec,
+        template: str,
         values: Dict[str, str],
     ) -> ServiceSpec:
         """
@@ -1402,12 +1430,12 @@ class Meshagent:
             url,
             headers=self._get_headers(),
             json={
-                "template": template.model_dump(mode="json"),
+                "template": template,
                 "values": values,
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return ServiceSpec.model_validate(await resp.json())
 
     async def update_room_service_from_template(
         self,
@@ -1415,7 +1443,7 @@ class Meshagent:
         project_id: str,
         room_name: str,
         service_id: str,
-        template: ServiceTemplateSpec,
+        template: str,
         values: Dict[str, str],
     ) -> ServiceSpec:
         """
@@ -1429,12 +1457,12 @@ class Meshagent:
             url,
             headers=self._get_headers(),
             json={
-                "template": template.model_dump(mode="json"),
+                "template": template,
                 "values": values,
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return ServiceSpec.model_validate(await resp.json())
 
     async def get_room_service(
         self, *, project_id: str, room_name: str, service_id: str

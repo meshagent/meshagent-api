@@ -1,12 +1,13 @@
 from meshagent.api.protocol import Protocol, ClientProtocol
-from meshagent.api.specs.service import ContainerMountSpec
+from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
 import json
 import asyncio
 import logging
 import os
+import aiohttp
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
-from pydantic import BaseModel, Field, JsonValue, ConfigDict
+from pydantic import BaseModel, Field, JsonValue, ConfigDict, TypeAdapter
 from typing import (
     Optional,
     Callable,
@@ -18,6 +19,8 @@ from typing import (
     TypeVar,
     AsyncIterator,
     Awaitable,
+    Annotated,
+    Union,
 )
 
 import base64
@@ -332,6 +335,7 @@ class RoomClient:
         self,
         *,
         protocol: Optional[ClientProtocol] = None,
+        session: aiohttp.ClientSession | None = None,
         oauth_token_request_handler: Optional[
             Callable[["OAuthTokenRequest"], Awaitable]
         ] = None,
@@ -342,7 +346,9 @@ class RoomClient:
 
             if room_name is not None and token is not None:
                 protocol = WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room_name), token=token
+                    url=websocket_room_url(room_name=room_name),
+                    token=token,
+                    session=session,
                 )
 
         if protocol is None:
@@ -374,6 +380,7 @@ class RoomClient:
         self.secrets = SecretsClient(
             room=self, oauth_token_request_handler=oauth_token_request_handler
         )
+        self.services = ServicesClient(room=self)
 
         self._room_url = None
         self._room_name = None
@@ -774,6 +781,32 @@ class ToolkitDescription:
             "thumbnail_url": self.thumbnail_url,
             "tools": list(map(lambda x: x.to_json(), self.tools)),
         }
+
+
+class _ListServicesResponse(BaseModel):
+    services: list[ServiceSpec]
+
+
+class ServicesClient:
+    def __init__(self, *, room: RoomClient):
+        self.room = room
+
+    async def list(
+        self,
+    ) -> List[ServiceSpec]:
+        """
+        Fetch a list of services.
+        """
+
+        response = await self.room.send_request(
+            "services.list",
+            {},
+        )
+
+        if not isinstance(response, JsonResponse):
+            raise RoomException("Invalid return type from list services call")
+
+        return _ListServicesResponse.model_validate(response.json).services
 
 
 class AgentsClient:
@@ -1727,26 +1760,12 @@ class DeveloperClient:
         await self._room.send_request(type="developer.unwatch", request={})
 
 
-_data_types = dict()
+class DataType(BaseModel, ABC):
+    type: str
+    nullable: Optional[bool] = None
+    metadata: Optional[dict] = None
 
-
-class DataType(ABC):
-    def __init__(
-        self, *, nullable: Optional[bool] = None, metadata: Optional[dict] = None
-    ):
-        self.nullable = nullable
-        self.metadata = metadata
-
-    @abstractmethod
-    def to_json(self) -> dict:
-        return {
-            "nullable": self.nullable,
-            "metadata": self.metadata,
-        }
-
-    @staticmethod
-    def from_json(data: dict) -> "DataType":
-        return _data_types[data["type"]].from_json(data)
+    model_config = ConfigDict(extra="allow")
 
     def _maybe_nullable_schema(self, t: str):
         if self.nullable:
@@ -1759,58 +1778,21 @@ class DataType(ABC):
 
 
 class IntDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "int"
-        return IntDataType(nullable=data.get("nullable"), metadata=data.get("metadata"))
-
-    def to_json(self):
-        return {"type": "int", **super().to_json()}
+    type: Literal["int"] = "int"
 
     def to_json_schema(self):
         return {"type": self._maybe_nullable_schema("number")}
 
 
-_data_types["int"] = IntDataType
-
-
 class BoolDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "bool"
-        return BoolDataType(
-            nullable=data.get("nullable"), metadata=data.get("metadata")
-        )
-
-    def to_json(self):
-        return {"type": "bool", **super().to_json()}
+    type: Literal["bool"] = "bool"
 
     def to_json_schema(self):
         return {"type": self._maybe_nullable_schema("boolean")}
 
 
-_data_types["bool"] = BoolDataType
-
-
 class DateDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "date"
-        return DateDataType(
-            nullable=data.get("nullable"), metadata=data.get("metadata")
-        )
-
-    def to_json(self):
-        return {"type": "date", **super().to_json()}
+    type: Literal["date"] = "date"
 
     def to_json_schema(self):
         return {
@@ -1819,22 +1801,8 @@ class DateDataType(DataType):
         }
 
 
-_data_types["date"] = DateDataType
-
-
 class TimestampDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "timestamp"
-        return TimestampDataType(
-            nullable=data.get("nullable"), metadata=data.get("metadata")
-        )
-
-    def to_json(self):
-        return {"type": "timestamp", **super().to_json()}
+    type: Literal["timestamp"] = "timestamp"
 
     def to_json_schema(self):
         return {
@@ -1843,22 +1811,8 @@ class TimestampDataType(DataType):
         }
 
 
-_data_types["timestamp"] = TimestampDataType
-
-
 class FloatDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "float"
-        return FloatDataType(
-            nullable=data.get("nullable"), metadata=data.get("metadata")
-        )
-
-    def to_json(self):
-        return {"type": "float", **super().to_json()}
+    type: Literal["float"] = "float"
 
     def to_json_schema(self):
         return {
@@ -1866,32 +1820,10 @@ class FloatDataType(DataType):
         }
 
 
-_data_types["float"] = FloatDataType
-
-
 class VectorDataType(DataType):
-    def __init__(self, *, size: int, element_type: DataType, **kwargs):
-        super().__init__(**kwargs)
-        self.size = size
-        self.element_type = element_type
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "vector"
-        return VectorDataType(
-            size=data["size"],
-            element_type=DataType.from_json(
-                data["element_type"],
-            ),
-        )
-
-    def to_json(self):
-        return {
-            "type": "vector",
-            "size": self.size,
-            "element_type": self.element_type.to_json(),
-            **super().to_json(),
-        }
+    type: Literal["vector"] = "vector"
+    size: int
+    element_type: "DataTypeUnion"
 
     def to_json_schema(self):
         return {
@@ -1901,25 +1833,8 @@ class VectorDataType(DataType):
         }
 
 
-_data_types["vector"] = VectorDataType
-
-
 class TextDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "text"
-        return TextDataType(
-            nullable=data.get("nullable"), metadata=data.get("metadata")
-        )
-
-    def to_json(self):
-        return {
-            "type": "text",
-            **super().to_json(),
-        }
+    type: Literal["text"] = "text"
 
     def to_json_schema(self):
         return {
@@ -1927,25 +1842,8 @@ class TextDataType(DataType):
         }
 
 
-_data_types["text"] = TextDataType
-
-
 class BinaryDataType(DataType):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    @staticmethod
-    def from_json(data: dict):
-        assert data["type"] == "binary"
-        return BinaryDataType(
-            nullable=data.get("nullable"), metadata=data.get("metadata")
-        )
-
-    def to_json(self):
-        return {
-            "type": "binary",
-            **super().to_json(),
-        }
+    type: Literal["binary"] = "binary"
 
     def to_json_schema(self):
         return {
@@ -1955,9 +1853,154 @@ class BinaryDataType(DataType):
         }
 
 
-_data_types["binary"] = BinaryDataType
+DataTypeUnion = Annotated[
+    Union[
+        IntDataType,
+        BoolDataType,
+        DateDataType,
+        TimestampDataType,
+        FloatDataType,
+        VectorDataType,
+        TextDataType,
+        BinaryDataType,
+    ],
+    Field(discriminator="type"),
+]
+_data_type_adapter = TypeAdapter(DataTypeUnion)
+VectorDataType.model_rebuild()
 
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
+
+
+class _CreateTableRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    data: Optional[Any] = None
+    table_schema: Optional[Dict[str, DataTypeUnion]] = Field(
+        default=None, alias="schema"
+    )
+    mode: CreateMode = "create"
+    namespace: Optional[list[str]] = None
+    metadata: Optional[dict] = None
+
+
+class _ListTablesRequest(BaseModel):
+    namespace: Optional[list[str]] = None
+
+
+class _TableRequest(BaseModel):
+    table: str
+    namespace: Optional[list[str]] = None
+
+
+class _InspectTableRequest(_TableRequest):
+    pass
+
+
+class _DropTableRequest(BaseModel):
+    name: str
+    ignore_missing: bool = False
+    namespace: Optional[list[str]] = None
+
+
+class _DropIndexRequest(_TableRequest):
+    name: str
+
+
+class _AddColumnsRequest(_TableRequest):
+    new_columns: Dict[str, str | DataTypeUnion]
+
+
+class _AlterColumnsRequest(_TableRequest):
+    columns: Dict[str, DataTypeUnion]
+
+
+class _DropColumnsRequest(_TableRequest):
+    columns: List[str]
+
+
+class _InsertRequest(_TableRequest):
+    records: List[Dict[str, Any]]
+
+
+class _UpdateRequest(_TableRequest):
+    where: str
+    values: Optional[Dict[str, Any]] = None
+    values_sql: Optional[Dict[str, str]] = None
+
+
+class _DeleteRequest(_TableRequest):
+    where: str
+
+
+class _MergeRequest(_TableRequest):
+    on: str
+    records: Any
+
+
+class _SearchRequest(_TableRequest):
+    text: Optional[str] = None
+    vector: Optional[list[float]] = None
+    text_columns: Optional[list[str]] = None
+    where: Optional[str] = None
+    offset: Optional[int] = None
+    limit: Optional[int] = None
+    select: Optional[List[str]] = None
+
+
+class _CountRequest(_TableRequest):
+    text: Optional[str] = None
+    vector: Optional[list[float]] = None
+    text_columns: Optional[list[str]] = None
+    where: Optional[str] = None
+
+
+class _OptimizeRequest(_TableRequest):
+    pass
+
+
+class _RestoreRequest(_TableRequest):
+    version: int
+
+
+class _CheckoutRequest(_TableRequest):
+    version: int
+
+
+class _ListVersionsRequest(_TableRequest):
+    pass
+
+
+class _CreateVectorIndexRequest(_TableRequest):
+    column: str
+    replace: Optional[bool] = None
+
+
+class _CreateScalarIndexRequest(_TableRequest):
+    column: str
+    replace: Optional[bool] = None
+
+
+class _CreateFullTextSearchIndexRequest(_TableRequest):
+    column: str
+    replace: Optional[bool] = None
+
+
+class _ListIndexesRequest(_TableRequest):
+    pass
+
+
+class SqlTableReference(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+    alias: Optional[str] = None
+
+
+class _SqlRequest(BaseModel):
+    query: str
+    tables: List[SqlTableReference]
+    params: Optional[Dict[str, Any]] = None
 
 
 class DatabaseClient:
@@ -1977,25 +2020,24 @@ class DatabaseClient:
 
         :return: A list of table names.
         """
+        request_model = _ListTablesRequest(namespace=namespace)
         response: JsonResponse = await self.room.send_request(
-            "database.list_tables",
-            {
-                "namespace": namespace,
-            },
+            "database.list_tables", request_model.model_dump()
         )
         return response.json.get("tables", [])
 
     async def inspect(
         self, *, table: str, namespace: Optional[list[str]] = None
     ) -> dict[str, DataType]:
+        request_model = _InspectTableRequest(table=table, namespace=namespace)
         response: JsonResponse = await self.room.send_request(
-            "database.inspect", {"table": table, "namespace": namespace}
+            "database.inspect", request_model.model_dump()
         )
 
         schema = dict[str, DataType]()
 
         for k, v in response.json["schema"].items():
-            schema[k] = DataType.from_json(v)
+            schema[k] = _data_type_adapter.validate_python(v)
 
         return schema
 
@@ -2019,22 +2061,17 @@ class DatabaseClient:
         :return: Server response dict containing "status", "table", etc.
         """
 
-        schema_dict = None
-
-        if schema is not None:
-            schema_dict = {}
-            for k in schema.keys():
-                schema_dict[k] = schema[k].to_json()
-
-        payload = {
-            "name": name,
-            "data": data,
-            "schema": schema_dict,
-            "mode": mode,
-            "namespace": namespace,
-            "metadata": metadata,
-        }
-        await self.room.send_request("database.create_table", payload)
+        request_model = _CreateTableRequest(
+            name=name,
+            data=data,
+            table_schema=schema,
+            mode=mode,
+            namespace=namespace,
+            metadata=metadata,
+        )
+        await self.room.send_request(
+            "database.create_table", request_model.model_dump(by_alias=True)
+        )
         return None
 
     async def create_table_with_schema(
@@ -2086,12 +2123,10 @@ class DatabaseClient:
         :param name: Table name.
         :param ignore_missing: If True, ignore if table doesn't exist.
         """
-        payload = {
-            "name": name,
-            "ignore_missing": ignore_missing,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.drop_table", payload)
+        request_model = _DropTableRequest(
+            name=name, ignore_missing=ignore_missing, namespace=namespace
+        )
+        await self.room.send_request("database.drop_table", request_model.model_dump())
         return None
 
     async def drop_index(
@@ -2103,8 +2138,8 @@ class DatabaseClient:
         :param table: table name
         :param name: index name.
         """
-        payload = {"table": table, "name": name, "namespace": namespace}
-        await self.room.send_request("database.drop_index", payload)
+        request_model = _DropIndexRequest(table=table, name=name, namespace=namespace)
+        await self.room.send_request("database.drop_index", request_model.model_dump())
         return None
 
     async def add_columns(
@@ -2121,17 +2156,10 @@ class DatabaseClient:
         :param new_columns: Dict of {column_name: default_value_expression}.
         """
 
-        columns = {}
-
-        for c in new_columns.keys():
-            if isinstance(new_columns[c], DataType):
-                columns[c] = new_columns[c].to_json()
-            else:
-                columns[c] = new_columns[c]
-
-        payload = {"table": table, "new_columns": columns, "namespace": namespace}
-
-        await self.room.send_request("database.add_columns", payload)
+        request_model = _AddColumnsRequest(
+            table=table, new_columns=new_columns, namespace=namespace
+        )
+        await self.room.send_request("database.add_columns", request_model.model_dump())
         return None
 
     # TODO: not ready yet on lance side
@@ -2149,17 +2177,12 @@ class DatabaseClient:
         :param new_columns: Dict of {column_name: default_value_expression}.
         """
 
-        cs = {}
-
-        for c in columns.keys():
-            if isinstance(columns[c], DataType):
-                cs[c] = columns[c].to_json()
-            else:
-                raise RoomException("columns must be of type DataType")
-
-        payload = {"table": table, "columns": cs, "namespace": namespace}
-
-        await self.room.send_request("database.alter_columns", payload)
+        request_model = _AlterColumnsRequest(
+            table=table, columns=columns, namespace=namespace
+        )
+        await self.room.send_request(
+            "database.alter_columns", request_model.model_dump()
+        )
         return None
 
     async def drop_columns(
@@ -2171,9 +2194,12 @@ class DatabaseClient:
         :param table: Table name.
         :param columns: List of column names to drop.
         """
-        payload = {"table": table, "columns": columns, "namespace": namespace}
-
-        await self.room.send_request("database.drop_columns", payload)
+        request_model = _DropColumnsRequest(
+            table=table, columns=columns, namespace=namespace
+        )
+        await self.room.send_request(
+            "database.drop_columns", request_model.model_dump()
+        )
         return None
 
     async def insert(
@@ -2190,12 +2216,12 @@ class DatabaseClient:
         :param records: The record(s) to insert (list or dict).
         """
 
-        payload = {
-            "table": table,
-            "records": encode_records(records),
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.insert", payload)
+        request_model = _InsertRequest(
+            table=table,
+            records=encode_records(records),
+            namespace=namespace,
+        )
+        await self.room.send_request("database.insert", request_model.model_dump())
 
     async def update(
         self,
@@ -2214,14 +2240,14 @@ class DatabaseClient:
         :param values: Dict of column updates, e.g. {"col1": "new_value"}.
         :param values_sql: Dict of SQL expressions for updates, e.g. {"col2": "col2 + 1"}.
         """
-        payload = {
-            "table": table,
-            "where": where,
-            "values": values,
-            "values_sql": values_sql,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.update", payload)
+        request_model = _UpdateRequest(
+            table=table,
+            where=where,
+            values=values,
+            values_sql=values_sql,
+            namespace=namespace,
+        )
+        await self.room.send_request("database.update", request_model.model_dump())
 
     async def delete(
         self, *, table: str, where: str, namespace: Optional[list[str]] = None
@@ -2232,8 +2258,8 @@ class DatabaseClient:
         :param table: Table name.
         :param where: SQL WHERE clause (e.g. "id = 123").
         """
-        payload = {"table": table, "where": where, "namespace": namespace}
-        await self.room.send_request("database.delete", payload)
+        request_model = _DeleteRequest(table=table, where=where, namespace=namespace)
+        await self.room.send_request("database.delete", request_model.model_dump())
 
         return None
 
@@ -2252,9 +2278,41 @@ class DatabaseClient:
         :param on: Column name to match on (e.g. "id").
         :param records: The record(s) to merge.
         """
-        payload = {"table": table, "on": on, "records": records, "namespace": namespace}
-        await self.room.send_request("database.merge", payload)
+        request_model = _MergeRequest(
+            table=table, on=on, records=records, namespace=namespace
+        )
+        await self.room.send_request("database.merge", request_model.model_dump())
         return None
+
+    async def sql(
+        self,
+        *,
+        query: str,
+        tables: List[SqlTableReference | str],
+        params: Optional[Dict[str, Any]] = None,
+    ) -> list[Dict[str, Any]]:
+        """
+        Execute a SQL query against one or more tables.
+
+        :param query: SQL statement to execute.
+        :param tables: Tables to register for the query.
+        :param params: Typed parameters for DataFusion parameter binding.
+        """
+        table_refs = [
+            SqlTableReference(name=table) if isinstance(table, str) else table
+            for table in tables
+        ]
+        request_model = _SqlRequest(
+            query=query,
+            tables=table_refs,
+            params=params,
+        )
+        response = await self.room.send_request(
+            "database.sql", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return decode_records(response.json["results"])
+        return []
 
     async def search(
         self,
@@ -2282,27 +2340,19 @@ class DatabaseClient:
             where = " AND ".join(
                 map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
             )
-        payload = {
-            "table": table,
-            "where": where,
-            "text": text,
-        }
-        if limit is not None:
-            payload["limit"] = limit
-
-        if offset is not None:
-            payload["offset"] = offset
-
-        if select is not None:
-            payload["select"] = select
-
-        if vector is not None:
-            payload["vector"] = vector
-
-        if namespace is not None:
-            payload["namespace"] = namespace
-
-        response = await self.room.send_request("database.search", payload)
+        request_model = _SearchRequest(
+            table=table,
+            where=where,
+            text=text,
+            vector=vector,
+            offset=offset,
+            limit=limit,
+            select=select,
+            namespace=namespace,
+        )
+        response = await self.room.send_request(
+            "database.search", request_model.model_dump()
+        )
         if isinstance(response, JsonResponse):
             return decode_records(response.json["results"])
         return []
@@ -2328,18 +2378,16 @@ class DatabaseClient:
             where = " AND ".join(
                 map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
             )
-        payload = {
-            "table": table,
-            "where": where,
-            "text": text,
-        }
-        if vector is not None:
-            payload["vector"] = vector
-
-        if namespace is not None:
-            payload["namespace"] = namespace
-
-        response = await self.room.send_request("database.count", payload)
+        request_model = _CountRequest(
+            table=table,
+            where=where,
+            text=text,
+            vector=vector,
+            namespace=namespace,
+        )
+        response = await self.room.send_request(
+            "database.count", request_model.model_dump()
+        )
         if isinstance(response, JsonResponse):
             return response.json["count"]
         return []
@@ -2352,11 +2400,8 @@ class DatabaseClient:
 
         :param table: Table name.
         """
-        payload = {
-            "table": table,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.optimize", payload)
+        request_model = _OptimizeRequest(table=table, namespace=namespace)
+        await self.room.send_request("database.optimize", request_model.model_dump())
         return None
 
     async def restore(
@@ -2367,12 +2412,10 @@ class DatabaseClient:
 
         :param table: Table name.
         """
-        payload = {
-            "table": table,
-            "version": version,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.restore", payload)
+        request_model = _RestoreRequest(
+            table=table, version=version, namespace=namespace
+        )
+        await self.room.send_request("database.restore", request_model.model_dump())
         return None
 
     async def checkout(
@@ -2383,12 +2426,10 @@ class DatabaseClient:
 
         :param table: Table name.
         """
-        payload = {
-            "table": table,
-            "version": version,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.checkout", payload)
+        request_model = _CheckoutRequest(
+            table=table, version=version, namespace=namespace
+        )
+        await self.room.send_request("database.checkout", request_model.model_dump())
         return None
 
     async def list_versions(
@@ -2399,11 +2440,10 @@ class DatabaseClient:
 
         :param table: Table name.
         """
-        payload = {
-            "table": table,
-            "namespace": namespace,
-        }
-        resp = await self.room.send_request("database.list_versions", payload)
+        request_model = _ListVersionsRequest(table=table, namespace=namespace)
+        resp = await self.room.send_request(
+            "database.list_versions", request_model.model_dump()
+        )
         return [TableVersion.model_validate(v) for v in resp.json["versions"]]
 
     async def create_vector_index(
@@ -2420,13 +2460,15 @@ class DatabaseClient:
         :param table: Table name.
         :param column: Vector column name.
         """
-        payload = {
-            "table": table,
-            "column": column,
-            "replace": replace,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.create_vector_index", payload)
+        request_model = _CreateVectorIndexRequest(
+            table=table,
+            column=column,
+            replace=replace,
+            namespace=namespace,
+        )
+        await self.room.send_request(
+            "database.create_vector_index", request_model.model_dump()
+        )
         return None
 
     async def create_scalar_index(
@@ -2443,13 +2485,15 @@ class DatabaseClient:
         :param table: Table name.
         :param column: Column name.
         """
-        payload = {
-            "table": table,
-            "column": column,
-            "replace": replace,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.create_scalar_index", payload)
+        request_model = _CreateScalarIndexRequest(
+            table=table,
+            column=column,
+            replace=replace,
+            namespace=namespace,
+        )
+        await self.room.send_request(
+            "database.create_scalar_index", request_model.model_dump()
+        )
         return None
 
     async def create_full_text_search_index(
@@ -2466,13 +2510,16 @@ class DatabaseClient:
         :param table: Table name.
         :param column: Text column name.
         """
-        payload = {
-            "table": table,
-            "column": column,
-            "replace": replace,
-            "namespace": namespace,
-        }
-        await self.room.send_request("database.create_full_text_search_index", payload)
+        request_model = _CreateFullTextSearchIndexRequest(
+            table=table,
+            column=column,
+            replace=replace,
+            namespace=namespace,
+        )
+        await self.room.send_request(
+            "database.create_full_text_search_index",
+            request_model.model_dump(),
+        )
         return None
 
     async def list_indexes(
@@ -2483,9 +2530,11 @@ class DatabaseClient:
 
         :param table: Table name.
         """
-        payload = {"table": table, "namespace": namespace}
-        response = await self.room.send_request("database.list_indexes", payload)
-        if hasattr(response, "json"):
+        request_model = _ListIndexesRequest(table=table, namespace=namespace)
+        response = await self.room.send_request(
+            "database.list_indexes", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
             return [TableIndex.model_validate(i) for i in response.json["indexes"]]
 
         raise RoomException("unexpected return type")
@@ -2623,8 +2672,7 @@ class RoomContainer(BaseModel):
     service_id: Optional[str] = None
 
     # Accept arbitrary extras (names, created, state, etc.)
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 # ---------------------------
@@ -3176,6 +3224,7 @@ class _SetSecretRequest(BaseModel):
     type: Optional[str] = Field(default=None)
     name: Optional[str] = Field(default=None)
     delegated_to: Optional[str] = Field(default=None)
+    for_identity: Optional[str] = Field(default=None)
 
 
 class _GetSecretRequest(BaseModel):
@@ -3438,6 +3487,7 @@ class SecretsClient:
         type: Optional[str] = None,
         name: Optional[str] = None,
         delegated_to: Optional[str] = None,
+        for_identity: Optional[str] = None,
         data: Optional[bytes] = None,
     ) -> None:
         """
@@ -3448,6 +3498,7 @@ class SecretsClient:
             type=type,
             name=name,
             delegated_to=delegated_to,
+            for_identity=for_identity,
         )
 
         response = await self.room.send_request(
