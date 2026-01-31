@@ -3224,6 +3224,7 @@ class _SetSecretRequest(BaseModel):
     type: Optional[str] = Field(default=None)
     name: Optional[str] = Field(default=None)
     delegated_to: Optional[str] = Field(default=None)
+    for_identity: Optional[str] = Field(default=None)
 
 
 class _GetSecretRequest(BaseModel):
@@ -3486,6 +3487,7 @@ class SecretsClient:
         type: Optional[str] = None,
         name: Optional[str] = None,
         delegated_to: Optional[str] = None,
+        for_identity: Optional[str] = None,
         data: Optional[bytes] = None,
     ) -> None:
         """
@@ -3496,6 +3498,7 @@ class SecretsClient:
             type=type,
             name=name,
             delegated_to=delegated_to,
+            for_identity=for_identity,
         )
 
         response = await self.room.send_request(
