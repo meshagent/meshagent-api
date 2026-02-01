@@ -304,6 +304,7 @@ class Element(EventEmitter):
     def grep(
         self,
         pattern: str,
+        *,
         ignore_case: bool = False,
         before: int = 0,
         after: int = 0,
