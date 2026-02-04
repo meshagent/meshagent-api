@@ -2756,7 +2756,7 @@ class ExecSession:
     def _on_task_done(self, t):
         self._output_q.put_nowait(None)
         self._error_q.put_nowait(None)
-        if not self._ready:
+        if not self._ready.done():
             self._ready.set_exception(
                 RoomException("container did not start successfully")
             )
