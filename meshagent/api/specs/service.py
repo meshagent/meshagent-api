@@ -164,6 +164,7 @@ class ContainerSpec(BaseModel):
     api_key: Optional[ServiceApiKeySpec] = None
     on_demand: Optional[bool] = Field(None, description="an on demand service")
     writable_root_fs: Optional[bool] = None
+    private: bool = True
 
 
 class ExternalServiceSpec(BaseModel):
@@ -338,6 +339,7 @@ class ContainerTemplateSpec(BaseModel):
     storage: Optional[ServiceTemplateContainerMountSpec] = None
     on_demand: Optional[bool] = None
     writable_root_fs: Optional[bool] = None
+    private: bool = True
 
 
 class ExternalServiceTemplateSpec(BaseModel):
@@ -432,6 +434,7 @@ class ServiceTemplateSpec(BaseModel):
                 else None,
                 writable_root_fs=self.container.writable_root_fs,
                 on_demand=self.container.on_demand,
+                private=self.container.private,
             )
             if self.container is not None
             else None,
