@@ -118,7 +118,7 @@ ANNOTATION_ROOM_USER_UPDATED = "meshagent.events.room.user.grant.update"
 
 ANNOTATION_WEBHOOK_PROCESSOR = "meshagent.webhook.processor"
 ANNOTATION_WEBHOOK_QUEUE = "meshagent.webhook.queue"
-ANNOTATION_WEBHOOK_VALIDATION_METHOND  = "meshagent.webhook.validation.method"
+ANNOTATION_WEBHOOK_VALIDATION_METHOND = "meshagent.webhook.validation.method"
 ANNOTATION_WEBHOOK_VALIDATION_SECRET = "meshagent.webhook.validation.secret"
 
 agent_type = Literal[
@@ -221,13 +221,14 @@ class MeshagentEndpointSpec(BaseModel):
         ...,
         description="the name to use for the participant token provided to this endpoint",
     )
-    
+
     api: Optional[ApiScope] = Field(
         None,
         description=(
             "customize the permissions available to this endpoint, omit to use default agent permissions"
         ),
     )
+
 
 class AllowedMcpToolFilter(BaseModel):
     model_config = ConfigDict(extra="forbid")
