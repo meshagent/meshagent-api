@@ -276,12 +276,6 @@ class PortSpec(BaseModel):
             "a path that will accept a HTTP request and should return 200 when the port is live"
         ),
     )
-    host_port: Optional[PositiveInt] = Field(
-        None,
-        description=(
-            "expose a host port for this service, allows traffic to be tunneled to the container with port forwarding"
-        ),
-    )
     published: Optional[bool] = Field(
         None,
         description=(
