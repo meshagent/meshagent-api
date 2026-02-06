@@ -116,6 +116,11 @@ ANNOTATION_ROOM_USER_ADDED = "meshagent.events.room.user.grant.create"
 ANNOTATION_ROOM_USER_REMOVED = "meshagent.events.room.user.grant.delete"
 ANNOTATION_ROOM_USER_UPDATED = "meshagent.events.room.user.grant.update"
 
+ANNOTATION_WEBHOOK_PROCESSOR = "meshagent.webhook.processor"
+ANNOTATION_WEBHOOK_QUEUE = "meshagent.webhook.queue"
+ANNOTATION_WEBHOOK_VALIDATION_METHOND  = "meshagent.webhook.validation.method"
+ANNOTATION_WEBHOOK_VALIDATION_SECRET = "meshagent.webhook.validation.secret"
+
 agent_type = Literal[
     "ChatBot",
     "VoiceBot",
@@ -216,13 +221,13 @@ class MeshagentEndpointSpec(BaseModel):
         ...,
         description="the name to use for the participant token provided to this endpoint",
     )
+    
     api: Optional[ApiScope] = Field(
         None,
         description=(
             "customize the permissions available to this endpoint, omit to use default agent permissions"
         ),
     )
-
 
 class AllowedMcpToolFilter(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -254,6 +259,7 @@ class EndpointSpec(BaseModel):
         ),
     )
     mcp: Optional[MCPEndpointSpec] = None
+    annotations: Optional[dict[str, str]] = None
 
 
 class PortSpec(BaseModel):
@@ -287,6 +293,7 @@ class PortSpec(BaseModel):
             "if a port is not public it will require a participant token to be passed as a Bearer token in the Authorization header"
         ),
     )
+    annotations: Optional[dict[str, str]] = None
 
 
 class ServiceTemplateVariable(BaseModel):
