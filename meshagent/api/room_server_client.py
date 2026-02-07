@@ -874,14 +874,24 @@ class AgentsClient:
         return response
 
     async def list_toolkits(
-        self, *, participant_id: Optional[str] = None
+        self,
+        *,
+        participant_id: Optional[str] = None,
+        participant_name: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> List[ToolkitDescription]:
         """
         Fetch a list of available toolkits and parse into `ToolkitDescription` objects.
         """
-        response = await self.room.send_request(
-            "agent.list_toolkits", {"participant_id": participant_id}
-        )
+        request: Dict[str, Any] = {}
+        if participant_id is not None:
+            request["participant_id"] = participant_id
+        if participant_name is not None:
+            request["participant_name"] = participant_name
+        if timeout is not None:
+            request["timeout"] = timeout
+
+        response = await self.room.send_request("agent.list_toolkits", request)
         # 'response["tools"]' is assumed to be a dict of toolkits by name
         toolkits_data = response["tools"]
 
