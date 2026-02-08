@@ -170,13 +170,20 @@ class RequiredToolkit(Requirement):
         name: str,
         tools: Optional[list["str"]] = None,
         callable: Optional[bool] = None,
+        participant_name: Optional[str] = None,
         timeout: float = None,
     ):
         super().__init__(name=name, callable=callable, timeout=timeout)
         self.tools = tools
+        self.participant_name = participant_name
 
     def to_json(self):
-        return {"toolkit": self.name, "tools": self.tools, "callable": self.callable}
+        return {
+            "toolkit": self.name,
+            "tools": self.tools,
+            "callable": self.callable,
+            "participant_name": self.participant_name,
+        }
 
 
 class RequiredSchema(Requirement):
@@ -759,12 +766,14 @@ class ToolkitDescription:
         description: str,
         tools: List[ToolDescription],
         thumbnail_url: Optional[str] = None,
+        participant_id: Optional[str] = None,
     ):
         self.name = name
         self.title = title
         self.description = description
         self.tools = tools
         self.thumbnail_url = thumbnail_url
+        self.participant_id = participant_id
 
     def get_tool(self, name: str) -> ToolDescription | None:
         for t in self.tools:
@@ -780,6 +789,7 @@ class ToolkitDescription:
             "title": self.title,
             "thumbnail_url": self.thumbnail_url,
             "tools": list(map(lambda x: x.to_json(), self.tools)),
+            "participant_id": self.participant_id,
         }
 
 
@@ -901,6 +911,7 @@ class AgentsClient:
             title = tk_json.get("title", "")
             description = tk_json.get("description", "")
             thumbnail_url = tk_json.get("thumbnail_url", None)
+            participant_id = tk_json.get("participant_id", None)
 
             # Each toolkit has a dict of 'tools'
             tool_descriptions = []
@@ -924,6 +935,7 @@ class AgentsClient:
                 description=description,
                 tools=tool_descriptions,
                 thumbnail_url=thumbnail_url,
+                participant_id=participant_id,
             )
             result.append(toolkit)
 
