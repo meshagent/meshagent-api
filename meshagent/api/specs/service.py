@@ -1,4 +1,4 @@
-from pydantic import BaseModel, PositiveInt, ConfigDict, Field, model_validator
+from pydantic import BaseModel, PositiveInt, ConfigDict, Field
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
@@ -202,12 +202,6 @@ class ServiceSpec(BaseModel):
             "external services allow discovery of externally hosted agents, mcp servers, and tools"
         ),
     )
-
-    @model_validator(mode="after")
-    def require_one_of(cls, m):
-        if m.external is None and m.container is None:
-            raise ValueError("Either 'external' or 'container' must be set")
-        return m
 
     @staticmethod
     def from_yaml(yaml: str) -> "ServiceSpec":
