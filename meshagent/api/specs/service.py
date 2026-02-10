@@ -118,7 +118,7 @@ ANNOTATION_ROOM_USER_UPDATED = "meshagent.events.room.user.grant.update"
 
 ANNOTATION_WEBHOOK_PROCESSOR = "meshagent.webhook.processor"
 ANNOTATION_WEBHOOK_QUEUE = "meshagent.webhook.queue"
-ANNOTATION_WEBHOOK_VALIDATION_METHOND = "meshagent.webhook.validation.method"
+ANNOTATION_WEBHOOK_VALIDATION_METHOD = "meshagent.webhook.validation.method"
 ANNOTATION_WEBHOOK_VALIDATION_SECRET = "meshagent.webhook.validation.secret"
 
 agent_type = Literal[
