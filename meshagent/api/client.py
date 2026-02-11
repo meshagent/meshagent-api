@@ -239,6 +239,23 @@ class Mailbox(BaseModel):
     public: bool
 
 
+class _CreateDomainRequest(BaseModel):
+    domain: str
+    room_id: str
+    port: str
+
+
+class _UpdateDomainRequest(BaseModel):
+    room_id: str
+    port: str
+
+
+class Domain(BaseModel):
+    domain: str
+    room_id: str
+    port: str
+
+
 class Balance(BaseModel):
     balance: float
     auto_recharge_threshold: Optional[float] = Field(
@@ -1169,6 +1186,97 @@ class Meshagent:
         Returns {} on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_domain(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+        room_id: str,
+        port: str,
+    ) -> None:
+        """
+        POST /accounts/projects/{project_id}/domains
+        Body: { "domain", "room_id" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/domains"
+        payload = _CreateDomainRequest(
+            domain=domain, room_id=room_id, port=port
+        ).model_dump(mode="json")
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def update_domain(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+        room_id: str,
+        port: str,
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/domains/{domain}
+        Body: { "room_id" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/domains/{domain}"
+        payload = _UpdateDomainRequest(room_id=room_id, port=port).model_dump(
+            mode="json"
+        )
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_domain(self, *, project_id: str, domain: str) -> Domain:
+        """
+        GET /accounts/projects/{project_id}/domains/{domain}
+        Returns a Domain.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/domains/{domain}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return Domain.model_validate((await resp.json())["domain"])
+
+    async def list_room_domains(self, *, project_id: str, room_id: str) -> List[Domain]:
+        """
+        GET /accounts/projects/{project_id}/rooms/{room_id}/domains
+        Returns a list[Domain].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/domains"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [Domain.model_validate(item) for item in data["domains"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid domains payload: {exc}") from exc
+
+    async def list_domains(self, *, project_id: str) -> List[Domain]:
+        """
+        GET /accounts/projects/{project_id}/domains
+        Returns a list[Domain].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/domains"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [Domain.model_validate(item) for item in data["domains"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid domains payload: {exc}") from exc
+
+    async def delete_domain(self, *, project_id: str, domain: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/domains/{domain}
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/domains/{domain}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
