@@ -293,7 +293,7 @@ class ServiceTemplateVariable(BaseModel):
     enum: Optional[list[str]] = None
     optional: bool = False
     # Optional hint for variable type; absent in many templates
-    type: Optional[Literal["email"]] = None
+    type: Optional[Literal["email", "route"]] = None
     annotations: Optional[dict[str, str]] = None
 
 

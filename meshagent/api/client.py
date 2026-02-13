@@ -239,13 +239,13 @@ class Mailbox(BaseModel):
     public: bool
 
 
-class _CreateDomainRequest(BaseModel):
+class _CreateRouteRequest(BaseModel):
     domain: str
     room_id: str
     port: str
 
 
-class _UpdateDomainRequest(BaseModel):
+class _UpdateRouteRequest(BaseModel):
     room_id: str
     port: str
 
@@ -1189,7 +1189,7 @@ class Meshagent:
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
-    async def create_domain(
+    async def create_route(
         self,
         *,
         project_id: str,
@@ -1198,12 +1198,12 @@ class Meshagent:
         port: str,
     ) -> None:
         """
-        POST /accounts/projects/{project_id}/domains
+        POST /accounts/projects/{project_id}/routes
         Body: { "domain", "room_id" }
         Returns {} on success.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/domains"
-        payload = _CreateDomainRequest(
+        url = f"{self.base_url}/accounts/projects/{project_id}/routes"
+        payload = _CreateRouteRequest(
             domain=domain, room_id=room_id, port=port
         ).model_dump(mode="json")
         async with self._session.post(
@@ -1211,7 +1211,7 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
 
-    async def update_domain(
+    async def update_route(
         self,
         *,
         project_id: str,
@@ -1220,12 +1220,12 @@ class Meshagent:
         port: str,
     ) -> None:
         """
-        PUT /accounts/projects/{project_id}/domains/{domain}
+        PUT /accounts/projects/{project_id}/routes/{domain}
         Body: { "room_id" }
         Returns {} on success.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/domains/{domain}"
-        payload = _UpdateDomainRequest(room_id=room_id, port=port).model_dump(
+        url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
+        payload = _UpdateRouteRequest(room_id=room_id, port=port).model_dump(
             mode="json"
         )
         async with self._session.put(
@@ -1233,50 +1233,50 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
 
-    async def get_domain(self, *, project_id: str, domain: str) -> Domain:
+    async def get_route(self, *, project_id: str, domain: str) -> Domain:
         """
-        GET /accounts/projects/{project_id}/domains/{domain}
-        Returns a Domain.
+        GET /accounts/projects/{project_id}/routes/{domain}
+        Returns a Route.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/domains/{domain}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
-            return Domain.model_validate((await resp.json())["domain"])
+            return Domain.model_validate((await resp.json())["route"])
 
-    async def list_room_domains(self, *, project_id: str, room_id: str) -> List[Domain]:
+    async def list_room_routes(self, *, project_id: str, room_id: str) -> List[Domain]:
         """
-        GET /accounts/projects/{project_id}/rooms/{room_id}/domains
-        Returns a list[Domain].
+        GET /accounts/projects/{project_id}/rooms/{room_id}/routes
+        Returns a list[Route].
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/domains"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [Domain.model_validate(item) for item in data["domains"]]
-            except ValidationError as exc:
-                raise RoomException(f"Invalid domains payload: {exc}") from exc
-
-    async def list_domains(self, *, project_id: str) -> List[Domain]:
-        """
-        GET /accounts/projects/{project_id}/domains
-        Returns a list[Domain].
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/domains"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/routes"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Domain.model_validate(item) for item in data["domains"]]
+                return [Domain.model_validate(item) for item in data["routes"]]
             except ValidationError as exc:
-                raise RoomException(f"Invalid domains payload: {exc}") from exc
+                raise RoomException(f"Invalid routes payload: {exc}") from exc
 
-    async def delete_domain(self, *, project_id: str, domain: str) -> None:
+    async def list_routes(self, *, project_id: str) -> List[Domain]:
         """
-        DELETE /accounts/projects/{project_id}/domains/{domain}
+        GET /accounts/projects/{project_id}/routes
+        Returns a list[Route].
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/routes"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [Domain.model_validate(item) for item in data["routes"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid routes payload: {exc}") from exc
+
+    async def delete_route(self, *, project_id: str, domain: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/routes/{domain}
         Returns {} on success.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/domains/{domain}"
+        url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
