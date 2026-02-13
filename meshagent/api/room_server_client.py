@@ -2668,7 +2668,7 @@ class _RunRequest(BaseModel):
 class _ExecRequest(BaseModel):
     request_id: Optional[str] = None
     container_id: str
-    command: Optional[str] = None
+    command: Optional[list[str]] | str = None
     tty: Optional[bool] = None
 
 
@@ -3049,7 +3049,7 @@ class ContainersClient:
         self,
         *,
         container_id: str,
-        command: Optional[str] = None,
+        command: Optional[list[str]] | str = None,
         tty: Optional[bool] = None,
     ) -> ExecSession:
         request_id = str(uuid.uuid4())
