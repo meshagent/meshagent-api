@@ -219,12 +219,14 @@ class _CreateMailboxRequest(BaseModel):
     queue: str
     address: str
     public: bool
+    annotations: Optional[dict[str, str]] = None
 
 
 class _UpdateMailboxRequest(BaseModel):
     room: str
     queue: str
     public: bool
+    annotations: Optional[dict[str, str]] = None
 
 
 class Mailbox(BaseModel):
@@ -237,23 +239,27 @@ class Mailbox(BaseModel):
     room: str
     queue: str
     public: bool
+    annotations: dict[str, str]
 
 
 class _CreateRouteRequest(BaseModel):
     domain: str
-    room_id: str
+    room_name: str
     port: str
+    annotations: Optional[dict[str, str]] = None
 
 
 class _UpdateRouteRequest(BaseModel):
-    room_id: str
+    room_name: str
     port: str
+    annotations: Optional[dict[str, str]] = None
 
 
-class Domain(BaseModel):
+class Route(BaseModel):
     domain: str
-    room_id: str
+    room_name: str
     port: str
+    annotations: dict[str, str]
 
 
 class Balance(BaseModel):
@@ -1099,6 +1105,7 @@ class Meshagent:
         room: str,
         queue: str,
         public: bool = False,
+        annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/mailboxes
@@ -1111,6 +1118,7 @@ class Meshagent:
             room=room,
             queue=queue,
             public=public,
+            annotations=annotations,
         ).model_dump(mode="json")
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
@@ -1125,6 +1133,7 @@ class Meshagent:
         room: str,
         queue: str,
         public: bool = False,
+        annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/mailboxes/{address}
@@ -1133,7 +1142,10 @@ class Meshagent:
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
         payload = _UpdateMailboxRequest(
-            room=room, queue=queue, public=public
+            room=room,
+            queue=queue,
+            public=public,
+            annotations=annotations,
         ).model_dump(mode="json")
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
@@ -1194,17 +1206,18 @@ class Meshagent:
         *,
         project_id: str,
         domain: str,
-        room_id: str,
+        room_name: str,
         port: str,
+        annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/routes
-        Body: { "domain", "room_id" }
+        Body: { "domain", "room_name" }
         Returns {} on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/routes"
         payload = _CreateRouteRequest(
-            domain=domain, room_id=room_id, port=port
+            domain=domain, room_name=room_name, port=port, annotations=annotations
         ).model_dump(mode="json")
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
@@ -1216,24 +1229,27 @@ class Meshagent:
         *,
         project_id: str,
         domain: str,
-        room_id: str,
+        room_name: str,
         port: str,
+        annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/routes/{domain}
-        Body: { "room_id" }
+        Body: { "room_name" }
         Returns {} on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
-        payload = _UpdateRouteRequest(room_id=room_id, port=port).model_dump(
-            mode="json"
-        )
+        payload = _UpdateRouteRequest(
+            room_name=room_name,
+            port=port,
+            annotations=annotations,
+        ).model_dump(mode="json")
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:
             await self._raise_for_status(resp)
 
-    async def get_route(self, *, project_id: str, domain: str) -> Domain:
+    async def get_route(self, *, project_id: str, domain: str) -> Route:
         """
         GET /accounts/projects/{project_id}/routes/{domain}
         Returns a Route.
@@ -1241,23 +1257,23 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
-            return Domain.model_validate((await resp.json())["route"])
+            return Route.model_validate((await resp.json())["route"])
 
-    async def list_room_routes(self, *, project_id: str, room_id: str) -> List[Domain]:
+    async def list_room_routes(self, *, project_id: str, room_name: str) -> List[Route]:
         """
-        GET /accounts/projects/{project_id}/rooms/{room_id}/routes
+        GET /accounts/projects/{project_id}/rooms/{room_name}/routes
         Returns a list[Route].
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}/routes"
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/routes"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Domain.model_validate(item) for item in data["routes"]]
+                return [Route.model_validate(item) for item in data["routes"]]
             except ValidationError as exc:
                 raise RoomException(f"Invalid routes payload: {exc}") from exc
 
-    async def list_routes(self, *, project_id: str) -> List[Domain]:
+    async def list_routes(self, *, project_id: str) -> List[Route]:
         """
         GET /accounts/projects/{project_id}/routes
         Returns a list[Route].
@@ -1267,7 +1283,7 @@ class Meshagent:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Domain.model_validate(item) for item in data["routes"]]
+                return [Route.model_validate(item) for item in data["routes"]]
             except ValidationError as exc:
                 raise RoomException(f"Invalid routes payload: {exc}") from exc
 

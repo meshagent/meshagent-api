@@ -8,6 +8,11 @@ import yaml as YAML
 from yaml.loader import SafeLoader
 
 
+class SecretValue(BaseModel):
+    identity: str = Field(..., description="the identity for the secret")
+    id: str = Field(..., description="the id of the secret")
+
+
 class TokenValue(BaseModel):
     identity: str = Field(..., description="the name to use in the participant token")
     api: Optional[ApiScope] = Field(
@@ -28,6 +33,7 @@ class EnvironmentVariable(BaseModel):
     name: str
     value: Optional[str] = None
     token: Optional[TokenValue] = None
+    secret: Optional[SecretValue] = None
 
 
 class RoomStorageMountSpec(BaseModel):
@@ -319,6 +325,7 @@ class TemplateEnvironmentVariable(BaseModel):
     name: str
     value: Optional[str] = None
     token: Optional[TokenValue] = None
+    secret: Optional[SecretValue] = None
 
 
 class AgentTemplateSpec(BaseModel):

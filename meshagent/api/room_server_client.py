@@ -1748,32 +1748,65 @@ class DeveloperClient:
         )
 
     def log_nowait(self, *, type: str, data: dict):
-        asyncio.ensure_future(
+        task = asyncio.ensure_future(
             self._room.send_request(
                 type="developer.log", request={"type": type, "data": data}
             )
         )
+        task.add_done_callback(
+            lambda t: self._handle_developer_log_result(
+                t, kind="log", payload={"type": type, "data": data}
+            )
+        )
 
     def info(self, message: str, *, extra: Optional[dict] = None):
-        asyncio.ensure_future(
+        task = asyncio.ensure_future(
             self._room.send_request(
                 type="developer.info", request={"message": message, "extra": extra}
             )
         )
+        task.add_done_callback(
+            lambda t: self._handle_developer_log_result(
+                t, kind="info", payload={"message": message, "extra": extra}
+            )
+        )
 
     def warning(self, message: str, *, extra: Optional[dict] = None):
-        asyncio.ensure_future(
+        task = asyncio.ensure_future(
             self._room.send_request(
                 type="developer.warning", request={"message": message, "extra": extra}
             )
         )
+        task.add_done_callback(
+            lambda t: self._handle_developer_log_result(
+                t, kind="warning", payload={"message": message, "extra": extra}
+            )
+        )
 
     def error(self, message: str, *, extra: Optional[dict] = None):
-        asyncio.ensure_future(
+        task = asyncio.ensure_future(
             self._room.send_request(
                 type="developer.error", request={"message": message, "extra": extra}
             )
         )
+        task.add_done_callback(
+            lambda t: self._handle_developer_log_result(
+                t, kind="error", payload={"message": message, "extra": extra}
+            )
+        )
+
+    @staticmethod
+    def _handle_developer_log_result(
+        task: asyncio.Task, *, kind: str, payload: dict
+    ) -> None:
+        try:
+            task.result()
+        except Exception as exc:
+            logger.warning(
+                "unable to write developer log",
+                extra={"type": kind, "payload": payload},
+                exc_info=exc,
+            )
 
     async def enable(self):
         await self._room.send_request(type="developer.watch", request={})
