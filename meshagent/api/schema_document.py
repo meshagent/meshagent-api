@@ -156,7 +156,7 @@ class Element(EventEmitter):
 
         if not cp.is_tag_allowed(tag_name=tag_name):
             raise Exception(
-                "cannot add {tag_name} to {self_tag_name}".format(
+                f"cannot add {tag_name} to {self.tag_name}, allowed tags {cp.child_tag_names}".format(
                     tag_name=tag_name, self_tag_name=self.tag_name
                 )
             )
