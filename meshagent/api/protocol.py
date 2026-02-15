@@ -11,8 +11,7 @@ def compute_packets(data: bytes) -> int:
 
 
 logger = logging.getLogger("protocol")
-logger.setLevel(logging.WARNING)
-#
+logger.setLevel(logging.WARN)
 
 
 class Message:
@@ -217,7 +216,7 @@ class Protocol:
         logger.debug("send channel task started")
 
         async for message in self._send_ch:
-            logger.debug("send queued message %d", message.id)
+            logger.debug("send queued message %d %s", message.id, message.data)
             message_id = message.id
             type = message.type
             data = message.data
@@ -228,10 +227,11 @@ class Protocol:
     async def _recv_task(self) -> None:
         async for message in self._recv_ch:
             logger.debug(
-                "received queued message %d %s %d",
+                "received queued message %d %s %d %s",
                 message.id,
                 message.type,
                 len(message.data),
+                message.data,
             )
             message_id = message.id
             type = message.type

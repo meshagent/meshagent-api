@@ -24,6 +24,8 @@ from typing import (
 )
 
 import base64
+import time
+import traceback
 
 from meshagent.api.chan import ChanClosed
 
@@ -243,7 +245,16 @@ class _QueuedSync:
 
 
 class _PendingRequest:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        request_type: str,
+        created_at: float,
+        creation_trace: Optional[str] = None,
+    ):
+        self.request_type = request_type
+        self.created_at = created_at
+        self.creation_trace = creation_trace
         self.fut = asyncio.Future[dict]()
 
 
@@ -370,6 +381,12 @@ class RoomClient:
         self.protocol.register_handler("__response__", self._handle_response)
 
         self._pending_requests = dict[int, _PendingRequest]()
+        self._debug_pending_requests = os.getenv(
+            "MESHAGENT_DEBUG_PENDING_REQUESTS", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self._debug_pending_request_stacks = os.getenv(
+            "MESHAGENT_DEBUG_PENDING_REQUESTS_STACK", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
         self._local_participant = None
         self._ready = asyncio.Future()
         self._local_participant_ready = asyncio.Future()
@@ -465,16 +482,38 @@ class RoomClient:
         request_id = self.protocol.next_message_id()
         logger.debug("sending request %s %s", request_id, type)
 
-        pr = _PendingRequest()
+        creation_trace = None
+        if self._debug_pending_request_stacks:
+            creation_trace = "".join(traceback.format_stack(limit=20))
+
+        pr = _PendingRequest(
+            request_type=type,
+            created_at=time.monotonic(),
+            creation_trace=creation_trace,
+        )
         self._pending_requests[request_id] = pr
 
         message = pack_message(header=request, data=data)
 
-        await self.protocol.send(type=type, data=message, message_id=request_id)
-        result = await pr.fut
-        logger.debug("returning response %s", type)
-
-        return result
+        try:
+            await self.protocol.send(type=type, data=message, message_id=request_id)
+            result = await pr.fut
+            logger.debug("returning response %s", type)
+            return result
+        except asyncio.CancelledError:
+            pending = self._pending_requests.pop(request_id, None)
+            if pending is not None:
+                if self._debug_pending_requests and pending.creation_trace is not None:
+                    logger.debug(
+                        "request creation trace id=%s:\n%s",
+                        request_id,
+                        pending.creation_trace,
+                    )
+                pending.cancel()
+            raise
+        except Exception:
+            self._pending_requests.pop(request_id, None)
+            raise
 
     async def _handle_status(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -502,12 +541,46 @@ class RoomClient:
         request_id = message_id
         if request_id in self._pending_requests:
             pr = self._pending_requests.pop(request_id)
+            if pr.fut.done():
+                logger.warning(
+                    "late/duplicate response for completed request (id=%s type=%s cancelled=%s age=%.3fs)",
+                    request_id,
+                    pr.request_type,
+                    pr.fut.cancelled(),
+                    time.monotonic() - pr.created_at,
+                )
+                if self._debug_pending_requests and pr.creation_trace is not None:
+                    logger.debug(
+                        "request creation trace id=%s:\n%s",
+                        request_id,
+                        pr.creation_trace,
+                    )
+                return
+
             if isinstance(response, ErrorResponse):
-                pr.fut.set_exception(RoomException(response.text))
+                try:
+                    pr.fut.set_exception(RoomException(response.text))
+                except asyncio.InvalidStateError as ex:
+                    logger.error(
+                        "unable to set exception for request id=%s type=%s cancelled=%s",
+                        request_id,
+                        pr.request_type,
+                        pr.fut.cancelled(),
+                        exc_info=ex,
+                    )
             else:
-                pr.fut.set_result(response)
+                try:
+                    pr.fut.set_result(response)
+                except asyncio.InvalidStateError as ex:
+                    logger.error(
+                        "unable to set result for request id=%s type=%s cancelled=%s",
+                        request_id,
+                        pr.request_type,
+                        pr.fut.cancelled(),
+                        exc_info=ex,
+                    )
         else:
-            logger.error(
+            logger.debug(
                 "received a response for a request that is not pending {id}".format(
                     id=request_id
                 )
@@ -2959,6 +3032,10 @@ class ContainersClient:
             control = json.loads(payload)
             if control["started"]:
                 tty._mark_ready()
+            else:
+                logger.warning("unexpected control message, started missing")
+        else:
+            logger.warning("unexpected message received")
 
     async def _handle_progress(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
