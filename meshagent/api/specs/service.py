@@ -122,10 +122,10 @@ ANNOTATION_ROOM_USER_ADDED = "meshagent.events.room.user.grant.create"
 ANNOTATION_ROOM_USER_REMOVED = "meshagent.events.room.user.grant.delete"
 ANNOTATION_ROOM_USER_UPDATED = "meshagent.events.room.user.grant.update"
 
-ANNOTATION_WEBHOOK_PROCESSOR = "meshagent.webhook.processor"
-ANNOTATION_WEBHOOK_QUEUE = "meshagent.webhook.queue"
-ANNOTATION_WEBHOOK_VALIDATION_METHOD = "meshagent.webhook.validation.method"
-ANNOTATION_WEBHOOK_VALIDATION_SECRET = "meshagent.webhook.validation.secret"
+ANNOTATION_REQUEST_PROCESSOR = "meshagent.request.processor"
+ANNOTATION_REQUEST_QUEUE = "meshagent.request.queue"
+ANNOTATION_REQUEST_VALIDATION_METHOD = "meshagent.request.validation.method"
+ANNOTATION_REQUEST_VALIDATION_SECRET = "meshagent.request.validation.secret"
 
 agent_type = Literal[
     "ChatBot",
