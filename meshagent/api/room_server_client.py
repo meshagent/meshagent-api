@@ -509,7 +509,7 @@ class RoomClient:
                         request_id,
                         pending.creation_trace,
                     )
-                pending.cancel()
+                pending.fut.cancel()
             raise
         except Exception:
             self._pending_requests.pop(request_id, None)
