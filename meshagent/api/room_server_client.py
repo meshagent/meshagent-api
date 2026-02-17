@@ -2757,6 +2757,7 @@ class _RunRequest(BaseModel):
     request_id: Optional[str] = None
     image: str
     command: Optional[str] = None
+    working_dir: Optional[str] = None
     env: Dict[str, str] = Field(default_factory=dict)
     mount_path: Optional[str] = None
     mount_subpath: Optional[str] = None
@@ -3098,6 +3099,7 @@ class ContainersClient:
         *,
         image: str,
         command: Optional[str] = None,
+        working_dir: Optional[str] = None,
         env: Dict[str, str] | None = None,
         mount_path: Optional[str] = None,
         mount_subpath: Optional[str] = None,
@@ -3117,6 +3119,7 @@ class ContainersClient:
             request_id=request_id,
             image=image,
             command=command,
+            working_dir=working_dir,
             env=env or {},
             mount_path=mount_path,
             mount_subpath=mount_subpath,

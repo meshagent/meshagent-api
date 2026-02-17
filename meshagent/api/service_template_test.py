@@ -182,3 +182,20 @@ container:
     assert service.agents[0].description is None
     assert service.agents[0].annotations is None
     assert service.container.environment[0].value is None
+
+
+def test_service_template_spec_copies_container_working_dir():
+    yaml_spec = """
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: WorkingDirService
+container:
+  image: meshagent/example
+  command: /bin/sh -lc 'pwd'
+  working_dir: /workspace/app
+"""
+
+    service = ServiceTemplateSpec.from_yaml(yaml=yaml_spec, values={}).to_service_spec()
+    assert service.container is not None
+    assert service.container.working_dir == "/workspace/app"

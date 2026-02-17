@@ -158,6 +158,7 @@ class ContainerSpec(BaseModel):
     image: str
 
     command: Optional[str] = None
+    working_dir: Optional[str] = None
     environment: Optional[list[EnvironmentVariable]] = None
     secrets: Optional[list[str]] = Field(
         None,
@@ -339,6 +340,7 @@ class ContainerTemplateSpec(BaseModel):
     environment: Optional[list[TemplateEnvironmentVariable]] = None
     image: Optional[str] = None
     command: Optional[str] = None
+    working_dir: Optional[str] = None
     storage: Optional[ServiceTemplateContainerMountSpec] = None
     on_demand: Optional[bool] = None
     writable_root_fs: Optional[bool] = None
@@ -425,6 +427,7 @@ class ServiceTemplateSpec(BaseModel):
             ),
             container=ContainerSpec(
                 command=self.container.command,
+                working_dir=self.container.working_dir,
                 image=self.container.image,
                 environment=env,
                 storage=ContainerMountSpec(
