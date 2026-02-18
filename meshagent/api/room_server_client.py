@@ -916,6 +916,15 @@ class ServicesClient:
 
         return _ListServicesResponse.model_validate(response.json)
 
+    async def restart(self, *, service_id: str) -> None:
+        """
+        Restart a managed room service by service id.
+        """
+        await self.room.send_request(
+            "services.restart",
+            {"service_id": service_id},
+        )
+
 
 class AgentsClient:
     def __init__(self, *, room: RoomClient):
