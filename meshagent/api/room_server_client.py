@@ -866,8 +866,24 @@ class ToolkitDescription:
         }
 
 
-class _ListServicesResponse(BaseModel):
+class ServiceRuntimeState(BaseModel):
+    service_id: str
+    state: str
+    container_id: Optional[str] = None
+    restart_scheduled_at: Optional[float] = None
+    started_at: Optional[float] = None
+    restart_count: int = 0
+    last_exit_code: Optional[int] = None
+    last_exit_at: Optional[float] = None
+
+
+class ListServicesResult(BaseModel):
     services: list[ServiceSpec]
+    service_states: Dict[str, ServiceRuntimeState] = Field(default_factory=dict)
+
+
+class _ListServicesResponse(ListServicesResult):
+    pass
 
 
 class ServicesClient:
@@ -881,6 +897,15 @@ class ServicesClient:
         Fetch a list of services.
         """
 
+        return (await self.list_with_state()).services
+
+    async def list_with_state(
+        self,
+    ) -> ListServicesResult:
+        """
+        Fetch a list of services plus runtime state details from the service controller.
+        """
+
         response = await self.room.send_request(
             "services.list",
             {},
@@ -889,7 +914,7 @@ class ServicesClient:
         if not isinstance(response, JsonResponse):
             raise RoomException("Invalid return type from list services call")
 
-        return _ListServicesResponse.model_validate(response.json).services
+        return _ListServicesResponse.model_validate(response.json)
 
 
 class AgentsClient:
