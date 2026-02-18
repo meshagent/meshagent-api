@@ -398,6 +398,7 @@ class ServiceTemplateSpec(BaseModel):
                             name=e.name,
                             value=e.value,
                             token=e.token,
+                            secret=e.secret,
                         )
                     )
 
