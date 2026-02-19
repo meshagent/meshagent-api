@@ -238,6 +238,7 @@ class Mailbox(BaseModel):
 
     address: str
     room: str
+    room_id: Optional[str] = None
     queue: str
     public: bool
     annotations: dict[str, str]
@@ -298,6 +299,7 @@ class ScheduledTask(BaseModel):
     once: bool
     annotations: dict[str, str]
 
+    room_id: Optional[str] = None
     last_run_id: Optional[int] = None
     last_start_time: Optional[datetime] = None
     last_end_time: Optional[datetime] = None
