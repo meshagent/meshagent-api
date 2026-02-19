@@ -87,6 +87,7 @@ class Room(BaseModel):
     id: str
     name: str
     metadata: dict[str, JsonValue]
+    annotations: dict[str, str] = Field(default_factory=dict)
 
 
 class ProjectRoomGrant(BaseModel):
@@ -1704,6 +1705,7 @@ class Meshagent:
         name: str,
         if_not_exists: bool = False,
         metadata: Optional[dict[str, any]] = None,
+        annotations: Optional[dict[str, str]] = None,
         permissions: Optional[dict[str, ApiScope]] = None,
     ) -> Room:
         """
@@ -1716,6 +1718,7 @@ class Meshagent:
             "name": name,
             "if_not_exists": bool(if_not_exists),
             "metadata": metadata,
+            "annotations": annotations,
             "permissions": permissions,
         }
         async with self._session.post(
@@ -1749,6 +1752,7 @@ class Meshagent:
         room_id: str,
         name: str,
         metadata: Optional[dict[str, any]] = None,
+        annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/rooms/{room_id}
@@ -1759,6 +1763,8 @@ class Meshagent:
 
         if metadata is not None:
             payload["metadata"] = metadata
+        if annotations is not None:
+            payload["annotations"] = annotations
 
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
