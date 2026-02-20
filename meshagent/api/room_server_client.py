@@ -55,19 +55,47 @@ from dataclasses import dataclass
 from meshagent.api.urls import websocket_room_url
 
 
+def _decode_record_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_decode_record_value(item) for item in value]
+
+    if isinstance(value, dict):
+        if (
+            "encoding" in value
+            and "data" in value
+            and len(value) == 2
+            and value["encoding"] == "base64"
+        ):
+            return base64.b64decode(value["data"].encode())
+
+        return {k: _decode_record_value(v) for k, v in value.items()}
+
+    return value
+
+
 def decode_records(records: list[dict]):
     for r in records:
         if isinstance(r, dict):
             for k in r.keys():
-                v = r[k]
-                if isinstance(v, dict):
-                    encoding = v["encoding"]
-                    if encoding == "base64":
-                        r[k] = base64.b64decode(v["data"].encode())
-                    else:
-                        raise ValueError(f"Invalid encoding type {encoding}")
+                r[k] = _decode_record_value(r[k])
 
     return records
+
+
+def _encode_record_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {
+            "encoding": "base64",
+            "data": base64.b64encode(value).decode(),
+        }
+
+    if isinstance(value, list):
+        return [_encode_record_value(item) for item in value]
+
+    if isinstance(value, dict):
+        return {k: _encode_record_value(v) for k, v in value.items()}
+
+    return value
 
 
 def encode_records(records: list[dict]):
@@ -76,14 +104,7 @@ def encode_records(records: list[dict]):
     for r in records:
         c = {}
         for k in r.keys():
-            v = r[k]
-            if isinstance(v, bytes):
-                c[k] = {
-                    "encoding": "base64",
-                    "data": base64.b64encode(v).decode(),
-                }
-            else:
-                c[k] = v
+            c[k] = _encode_record_value(r[k])
 
         transformed_records.append(c)
 
@@ -400,6 +421,7 @@ class RoomClient:
         self.developer = DeveloperClient(room=self)
         self.queues = QueuesClient(room=self)
         self.database = DatabaseClient(room=self)
+        self.memory = MemoryClient(room=self)
         self.containers = ContainersClient(room=self)
         self.secrets = SecretsClient(
             room=self, oauth_token_request_handler=oauth_token_request_handler
@@ -1995,6 +2017,32 @@ class VectorDataType(DataType):
         }
 
 
+class ListDataType(DataType):
+    type: Literal["list"] = "list"
+    element_type: "DataTypeUnion"
+
+    def to_json_schema(self):
+        return {
+            "type": self._maybe_nullable_schema("array"),
+            "items": self.element_type.to_json_schema(),
+        }
+
+
+class StructDataType(DataType):
+    type: Literal["struct"] = "struct"
+    fields: Dict[str, "DataTypeUnion"]
+
+    def to_json_schema(self):
+        return {
+            "type": self._maybe_nullable_schema("object"),
+            "properties": {
+                field_name: field_type.to_json_schema()
+                for field_name, field_type in self.fields.items()
+            },
+            "additionalProperties": False,
+        }
+
+
 class TextDataType(DataType):
     type: Literal["text"] = "text"
 
@@ -2023,6 +2071,8 @@ DataTypeUnion = Annotated[
         TimestampDataType,
         FloatDataType,
         VectorDataType,
+        ListDataType,
+        StructDataType,
         TextDataType,
         BinaryDataType,
     ],
@@ -2030,6 +2080,8 @@ DataTypeUnion = Annotated[
 ]
 _data_type_adapter = TypeAdapter(DataTypeUnion)
 VectorDataType.model_rebuild()
+ListDataType.model_rebuild()
+StructDataType.model_rebuild()
 
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
@@ -2151,6 +2203,177 @@ class _CreateFullTextSearchIndexRequest(_TableRequest):
 
 class _ListIndexesRequest(_TableRequest):
     pass
+
+
+MemoryIngestStrategy = Literal["heuristic", "llm"]
+
+
+class MemoryEntityRecord(BaseModel):
+    entity_id: Optional[str] = None
+    name: str
+    entity_type: Optional[str] = None
+    context: Optional[str] = None
+    confidence: Optional[float] = None
+    metadata: Optional[dict[str, str]] = None
+
+
+class MemoryRelationshipRecord(BaseModel):
+    source_entity_id: str
+    target_entity_id: str
+    relationship_type: str = "RELATED_TO"
+    description: Optional[str] = None
+    confidence: Optional[float] = None
+    source_entity_name: Optional[str] = None
+    target_entity_name: Optional[str] = None
+    metadata: Optional[dict[str, str]] = None
+
+
+class MemoryDatasetSummary(BaseModel):
+    name: str
+    rows: int
+    columns: list[str] = Field(default_factory=list)
+
+
+class MemoryDetails(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+    path: str
+    datasets: list[MemoryDatasetSummary] = Field(default_factory=list)
+
+
+class MemoryIngestStats(BaseModel):
+    entities: int = 0
+    relationships: int = 0
+    sources: int = 0
+
+
+class MemoryIngestResult(BaseModel):
+    name: str
+    stats: MemoryIngestStats
+
+
+class MemoryRecallRelationship(BaseModel):
+    source_entity_id: str
+    target_entity_id: str
+    relationship_type: str
+    description: Optional[str] = None
+
+
+class MemoryRecallItem(BaseModel):
+    entity_id: str
+    name: str
+    entity_type: str
+    context: Optional[str] = None
+    confidence: Optional[float] = None
+    score: float
+    relationships: list[MemoryRecallRelationship] = Field(default_factory=list)
+
+
+class MemoryRecallResult(BaseModel):
+    name: str
+    query: str
+    items: list[MemoryRecallItem] = Field(default_factory=list)
+
+
+class MemoryOptimizeDatasetStats(BaseModel):
+    dataset: str
+    fragments_added: int = 0
+    fragments_removed: int = 0
+    files_added: int = 0
+    files_removed: int = 0
+    old_versions_removed: int = 0
+    bytes_removed: int = 0
+
+
+class MemoryOptimizeResult(BaseModel):
+    name: str
+    datasets: list[MemoryOptimizeDatasetStats] = Field(default_factory=list)
+
+
+class _MemoryNamedRequest(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+
+
+class _MemoryListRequest(BaseModel):
+    namespace: Optional[list[str]] = None
+
+
+class _MemoryCreateRequest(_MemoryNamedRequest):
+    overwrite: bool = False
+
+
+class _MemoryDropRequest(_MemoryNamedRequest):
+    ignore_missing: bool = False
+
+
+class _MemoryQueryRequest(_MemoryNamedRequest):
+    statement: str
+
+
+class _MemoryInspectRequest(_MemoryNamedRequest):
+    pass
+
+
+class _MemoryUpsertTableRequest(_MemoryNamedRequest):
+    table: str
+    records: list[dict[str, Any]]
+    merge: bool = True
+
+
+class _MemoryUpsertNodesRequest(_MemoryNamedRequest):
+    records: list[MemoryEntityRecord]
+    merge: bool = True
+
+
+class _MemoryUpsertRelationshipsRequest(_MemoryNamedRequest):
+    records: list[MemoryRelationshipRecord]
+    merge: bool = True
+
+
+class _MemoryIngestRequest(_MemoryNamedRequest):
+    strategy: MemoryIngestStrategy = "heuristic"
+    llm_model: Optional[str] = None
+    llm_temperature: Optional[float] = None
+
+
+class _MemoryIngestTextRequest(_MemoryIngestRequest):
+    text: str
+
+
+class _MemoryIngestImageRequest(_MemoryIngestRequest):
+    caption: Optional[str] = None
+    mime_type: Optional[str] = None
+    source: Optional[str] = None
+    annotations: Optional[dict[str, str]] = None
+
+
+class _MemoryIngestFileRequest(_MemoryIngestRequest):
+    path: Optional[str] = None
+    text: Optional[str] = None
+    mime_type: Optional[str] = None
+
+
+class _MemoryIngestFromTableRequest(_MemoryIngestRequest):
+    table: str
+    table_namespace: Optional[list[str]] = None
+    text_columns: Optional[list[str]] = None
+    limit: Optional[int] = None
+
+
+class _MemoryIngestFromStorageRequest(_MemoryIngestRequest):
+    paths: list[str]
+
+
+class _MemoryRecallRequest(_MemoryNamedRequest):
+    query: str
+    limit: int = 5
+    include_relationships: bool = True
+
+
+class _MemoryOptimizeRequest(_MemoryNamedRequest):
+    compact: bool = True
+    cleanup: bool = True
 
 
 class SqlTableReference(BaseModel):
@@ -2698,6 +2921,328 @@ class DatabaseClient:
         )
         if isinstance(response, JsonResponse):
             return [TableIndex.model_validate(i) for i in response.json["indexes"]]
+
+        raise RoomException("unexpected return type")
+
+
+class MemoryClient:
+    """
+    A client for interacting with the 'memory' extension on the room server.
+    """
+
+    def __init__(self, room: RoomClient):
+        self.room = room
+
+    async def list(self, *, namespace: Optional[List[str]] = None) -> List[str]:
+        request_model = _MemoryListRequest(namespace=namespace)
+        response = await self.room.send_request(
+            "memory.list", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return list(response.json.get("memories", []))
+
+        raise RoomException("unexpected return type")
+
+    async def create(
+        self,
+        *,
+        name: str,
+        namespace: Optional[List[str]] = None,
+        overwrite: bool = False,
+    ) -> None:
+        request_model = _MemoryCreateRequest(
+            name=name, namespace=namespace, overwrite=overwrite
+        )
+        await self.room.send_request("memory.create", request_model.model_dump())
+
+    async def drop(
+        self,
+        *,
+        name: str,
+        namespace: Optional[List[str]] = None,
+        ignore_missing: bool = False,
+    ) -> None:
+        request_model = _MemoryDropRequest(
+            name=name,
+            namespace=namespace,
+            ignore_missing=ignore_missing,
+        )
+        await self.room.send_request("memory.drop", request_model.model_dump())
+
+    async def inspect(
+        self, *, name: str, namespace: Optional[List[str]] = None
+    ) -> MemoryDetails:
+        request_model = _MemoryInspectRequest(name=name, namespace=namespace)
+        response = await self.room.send_request(
+            "memory.inspect", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryDetails.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def query(
+        self,
+        *,
+        name: str,
+        statement: str,
+        namespace: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        request_model = _MemoryQueryRequest(
+            name=name,
+            namespace=namespace,
+            statement=statement,
+        )
+        response = await self.room.send_request(
+            "memory.query", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return decode_records(response.json["results"])
+
+        raise RoomException("unexpected return type")
+
+    async def upsert_table(
+        self,
+        *,
+        name: str,
+        table: str,
+        records: List[Dict[str, Any]],
+        merge: bool = True,
+        namespace: Optional[List[str]] = None,
+    ) -> None:
+        request_model = _MemoryUpsertTableRequest(
+            name=name,
+            namespace=namespace,
+            table=table,
+            records=encode_records(records),
+            merge=merge,
+        )
+        await self.room.send_request("memory.upsert_table", request_model.model_dump())
+
+    async def upsert_nodes(
+        self,
+        *,
+        name: str,
+        records: List[MemoryEntityRecord],
+        merge: bool = True,
+        namespace: Optional[List[str]] = None,
+    ) -> None:
+        request_model = _MemoryUpsertNodesRequest(
+            name=name,
+            namespace=namespace,
+            records=records,
+            merge=merge,
+        )
+        await self.room.send_request("memory.upsert_nodes", request_model.model_dump())
+
+    async def upsert_relationships(
+        self,
+        *,
+        name: str,
+        records: List[MemoryRelationshipRecord],
+        merge: bool = True,
+        namespace: Optional[List[str]] = None,
+    ) -> None:
+        request_model = _MemoryUpsertRelationshipsRequest(
+            name=name,
+            namespace=namespace,
+            records=records,
+            merge=merge,
+        )
+        await self.room.send_request(
+            "memory.upsert_relationships", request_model.model_dump()
+        )
+
+    async def ingest_text(
+        self,
+        *,
+        name: str,
+        text: str,
+        namespace: Optional[List[str]] = None,
+        strategy: MemoryIngestStrategy = "heuristic",
+        llm_model: Optional[str] = None,
+        llm_temperature: Optional[float] = None,
+    ) -> MemoryIngestResult:
+        request_model = _MemoryIngestTextRequest(
+            name=name,
+            namespace=namespace,
+            text=text,
+            strategy=strategy,
+            llm_model=llm_model,
+            llm_temperature=llm_temperature,
+        )
+        response = await self.room.send_request(
+            "memory.ingest_text", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryIngestResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def ingest_image(
+        self,
+        *,
+        name: str,
+        caption: Optional[str] = None,
+        data: Optional[bytes] = None,
+        mime_type: Optional[str] = None,
+        source: Optional[str] = None,
+        annotations: Optional[dict[str, str]] = None,
+        namespace: Optional[List[str]] = None,
+        strategy: MemoryIngestStrategy = "heuristic",
+        llm_model: Optional[str] = None,
+        llm_temperature: Optional[float] = None,
+    ) -> MemoryIngestResult:
+        request_model = _MemoryIngestImageRequest(
+            name=name,
+            namespace=namespace,
+            caption=caption,
+            mime_type=mime_type,
+            source=source,
+            annotations=annotations,
+            strategy=strategy,
+            llm_model=llm_model,
+            llm_temperature=llm_temperature,
+        )
+        response = await self.room.send_request(
+            "memory.ingest_image", request_model.model_dump(), data
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryIngestResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def ingest_file(
+        self,
+        *,
+        name: str,
+        path: Optional[str] = None,
+        text: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        namespace: Optional[List[str]] = None,
+        strategy: MemoryIngestStrategy = "heuristic",
+        llm_model: Optional[str] = None,
+        llm_temperature: Optional[float] = None,
+    ) -> MemoryIngestResult:
+        request_model = _MemoryIngestFileRequest(
+            name=name,
+            namespace=namespace,
+            path=path,
+            text=text,
+            mime_type=mime_type,
+            strategy=strategy,
+            llm_model=llm_model,
+            llm_temperature=llm_temperature,
+        )
+        response = await self.room.send_request(
+            "memory.ingest_file", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryIngestResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def ingest_from_table(
+        self,
+        *,
+        name: str,
+        table: str,
+        text_columns: Optional[List[str]] = None,
+        table_namespace: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        namespace: Optional[List[str]] = None,
+        strategy: MemoryIngestStrategy = "heuristic",
+        llm_model: Optional[str] = None,
+        llm_temperature: Optional[float] = None,
+    ) -> MemoryIngestResult:
+        request_model = _MemoryIngestFromTableRequest(
+            name=name,
+            namespace=namespace,
+            table=table,
+            table_namespace=table_namespace,
+            text_columns=text_columns,
+            limit=limit,
+            strategy=strategy,
+            llm_model=llm_model,
+            llm_temperature=llm_temperature,
+        )
+        response = await self.room.send_request(
+            "memory.ingest_from_table", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryIngestResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def ingest_from_storage(
+        self,
+        *,
+        name: str,
+        paths: List[str],
+        namespace: Optional[List[str]] = None,
+        strategy: MemoryIngestStrategy = "heuristic",
+        llm_model: Optional[str] = None,
+        llm_temperature: Optional[float] = None,
+    ) -> MemoryIngestResult:
+        request_model = _MemoryIngestFromStorageRequest(
+            name=name,
+            namespace=namespace,
+            paths=paths,
+            strategy=strategy,
+            llm_model=llm_model,
+            llm_temperature=llm_temperature,
+        )
+        response = await self.room.send_request(
+            "memory.ingest_from_storage", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryIngestResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def recall(
+        self,
+        *,
+        name: str,
+        query: str,
+        namespace: Optional[List[str]] = None,
+        limit: int = 5,
+        include_relationships: bool = True,
+    ) -> MemoryRecallResult:
+        request_model = _MemoryRecallRequest(
+            name=name,
+            namespace=namespace,
+            query=query,
+            limit=limit,
+            include_relationships=include_relationships,
+        )
+        response = await self.room.send_request(
+            "memory.recall", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryRecallResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def optimize(
+        self,
+        *,
+        name: str,
+        namespace: Optional[List[str]] = None,
+        compact: bool = True,
+        cleanup: bool = True,
+    ) -> MemoryOptimizeResult:
+        request_model = _MemoryOptimizeRequest(
+            name=name,
+            namespace=namespace,
+            compact=compact,
+            cleanup=cleanup,
+        )
+        response = await self.room.send_request(
+            "memory.optimize", request_model.model_dump()
+        )
+        if isinstance(response, JsonResponse):
+            return MemoryOptimizeResult.model_validate(response.json)
 
         raise RoomException("unexpected return type")
 

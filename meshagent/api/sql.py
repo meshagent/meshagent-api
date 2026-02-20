@@ -10,6 +10,8 @@ from meshagent.api.room_server_client import (
     DateDataType,
     FloatDataType,
     IntDataType,
+    ListDataType,
+    StructDataType,
     TextDataType,
     TimestampDataType,
     VectorDataType,
@@ -18,9 +20,12 @@ from meshagent.api.room_server_client import (
 TABLE_SCHEMA_GRAMMAR = """
 TABLE_SCHEMA  := COLUMN_DEF ("," COLUMN_DEF)*
 COLUMN_DEF    := IDENTIFIER TYPE_SPEC NULLABILITY?
-TYPE_SPEC     := SIMPLE_TYPE | VECTOR_TYPE
+TYPE_SPEC     := SIMPLE_TYPE | VECTOR_TYPE | LIST_TYPE | STRUCT_TYPE
 SIMPLE_TYPE   := "int" | "bool" | "date" | "timestamp" | "float" | "text" | "binary"
 VECTOR_TYPE   := "vector" "(" INT ("," TYPE_SPEC)? ")"
+LIST_TYPE     := "list" "(" TYPE_SPEC ")"
+STRUCT_TYPE   := "struct" "(" STRUCT_FIELD ("," STRUCT_FIELD)* ")"
+STRUCT_FIELD  := IDENTIFIER TYPE_SPEC NULLABILITY?
 NULLABILITY   := "null" | "not" "null"
 IDENTIFIER    := /[A-Za-z_][A-Za-z0-9_]*/
 INT           := /[0-9]+/
@@ -35,6 +40,8 @@ ALLOWED_DATA_TYPES = (
     "text",
     "binary",
     "vector",
+    "list",
+    "struct",
 )
 
 
@@ -81,6 +88,12 @@ class _SchemaParser:
         if type_name == "vector":
             self._advance()
             return self._parse_vector_type()
+        if type_name == "list":
+            self._advance()
+            return self._parse_list_type()
+        if type_name == "struct":
+            self._advance()
+            return self._parse_struct_type()
         if type_name not in ALLOWED_DATA_TYPES:
             raise self._error(
                 f"Unsupported data type '{token.value}'. Allowed: {', '.join(ALLOWED_DATA_TYPES)}"
@@ -123,6 +136,26 @@ class _SchemaParser:
             element_type = self.parse_schema_type()
         self._expect("RPAREN")
         return VectorDataType(size=size, element_type=element_type)
+
+    def _parse_list_type(self) -> DataTypeUnion:
+        self._expect("LPAREN")
+        element_type = self.parse_schema_type()
+        self._expect("RPAREN")
+        return ListDataType(element_type=element_type)
+
+    def _parse_struct_type(self) -> DataTypeUnion:
+        self._expect("LPAREN")
+        fields: dict[str, DataTypeUnion] = {}
+        while True:
+            field_name = self._expect("IDENT").value
+            field_type = self.parse_schema_type_with_nullability()
+            if field_name in fields:
+                raise SchemaParseError(f"Duplicate struct field name: {field_name}")
+            fields[field_name] = field_type
+            if not self._accept("COMMA"):
+                break
+        self._expect("RPAREN")
+        return StructDataType(fields=fields)
 
     def _expect(self, kind: str, value: str | None = None) -> _Token:
         token = self._peek()

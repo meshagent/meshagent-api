@@ -3,6 +3,8 @@ import pytest
 from meshagent.api.room_server_client import (
     FloatDataType,
     IntDataType,
+    ListDataType,
+    StructDataType,
     TextDataType,
     VectorDataType,
 )
@@ -36,3 +38,21 @@ def test_parse_schema_vector_element_type_case_insensitive():
 def test_parse_schema_duplicate_columns():
     with pytest.raises(SchemaParseError, match="Duplicate column name"):
         parse_table_schema("id int, id text")
+
+
+def test_parse_schema_list_struct_type():
+    schema = parse_table_schema(
+        "labels list(struct(key text, value text)), weights list(struct(key text, value vector(2)))"
+    )
+
+    labels = schema["labels"]
+    assert isinstance(labels, ListDataType)
+    assert isinstance(labels.element_type, StructDataType)
+    assert isinstance(labels.element_type.fields["key"], TextDataType)
+    assert isinstance(labels.element_type.fields["value"], TextDataType)
+
+    weights = schema["weights"]
+    assert isinstance(weights, ListDataType)
+    assert isinstance(weights.element_type, StructDataType)
+    assert isinstance(weights.element_type.fields["key"], TextDataType)
+    assert isinstance(weights.element_type.fields["value"], VectorDataType)

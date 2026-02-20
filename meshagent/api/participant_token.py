@@ -89,6 +89,18 @@ class DatabaseGrant(BaseModel):
         return False
 
 
+class MemoryGrant(BaseModel):
+    list: bool = True
+    create: bool = True
+    drop: bool = True
+    inspect: bool = True
+    query: bool = True
+    upsert: bool = True
+    ingest: bool = True
+    recall: bool = True
+    optimize: bool = True
+
+
 class SyncPathGrant(BaseModel):
     path: str
     read_only: bool = False
@@ -236,6 +248,7 @@ class ApiScope(BaseModel):
     queues: Optional[QueuesGrant] = None
     messaging: Optional[MessagingGrant] = None
     database: Optional[DatabaseGrant] = None
+    memory: Optional[MemoryGrant] = None
     sync: Optional[SyncGrant] = None
     storage: Optional[StorageGrant] = None
     containers: Optional[ContainersGrant] = None
@@ -254,6 +267,7 @@ class ApiScope(BaseModel):
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
             database=DatabaseGrant(),
+            memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
             containers=ContainersGrant(),
@@ -270,6 +284,7 @@ class ApiScope(BaseModel):
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
             database=DatabaseGrant(),
+            memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
             containers=ContainersGrant(),
