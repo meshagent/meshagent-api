@@ -17,6 +17,9 @@ from .room_server_client import (
     MessageStreamChunk,
     StorageEntry,
     AgentDescription,
+    ToolCallEvent,
+    ToolCallStream,
+    ToolCallStreamItem,
 )
 
 from .client import Meshagent
@@ -67,6 +70,9 @@ __all__ = [
     MessageStreamChunk,
     StorageEntry,
     AgentDescription,
+    ToolCallEvent,
+    ToolCallStream,
+    ToolCallStreamItem,
     ParticipantToken,
     ParticipantGrant,
     ApiScope,

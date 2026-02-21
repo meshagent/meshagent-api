@@ -948,9 +948,166 @@ class ServicesClient:
         )
 
 
+@dataclass(frozen=True)
+class ToolCallEvent:
+    tool_call_id: str
+    event: Any
+    toolkit: Optional[str] = None
+    tool: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ToolCallStreamItem:
+    type: Literal["event", "result"]
+    tool_call_id: str
+    event: Optional[Any] = None
+    result: Optional[Response] = None
+    toolkit: Optional[str] = None
+    tool: Optional[str] = None
+
+
+class ToolCallStream:
+    def __init__(
+        self,
+        *,
+        tool_call_id: str,
+        task: asyncio.Task[Response],
+        on_close: Callable[[], None],
+    ):
+        self._tool_call_id = tool_call_id
+        self._task = task
+        self._on_close = on_close
+        self._queue = asyncio.Queue[Optional[ToolCallStreamItem]]()
+        self._error: Optional[BaseException] = None
+        self._closed = False
+        task.add_done_callback(self._on_task_done)
+
+    @property
+    def tool_call_id(self) -> str:
+        return self._tool_call_id
+
+    @property
+    def result(self) -> asyncio.Future[Response]:
+        return asyncio.ensure_future(self._task)
+
+    def __await__(self):
+        return self.result.__await__()
+
+    def _close(
+        self,
+        *,
+        error: Optional[BaseException] = None,
+        result: Optional[Response] = None,
+    ) -> None:
+        if self._closed:
+            return
+
+        self._closed = True
+
+        if error is not None:
+            self._error = error
+        elif result is not None:
+            self._queue.put_nowait(
+                ToolCallStreamItem(
+                    type="result",
+                    tool_call_id=self._tool_call_id,
+                    result=result,
+                )
+            )
+
+        self._queue.put_nowait(None)
+        try:
+            self._on_close()
+        except Exception as ex:
+            logger.error("tool call stream cleanup failed", exc_info=ex)
+
+    def close_with_error(self, error: BaseException) -> None:
+        self._close(error=error)
+        if not self._task.done():
+            self._task.cancel()
+
+    def _on_task_done(self, task: asyncio.Task[Response]) -> None:
+        if self._closed:
+            return
+
+        try:
+            result = task.result()
+            self._close(result=result)
+        except Exception as ex:
+            self._close(error=ex)
+
+    def _push_event(self, event: ToolCallEvent) -> None:
+        self._queue.put_nowait(
+            ToolCallStreamItem(
+                type="event",
+                tool_call_id=event.tool_call_id,
+                toolkit=event.toolkit,
+                tool=event.tool,
+                event=event.event,
+            )
+        )
+
+    async def __aiter__(self) -> AsyncIterator[ToolCallStreamItem]:
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                if self._error is not None:
+                    raise self._error
+                return
+            yield item
+
+
 class AgentsClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
+        self._tool_call_streams: Dict[str, ToolCallStream] = {}
+        self._close_watcher_task: Optional[asyncio.Task[None]] = None
+        self.room.protocol.register_handler(
+            "agent.tool_call_event", self._handle_tool_call_event
+        )
+
+    def _ensure_close_watcher(self) -> None:
+        if self._close_watcher_task is not None:
+            return
+
+        async def watch_for_close() -> None:
+            await self.room.protocol.wait_for_close()
+            self._fail_tool_call_streams(
+                error=RoomException("room client was closed before tool call completed")
+            )
+
+        self._close_watcher_task = asyncio.create_task(watch_for_close())
+
+    def _fail_tool_call_streams(self, *, error: BaseException) -> None:
+        open_streams = list(self._tool_call_streams.values())
+        self._tool_call_streams.clear()
+        for stream in open_streams:
+            stream.close_with_error(error)
+
+    async def _handle_tool_call_event(
+        self, protocol: Protocol, message_id: int, typ: str, data: bytes
+    ) -> None:
+        del protocol
+        del message_id
+        del typ
+        header, _ = unpack_message(data)
+        tool_call_id = header.get("tool_call_id")
+        if not isinstance(tool_call_id, str) or tool_call_id == "":
+            logger.warning("ignoring tool call event without tool_call_id")
+            return
+
+        event = ToolCallEvent(
+            tool_call_id=tool_call_id,
+            toolkit=header.get("toolkit"),
+            tool=header.get("tool"),
+            event=header.get("event"),
+        )
+
+        stream = self._tool_call_streams.get(tool_call_id, None)
+        if stream is not None:
+            stream._push_event(event)
+
+        self.room.emit("agent.tool_call_event", event=event)
 
     async def make_call(
         self, *, name: str, url: str, arguments: dict, api: Optional[ApiScope] = None
@@ -973,17 +1130,51 @@ class AgentsClient:
         on_behalf_of_id: Optional[str] = None,
         caller_context: Optional[Dict[str, Any]] = None,
         attachment: Optional[bytes] = None,
-    ) -> Response:
+        stream: bool = False,
+        tool_call_id: Optional[str] = None,
+    ) -> Response | ToolCallStream:
+        resolved_tool_call_id = tool_call_id
+        if stream and resolved_tool_call_id is None:
+            resolved_tool_call_id = uuid.uuid4().hex
+
+        request_payload: Dict[str, Any] = {
+            "toolkit": toolkit,
+            "tool": tool,
+            "participant_id": participant_id,
+            "on_behalf_of_id": on_behalf_of_id,
+            "arguments": arguments,
+            "caller_context": caller_context,
+            "stream": stream,
+        }
+        if resolved_tool_call_id is not None:
+            request_payload["tool_call_id"] = resolved_tool_call_id
+
+        if stream:
+            self._ensure_close_watcher()
+            if resolved_tool_call_id is None:
+                raise RoomException("tool_call_id is required when stream=True")
+
+            request_task = asyncio.create_task(
+                self.room.send_request(
+                    "agent.invoke_tool",
+                    request_payload,
+                    attachment,
+                )
+            )
+            call_stream = ToolCallStream(
+                tool_call_id=resolved_tool_call_id,
+                task=request_task,
+                on_close=lambda: self._tool_call_streams.pop(
+                    resolved_tool_call_id, None
+                ),
+            )
+            self._tool_call_streams[resolved_tool_call_id] = call_stream
+
+            return call_stream
+
         response = await self.room.send_request(
             "agent.invoke_tool",
-            {
-                "toolkit": toolkit,
-                "tool": tool,
-                "participant_id": participant_id,
-                "on_behalf_of_id": on_behalf_of_id,
-                "arguments": arguments,
-                "caller_context": caller_context,
-            },
+            request_payload,
             attachment,
         )
         return response
@@ -997,17 +1188,51 @@ class AgentsClient:
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
         caller_context: Optional[Dict[str, Any]] = None,
-    ) -> Response:
+        stream: bool = False,
+        tool_call_id: Optional[str] = None,
+    ) -> Response | ToolCallStream:
+        resolved_tool_call_id = tool_call_id
+        if stream and resolved_tool_call_id is None:
+            resolved_tool_call_id = uuid.uuid4().hex
+
+        invoke_request: Dict[str, Any] = {
+            "toolkit": toolkit,
+            "tool": tool,
+            "participant_id": participant_id,
+            "on_behalf_of_id": on_behalf_of_id,
+            "arguments": request.to_json(),
+            "caller_context": caller_context,
+            "stream": stream,
+        }
+        if resolved_tool_call_id is not None:
+            invoke_request["tool_call_id"] = resolved_tool_call_id
+
+        if stream:
+            self._ensure_close_watcher()
+            if resolved_tool_call_id is None:
+                raise RoomException("tool_call_id is required when stream=True")
+
+            request_task = asyncio.create_task(
+                self.room.send_request(
+                    "agent.invoke_tool",
+                    invoke_request,
+                    request.get_data(),
+                )
+            )
+            call_stream = ToolCallStream(
+                tool_call_id=resolved_tool_call_id,
+                task=request_task,
+                on_close=lambda: self._tool_call_streams.pop(
+                    resolved_tool_call_id, None
+                ),
+            )
+            self._tool_call_streams[resolved_tool_call_id] = call_stream
+
+            return call_stream
+
         response = await self.room.send_request(
             "agent.invoke_tool",
-            {
-                "toolkit": toolkit,
-                "tool": tool,
-                "participant_id": participant_id,
-                "on_behalf_of_id": on_behalf_of_id,
-                "arguments": request.to_json(),
-                "caller_context": caller_context,
-            },
+            invoke_request,
             request.get_data(),
         )
         return response
