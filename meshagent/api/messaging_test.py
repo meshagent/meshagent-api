@@ -1,35 +1,35 @@
 from meshagent.api.messaging import (
-    Chunk,
-    RawOutputsChunk,
-    _ControlChunk,
-    chunk_types,
+    Content,
+    RawOutputsContent,
+    _ControlContent,
+    content_types,
     pack_message,
-    unpack_response,
+    unpack_content,
 )
 
 
-def test_chunk_type_registry_uses_chunk_classes() -> None:
-    assert chunk_types["json"] is not None
-    assert chunk_types["file"] is not None
-    assert chunk_types["text"] is not None
-    assert chunk_types["error"] is not None
-    assert chunk_types["control"] is not None
-    assert issubclass(chunk_types["json"], Chunk)
+def test_content_type_registry_uses_content_classes() -> None:
+    assert content_types["json"] is not None
+    assert content_types["file"] is not None
+    assert content_types["text"] is not None
+    assert content_types["error"] is not None
+    assert content_types["control"] is not None
+    assert issubclass(content_types["json"], Content)
 
 
-def test_unpack_raw_outputs_chunk() -> None:
+def test_unpack_raw_outputs_content() -> None:
     payload = pack_message(
         header={"type": "raw", "outputs": [{"id": "a"}, {"id": "b"}]},
     )
-    response = unpack_response(payload)
-    assert isinstance(response, RawOutputsChunk)
+    response = unpack_content(payload)
+    assert isinstance(response, RawOutputsContent)
     assert response.outputs == [{"id": "a"}, {"id": "b"}]
 
 
-def test_unpack_control_chunk() -> None:
+def test_unpack_control_content() -> None:
     payload = pack_message(
         header={"type": "control", "method": "open"},
     )
-    response = unpack_response(payload)
-    assert isinstance(response, _ControlChunk)
+    response = unpack_content(payload)
+    assert isinstance(response, _ControlContent)
     assert response.method == "open"

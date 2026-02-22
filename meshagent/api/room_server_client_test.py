@@ -4,11 +4,11 @@ from collections.abc import AsyncIterator
 import pytest
 
 from meshagent.api.messaging import (
-    Chunk,
-    FileChunk,
-    JsonChunk,
-    TextChunk,
-    _ControlChunk,
+    Content,
+    FileContent,
+    JsonContent,
+    TextContent,
+    _ControlContent,
     pack_message,
 )
 from meshagent.api.room_server_client import (
@@ -39,11 +39,11 @@ class _FakeRoom:
 
     async def send_request(
         self, typ: str, request: dict, data: bytes | None = None
-    ) -> JsonChunk | dict:
+    ) -> JsonContent | dict:
         self.requests.append((typ, request, data))
         if typ == "agent.invoke_tool":
             await asyncio.sleep(0)
-            return JsonChunk(json={"ok": True})
+            return JsonContent(json={"ok": True})
 
         return {}
 
@@ -52,7 +52,7 @@ class _FakeRoom:
 async def test_tool_call_response_chunk_unpacks_json_chunk_payload() -> None:
     room = _FakeRoom()
     client = AgentsClient(room=room)  # type: ignore[arg-type]
-    chunk = JsonChunk(json={"hello": "world"})
+    chunk = JsonContent(json={"hello": "world"})
 
     await client._handle_tool_call_response_chunk(
         protocol=room.protocol,  # type: ignore[arg-type]
@@ -69,7 +69,7 @@ async def test_tool_call_response_chunk_unpacks_json_chunk_payload() -> None:
     event = room.events[0][1]["event"]
     assert isinstance(event, dict)
     assert event["tool_call_id"] == "tc-1"
-    assert isinstance(event["chunk"], JsonChunk)
+    assert isinstance(event["chunk"], JsonContent)
     assert event["chunk"].json == {"hello": "world"}
 
 
@@ -77,7 +77,7 @@ async def test_tool_call_response_chunk_unpacks_json_chunk_payload() -> None:
 async def test_tool_call_response_chunk_unpacks_file_chunk_payload() -> None:
     room = _FakeRoom()
     client = AgentsClient(room=room)  # type: ignore[arg-type]
-    chunk = FileChunk(
+    chunk = FileContent(
         name="step.png",
         mime_type="image/png",
         data=b"\x89PNG\r\n\x1a\n",
@@ -99,7 +99,7 @@ async def test_tool_call_response_chunk_unpacks_file_chunk_payload() -> None:
     assert isinstance(event, dict)
     assert event["tool_call_id"] == "tc-2"
     chunk = event["chunk"]
-    assert isinstance(chunk, FileChunk)
+    assert isinstance(chunk, FileContent)
     assert chunk.name == "step.png"
     assert chunk.mime_type == "image/png"
     assert chunk.data == b"\x89PNG\r\n\x1a\n"
@@ -134,27 +134,27 @@ async def test_tool_call_response_chunk_keeps_non_chunk_dict_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_tool_sends_control_chunks_for_request_stream() -> None:
+async def test_invoke_tool_sends_control_chunks_for_request_stream() -> None:
     room = _FakeRoom()
     client = AgentsClient(room=room)  # type: ignore[arg-type]
 
     async def request_stream():
-        yield JsonChunk(json={"step": 1})
-        yield TextChunk(text="done")
+        yield JsonContent(json={"step": 1})
+        yield TextContent(text="done")
 
-    response = await client.stream_tool(
+    response = await client.invoke_tool(
         toolkit="test-toolkit",
         tool="streaming-tool",
         input=request_stream(),
     )
-    assert isinstance(response, JsonChunk)
+    assert isinstance(response, JsonContent)
     assert response.json == {"ok": True}
 
     assert room.requests[0][0] == "agent.invoke_tool"
     invoke_request = room.requests[0][1]
     assert isinstance(invoke_request["tool_call_id"], str)
     assert invoke_request["tool_call_id"] != ""
-    assert invoke_request["arguments"] == _ControlChunk(method="open").to_json()
+    assert invoke_request["arguments"] == _ControlContent(method="open").to_json()
     assert "stream" not in invoke_request
     assert "input" not in invoke_request
 
@@ -179,7 +179,7 @@ async def test_stream_tool_sends_control_chunks_for_request_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_tool_rejects_non_chunk_stream_items() -> None:
+async def test_invoke_tool_rejects_non_content_stream_items() -> None:
     room = _FakeRoom()
     client = AgentsClient(room=room)  # type: ignore[arg-type]
 
@@ -188,9 +188,9 @@ async def test_stream_tool_rejects_non_chunk_stream_items() -> None:
 
     with pytest.raises(
         RoomException,
-        match="stream_tool input stream items must be Chunk values",
+        match="invoke_tool input stream items must be Content values",
     ):
-        await client.stream_tool(
+        await client.invoke_tool(
             toolkit="test-toolkit",
             tool="streaming-tool",
             input=input_stream(),
@@ -205,23 +205,78 @@ async def test_invoke_tool_does_not_send_stream_flag() -> None:
     response = await client.invoke_tool(
         toolkit="test-toolkit",
         tool="streaming-tool",
-        arguments={"a": 1},
+        input={"a": 1},
     )
 
-    assert isinstance(response, JsonChunk)
+    assert isinstance(response, JsonContent)
     assert response.json == {"ok": True}
     assert room.requests[0][0] == "agent.invoke_tool"
     assert "stream" not in room.requests[0][1]
 
 
+@pytest.mark.asyncio
+async def test_invoke_tool_upgrades_dict_input_to_json_content() -> None:
+    room = _FakeRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    response = await client.invoke_tool(
+        toolkit="test-toolkit",
+        tool="streaming-tool",
+        input={"a": 1},
+    )
+
+    assert isinstance(response, JsonContent)
+    assert response.json == {"ok": True}
+    request = room.requests[0]
+    assert request[0] == "agent.invoke_tool"
+    assert request[1]["arguments"] == {"type": "json", "json": {"a": 1}}
+    assert request[2] is None
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_upgrades_str_input_to_text_content() -> None:
+    room = _FakeRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    response = await client.invoke_tool(
+        toolkit="test-toolkit",
+        tool="streaming-tool",
+        input="hello",
+    )
+
+    assert isinstance(response, JsonContent)
+    assert response.json == {"ok": True}
+    request = room.requests[0]
+    assert request[0] == "agent.invoke_tool"
+    assert request[1]["arguments"] == {"type": "text", "text": "hello"}
+    assert request[2] is None
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_rejects_attachment_keyword() -> None:
+    room = _FakeRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    with pytest.raises(
+        TypeError,
+        match="invoke_tool\\(\\) got unexpected keyword argument\\(s\\): attachment",
+    ):
+        await client.invoke_tool(
+            toolkit="test-toolkit",
+            tool="streaming-tool",
+            input={"a": 1},
+            attachment=b"bytes",
+        )
+
+
 class _OpenResponseRoom(_FakeRoom):
     async def send_request(
         self, typ: str, request: dict, data: bytes | None = None
-    ) -> JsonChunk | dict:
+    ) -> JsonContent | dict:
         self.requests.append((typ, request, data))
         if typ == "agent.invoke_tool":
             await asyncio.sleep(0)
-            return _ControlChunk(method="open")
+            return _ControlContent(method="open")
         return {}
 
 
@@ -233,23 +288,41 @@ async def test_invoke_tool_returns_stream_when_response_is_open_control_chunk() 
     response = await client.invoke_tool(
         toolkit="test-toolkit",
         tool="streaming-tool",
-        arguments={"a": 1},
+        input={"a": 1},
     )
-    assert not isinstance(response, Chunk)
+    assert not isinstance(response, Content)
     assert isinstance(response, AsyncIterator)
     client._fail_tool_call_streams(error=RoomException("test cleanup"))
 
 
 @pytest.mark.asyncio
-async def test_stream_tool_returns_stream_when_response_is_open_control_chunk() -> None:
+async def test_invoke_tool_returns_stream_for_content_input_when_response_is_open_control_chunk() -> (
+    None
+):
     room = _OpenResponseRoom()
     client = AgentsClient(room=room)  # type: ignore[arg-type]
 
-    response = await client.stream_tool(
+    response = await client.invoke_tool(
         toolkit="test-toolkit",
         tool="streaming-tool",
-        input=JsonChunk(json={"a": 1}),
+        input=JsonContent(json={"a": 1}),
     )
-    assert not isinstance(response, Chunk)
+    assert not isinstance(response, Content)
     assert isinstance(response, AsyncIterator)
     client._fail_tool_call_streams(error=RoomException("test cleanup"))
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_sends_empty_content_when_input_omitted() -> None:
+    room = _FakeRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    response = await client.invoke_tool(
+        toolkit="test-toolkit",
+        tool="streaming-tool",
+    )
+
+    assert isinstance(response, JsonContent)
+    request = room.requests[0]
+    assert request[1]["arguments"] == {"type": "empty"}
+    assert request[2] is None
