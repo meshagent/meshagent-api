@@ -1,7 +1,7 @@
 import json
 from abc import abstractmethod, ABC
 
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Literal
 
 from opentelemetry.propagate import extract, inject
 
@@ -49,7 +49,7 @@ def pack_message(header: dict, data: bytes | None = None) -> bytes:
     return message
 
 
-class Body(ABC):
+class Chunk(ABC):
     def __init__(
         self,
         *,
@@ -71,13 +71,12 @@ class Body(ABC):
         pass
 
 
-Response = Body
-Request = Body
+Request = Chunk
 
-body_types = dict[str, type]()
+chunk_types = dict[str, type[Chunk]]()
 
 
-class LinkBody(Body):
+class LinkChunk(Chunk):
     def __init__(
         self,
         *,
@@ -95,7 +94,7 @@ class LinkBody(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return LinkBody(
+        return LinkChunk(
             name=header["name"], url=header["url"], usage=header.get("usage", None)
         )
 
@@ -106,13 +105,10 @@ class LinkBody(Body):
         return f"Link: name={self.name}, type={self.url} usage={self.usage}"
 
 
-body_types["link"] = LinkBody
-
-LinkRequest = LinkBody
-LinkResponse = LinkBody
+chunk_types["link"] = LinkChunk
 
 
-class FileBody(Body):
+class FileChunk(Chunk):
     def __init__(
         self,
         *,
@@ -137,7 +133,7 @@ class FileBody(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return FileBody(
+        return FileChunk(
             data=payload,
             name=header["name"],
             mime_type=header["mime_type"],
@@ -154,13 +150,10 @@ class FileBody(Body):
         return f"File: name={self.name}, type={self.mime_type}, length={len(self.data)} usage={self.usage}"
 
 
-body_types["file"] = FileBody
-
-FileRequest = FileBody
-FileResponse = FileBody
+chunk_types["file"] = FileChunk
 
 
-class TextBody(Body):
+class TextChunk(Chunk):
     def __init__(
         self,
         *,
@@ -173,7 +166,7 @@ class TextBody(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return TextBody(text=header["text"], usage=header.get("usage", None))
+        return TextChunk(text=header["text"], usage=header.get("usage", None))
 
     def to_json(self):
         return {"type": "text", "text": self.text, "usage": self.usage}
@@ -185,13 +178,10 @@ class TextBody(Body):
         return f"Text: text={self.text} usage={self.usage}"
 
 
-body_types["text"] = TextBody
-
-TextResponse = TextBody
-TextRequest = TextBody
+chunk_types["text"] = TextChunk
 
 
-class EmptyBody(Body):
+class EmptyChunk(Chunk):
     def __init__(
         self,
         *,
@@ -205,7 +195,7 @@ class EmptyBody(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return EmptyBody(usage=header.get("usage", None))
+        return EmptyChunk(usage=header.get("usage", None))
 
     def pack(self):
         return pack_message(header=self.to_json())
@@ -214,13 +204,45 @@ class EmptyBody(Body):
         return f"Empty: usage={self.usage}"
 
 
-body_types["empty"] = EmptyBody
-
-EmptyResponse = EmptyBody
-EmptyRequest = EmptyBody
+chunk_types["empty"] = EmptyChunk
 
 
-class ErrorBody(Body):
+class _ControlChunk(Chunk):
+    def __init__(
+        self,
+        *,
+        method: Literal["open", "close"],
+        usage: Optional[dict[str, float]] = None,
+        caller_context: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(usage=usage, caller_context=caller_context)
+        self.method = method
+
+    def to_json(self):
+        return {
+            "type": "control",
+            "method": self.method,
+            "usage": self.usage,
+        }
+
+    @staticmethod
+    def unpack(*, header: dict, payload: bytes):
+        return _ControlChunk(
+            method=header["method"],
+            usage=header.get("usage", None),
+        )
+
+    def pack(self):
+        return pack_message(header=self.to_json())
+
+    def __str__(self):
+        return f"Control: method={self.method} usage={self.usage}"
+
+
+chunk_types["control"] = _ControlChunk
+
+
+class ErrorChunk(Chunk):
     def __init__(
         self,
         *,
@@ -240,7 +262,7 @@ class ErrorBody(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return ErrorBody(text=header["text"], usage=header.get("usage", None))
+        return ErrorChunk(text=header["text"], usage=header.get("usage", None))
 
     def pack(self):
         return pack_message(header=self.to_json())
@@ -249,13 +271,10 @@ class ErrorBody(Body):
         return f"Error: text={self.text} usage={self.usage}"
 
 
-body_types["error"] = ErrorBody
-
-ErrorResponse = ErrorBody
-ErrorRequest = ErrorBody
+chunk_types["error"] = ErrorChunk
 
 
-class RawOutputs(Body):
+class RawOutputsChunk(Chunk):
     def __init__(
         self,
         *,
@@ -271,19 +290,21 @@ class RawOutputs(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return RawOutputs(json=header["outputs"], usage=header.get("usage", None))
+        return RawOutputsChunk(
+            outputs=header["outputs"], usage=header.get("usage", None)
+        )
 
     def pack(self):
         return pack_message(header=self.to_json())
 
     def __str__(self):
-        return f"RawOutputs: outputs={json.dumps(self.outputs)} usage={self.usage}"
+        return f"RawOutputsChunk: outputs={json.dumps(self.outputs)} usage={self.usage}"
 
 
-body_types["raw"] = RawOutputs
+chunk_types["raw"] = RawOutputsChunk
 
 
-class JsonBody(Body):
+class JsonChunk(Chunk):
     def __init__(
         self,
         *,
@@ -302,7 +323,7 @@ class JsonBody(Body):
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes):
-        return JsonBody(json=header["json"], usage=header.get("usage", None))
+        return JsonChunk(json=header["json"], usage=header.get("usage", None))
 
     def pack(self):
         return pack_message(header=self.to_json())
@@ -311,14 +332,11 @@ class JsonBody(Body):
         return f"Json: json={json.dumps(self.json)} usage={self.usage}"
 
 
-body_types["json"] = JsonBody
-
-JsonResponse = JsonBody
-JsonRequest = JsonBody
+chunk_types["json"] = JsonChunk
 
 
 def unpack_request_parts(header: dict, payload: bytes) -> Request:
-    T = body_types[header["type"]]
+    T = chunk_types[header["type"]]
     return T.unpack(header=header, payload=payload)
 
 
@@ -327,24 +345,24 @@ def unpack_request(data: bytes) -> Request:
     return unpack_request_parts(header=header, payload=payload)
 
 
-def unpack_response_parts(header: dict, payload: bytes) -> Response:
-    T = body_types[header["type"]]
+def unpack_response_parts(header: dict, payload: bytes) -> Chunk:
+    T = chunk_types[header["type"]]
     return T.unpack(header=header, payload=payload)
 
 
-def unpack_response(data: bytes) -> Response:
+def unpack_response(data: bytes) -> Chunk:
     header, payload = unpack_message(data)
     return unpack_response_parts(header=header, payload=payload)
 
 
-def ensure_response(response) -> Response:
-    if isinstance(response, Response):
+def ensure_response(response) -> Chunk:
+    if isinstance(response, Chunk):
         return response
     elif isinstance(response, dict):
-        return JsonResponse(json=response)
+        return JsonChunk(json=response)
     elif isinstance(response, str):
-        return TextResponse(text=response)
+        return TextChunk(text=response)
     elif response is None:
-        return EmptyResponse()
+        return EmptyChunk()
     else:
         raise Exception(f"Invalid return type from request handler {type(response)}")

@@ -17,9 +17,6 @@ from .room_server_client import (
     MessageStreamChunk,
     StorageEntry,
     AgentDescription,
-    ToolCallEvent,
-    ToolCallStream,
-    ToolCallStreamItem,
 )
 
 from .client import Meshagent
@@ -33,11 +30,12 @@ from .schema import (
 )
 from .schema_document import Element
 from .messaging import (
-    JsonResponse,
-    TextResponse,
-    FileResponse,
-    ErrorResponse,
-    EmptyResponse,
+    Chunk,
+    JsonChunk,
+    TextChunk,
+    FileChunk,
+    ErrorChunk,
+    EmptyChunk,
 )
 from .schema_registry import SchemaRegistration, SchemaRegistry
 from .helpers import (
@@ -70,9 +68,6 @@ __all__ = [
     MessageStreamChunk,
     StorageEntry,
     AgentDescription,
-    ToolCallEvent,
-    ToolCallStream,
-    ToolCallStreamItem,
     ParticipantToken,
     ParticipantGrant,
     ApiScope,
@@ -82,11 +77,12 @@ __all__ = [
     ChildProperty,
     ValueProperty,
     Element,
-    JsonResponse,
-    TextResponse,
-    FileResponse,
-    ErrorResponse,
-    EmptyResponse,
+    Chunk,
+    JsonChunk,
+    TextChunk,
+    FileChunk,
+    ErrorChunk,
+    EmptyChunk,
     SchemaRegistration,
     SchemaRegistry,
     deploy_schema,

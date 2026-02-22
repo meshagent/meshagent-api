@@ -81,6 +81,9 @@ class Protocol:
 
         self._handlers[type] = fn
 
+    def get_handler(self, type: str) -> Callable | None:
+        return self._handlers.get(type, None)
+
     async def _send_payload(self, message_id: int, data: bytes) -> None:
         packets = compute_packets(data)
         for i in range(packets):
