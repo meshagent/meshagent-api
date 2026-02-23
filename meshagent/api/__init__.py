@@ -7,6 +7,8 @@ from .room_server_client import (
     RoomClient,
     RoomMessage,
     RoomException,
+    ToolContentType,
+    ToolContentSpec,
     ToolDescription,
     ToolkitDescription,
     RemoteParticipant,
@@ -17,7 +19,6 @@ from .room_server_client import (
     MessageStreamChunk,
     StorageEntry,
 )
-
 from .client import Meshagent
 from .participant_token import ParticipantToken, ParticipantGrant, ApiScope
 from .participant import Participant
@@ -59,6 +60,8 @@ __all__ = [
     RoomClient,
     RoomMessage,
     RoomException,
+    ToolContentType,
+    ToolContentSpec,
     ToolDescription,
     ToolkitDescription,
     RemoteParticipant,

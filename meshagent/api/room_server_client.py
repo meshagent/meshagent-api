@@ -796,6 +796,90 @@ class SyncClient:
             logger.debug("received change for a document that is not connected:" + path)
 
 
+ToolContentType = Literal[
+    "json",
+    "text",
+    "file",
+    "link",
+    "empty",
+]
+_SUPPORTED_TOOL_CONTENT_KINDS: set[str] = {
+    "json",
+    "text",
+    "file",
+    "link",
+    "empty",
+}
+
+
+class ToolContentSpec:
+    def __init__(
+        self,
+        *,
+        types: list[ToolContentType],
+        stream: bool = False,
+        schema: dict | None = None,
+    ):
+        if not isinstance(types, list) or not all(
+            isinstance(item, str) for item in types
+        ):
+            raise TypeError("types must be a list of supported content type strings")
+        if len(types) == 0:
+            raise ValueError("types must include at least one content type")
+        unsupported = [
+            item for item in types if item not in _SUPPORTED_TOOL_CONTENT_KINDS
+        ]
+        if len(unsupported) > 0:
+            unsupported_list = ", ".join(sorted(set(unsupported)))
+            raise ValueError(f"unsupported tool content type(s): {unsupported_list}")
+        if not isinstance(stream, bool):
+            raise TypeError("stream must be a boolean")
+        if schema is not None and not isinstance(schema, dict):
+            raise TypeError("schema must be an object when provided")
+
+        self.types = [*types]
+        self.stream = stream
+        self.schema = schema
+
+    def includes(self, content_type: ToolContentType) -> bool:
+        return content_type in self.types
+
+    def to_json(self) -> dict:
+        value = {"types": [*self.types], "stream": self.stream}
+        if self.schema is not None:
+            value["schema"] = self.schema
+        return value
+
+    @staticmethod
+    def from_json(value: dict | None) -> "ToolContentSpec | None":
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise TypeError("tool content type descriptor must be an object")
+
+        raw_types = value.get("types", None)
+        if not isinstance(raw_types, list) or not all(
+            isinstance(item, str) for item in raw_types
+        ):
+            raise TypeError("tool content type descriptor requires a string[] 'types'")
+        unsupported = [
+            item for item in raw_types if item not in _SUPPORTED_TOOL_CONTENT_KINDS
+        ]
+        if len(unsupported) > 0:
+            unsupported_list = ", ".join(sorted(set(unsupported)))
+            raise ValueError(f"unsupported tool content type(s): {unsupported_list}")
+
+        raw_stream = value.get("stream", False)
+        if not isinstance(raw_stream, bool):
+            raise TypeError("tool content type descriptor 'stream' must be a boolean")
+
+        raw_schema = value.get("schema", None)
+        if raw_schema is not None and not isinstance(raw_schema, dict):
+            raise TypeError("tool content type descriptor 'schema' must be an object")
+
+        return ToolContentSpec(types=[*raw_types], stream=raw_stream, schema=raw_schema)
+
+
 class ToolDescription:
     def __init__(
         self,
@@ -803,7 +887,8 @@ class ToolDescription:
         name: str,
         title: str,
         description: str,
-        input_schema: dict | None,
+        input_spec: ToolContentSpec | None = None,
+        output_spec: ToolContentSpec | None = None,
         thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
         pricing: Optional[str] = None,
@@ -812,7 +897,9 @@ class ToolDescription:
         self.name = name
         self.title = title
         self.description = description
-        self.input_schema = input_schema
+        self.input_spec = input_spec
+        self.output_spec = output_spec
+
         self.thumbnail_url = thumbnail_url
         self.defs = defs
         self.pricing = pricing
@@ -820,13 +907,30 @@ class ToolDescription:
             supports_context = False
         self.supports_context = supports_context
 
+    @property
+    def input_schema(self) -> dict | None:
+        if self.input_spec is None:
+            return None
+        return self.input_spec.schema
+
+    @property
+    def output_schema(self) -> dict | None:
+        if self.output_spec is None:
+            return None
+        return self.output_spec.schema
+
     def to_json(self):
         return {
             "name": self.name,
             "description": self.description,
             "title": self.title,
             "thumbnail_url": self.thumbnail_url,
-            "input_schema": self.input_schema,
+            "input_spec": None
+            if self.input_spec is None
+            else self.input_spec.to_json(),
+            "output_spec": None
+            if self.output_spec is None
+            else self.output_spec.to_json(),
             "defs": self.defs,
             "pricing": self.pricing,
             "supports_context": self.supports_context,
@@ -1308,14 +1412,49 @@ class AgentsClient:
             tool_descriptions = []
             if "tools" in tk_json:
                 for tool_name, tool_info in tk_json["tools"].items():
+                    input_spec = ToolContentSpec.from_json(
+                        tool_info.get("input_spec", None)
+                    )
+                    output_spec = ToolContentSpec.from_json(
+                        tool_info.get("output_spec", None)
+                    )
+
+                    # Backwards compatibility for servers still sending top-level schema fields.
+                    legacy_input_schema = tool_info.get("input_schema", None)
+                    if isinstance(legacy_input_schema, dict) and input_spec is None:
+                        input_spec = ToolContentSpec(
+                            types=["json"],
+                            stream=False,
+                            schema=legacy_input_schema,
+                        )
+
+                    legacy_output_schema = tool_info.get("output_schema", None)
+                    if isinstance(legacy_output_schema, dict):
+                        if output_spec is None:
+                            output_spec = ToolContentSpec(
+                                types=["json"],
+                                stream=False,
+                                schema=legacy_output_schema,
+                            )
+                        elif (
+                            output_spec.includes("json") and output_spec.schema is None
+                        ):
+                            output_spec = ToolContentSpec(
+                                types=[*output_spec.types],
+                                stream=output_spec.stream,
+                                schema=legacy_output_schema,
+                            )
+
                     tool_descriptions.append(
                         ToolDescription(
                             name=tool_name,
                             title=tool_info.get("title", ""),
                             description=tool_info.get("description", ""),
-                            input_schema=tool_info.get("input_schema", None),
+                            input_spec=input_spec,
+                            output_spec=output_spec,
                             thumbnail_url=tool_info.get("thumbnail_url", None),
                             defs=tool_info.get("defs", None),
+                            pricing=tool_info.get("pricing", None),
                             supports_context=tool_info.get("supports_context", False),
                         )
                     )
