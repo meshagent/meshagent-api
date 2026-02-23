@@ -5,6 +5,8 @@ import pytest
 
 from meshagent.api.messaging import (
     Content,
+    ControlCloseStatus,
+    ErrorContent,
     FileContent,
     JsonContent,
     TextContent,
@@ -310,6 +312,101 @@ async def test_invoke_tool_returns_stream_for_content_input_when_response_is_ope
     assert not isinstance(response, Content)
     assert isinstance(response, AsyncIterator)
     client._fail_tool_call_streams(error=RoomException("test cleanup"))
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_stream_allows_error_chunks_without_closing() -> None:
+    room = _OpenResponseRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    response = await client.invoke_tool(
+        toolkit="test-toolkit",
+        tool="streaming-tool",
+        input={"a": 1},
+    )
+    assert isinstance(response, AsyncIterator)
+    tool_call_id = room.requests[0][1]["tool_call_id"]
+
+    await client._handle_tool_call_response_chunk(
+        protocol=room.protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="agent.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": tool_call_id,
+                "chunk": ErrorContent(text="recoverable").to_json(),
+            }
+        ),
+    )
+    await client._handle_tool_call_response_chunk(
+        protocol=room.protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="agent.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": tool_call_id,
+                "chunk": TextContent(text="still running").to_json(),
+            }
+        ),
+    )
+    await client._handle_tool_call_response_chunk(
+        protocol=room.protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="agent.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": tool_call_id,
+                "chunk": _ControlContent(method="close").to_json(),
+            }
+        ),
+    )
+
+    events = []
+    async for item in response:
+        events.append(item)
+
+    assert len(events) == 3
+    assert isinstance(events[0], ErrorContent)
+    assert events[0].text == "recoverable"
+    assert isinstance(events[1], TextContent)
+    assert events[1].text == "still running"
+    assert isinstance(events[2], _ControlContent)
+    assert events[2].method == "close"
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_stream_raises_when_close_chunk_is_abnormal() -> None:
+    room = _OpenResponseRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    response = await client.invoke_tool(
+        toolkit="test-toolkit",
+        tool="streaming-tool",
+        input={"a": 1},
+    )
+    assert isinstance(response, AsyncIterator)
+    tool_call_id = room.requests[0][1]["tool_call_id"]
+
+    await client._handle_tool_call_response_chunk(
+        protocol=room.protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="agent.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": tool_call_id,
+                "chunk": _ControlContent(
+                    method="close",
+                    status_code=ControlCloseStatus.INVALID_DATA,
+                    message="bad schema",
+                ).to_json(),
+            }
+        ),
+    )
+
+    with pytest.raises(RoomException, match="bad schema") as ex_info:
+        async for _ in response:
+            pass
+    assert ex_info.value.status_code == ControlCloseStatus.INVALID_DATA
 
 
 @pytest.mark.asyncio

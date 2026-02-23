@@ -38,6 +38,7 @@ from meshagent.api.chan import Chan
 from meshagent.api.messaging import (
     unpack_content,
     unpack_content_parts,
+    ControlCloseStatus,
     Content,
     TextContent,
     ErrorContent,
@@ -1101,6 +1102,20 @@ class _ToolCallChunkStream:
             if isinstance(result, _ControlContent) and result.method == "open":
                 self._opened = True
                 return
+            if (
+                isinstance(result, _ControlContent)
+                and result.method == "close"
+                and result.status_code is not None
+                and result.status_code != ControlCloseStatus.NORMAL
+            ):
+                detail = result.message or "tool call stream closed abnormally"
+                self._close(
+                    error=RoomException(
+                        detail,
+                        status_code=result.status_code,
+                    )
+                )
+                return
             self._close(result=result)
         except Exception as ex:
             self._close(error=ex)
@@ -1109,16 +1124,24 @@ class _ToolCallChunkStream:
         if self._closed:
             return
 
-        if isinstance(response_chunk, ErrorContent):
-            self._close(error=RoomException(response_chunk.text))
-            return
-
         self._queue.put_nowait(response_chunk)
         if (
             isinstance(response_chunk, _ControlContent)
             and response_chunk.method == "close"
         ):
-            self._close()
+            if (
+                response_chunk.status_code is not None
+                and response_chunk.status_code != ControlCloseStatus.NORMAL
+            ):
+                detail = response_chunk.message or "tool call stream closed abnormally"
+                self._close(
+                    error=RoomException(
+                        detail,
+                        status_code=response_chunk.status_code,
+                    )
+                )
+            else:
+                self._close()
 
     async def __aiter__(self) -> AsyncIterator[Content]:
         while True:

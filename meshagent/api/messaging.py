@@ -1,5 +1,6 @@
 import json
 from abc import ABC, abstractmethod
+from enum import IntEnum
 from typing import Any, Literal
 
 from opentelemetry.propagate import extract, inject
@@ -173,27 +174,65 @@ class EmptyContent(Content):
 content_types["empty"] = EmptyContent
 
 
+class ControlCloseStatus(IntEnum):
+    NORMAL = 1000
+    INVALID_DATA = 1007
+
+
 class _ControlContent(Content):
     def __init__(
         self,
         *,
         method: Literal["open", "close"],
+        status_code: int | None = None,
+        message: str | None = None,
     ):
         self.method = method
+        if method == "close":
+            self.status_code = (
+                ControlCloseStatus.NORMAL if status_code is None else int(status_code)
+            )
+        else:
+            self.status_code = status_code
+        self.message = message
 
     def to_json(self) -> dict:
-        return {"type": "control", "method": self.method}
+        payload: dict[str, Any] = {"type": "control", "method": self.method}
+        if self.method == "close":
+            if self.status_code is not None:
+                payload["status_code"] = self.status_code
+            if self.message is not None:
+                payload["message"] = self.message
+        return payload
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes) -> "_ControlContent":
         del payload
-        return _ControlContent(method=header["method"])
+        status_code = header.get("status_code", None)
+        if isinstance(status_code, bool):
+            status_code = None
+        elif not isinstance(status_code, int):
+            try:
+                status_code = int(status_code)
+            except Exception:
+                status_code = None
+        message = header.get("message", None)
+        if message is not None and not isinstance(message, str):
+            message = str(message)
+        return _ControlContent(
+            method=header["method"],
+            status_code=status_code,
+            message=message,
+        )
 
     def pack(self) -> bytes:
         return pack_message(header=self.to_json())
 
     def __str__(self) -> str:
-        return f"Control: method={self.method}"
+        details = ""
+        if self.method == "close":
+            details = f", status_code={self.status_code}, message={self.message}"
+        return f"Control: method={self.method}{details}"
 
 
 content_types["control"] = _ControlContent
