@@ -2674,6 +2674,7 @@ class MemoryIngestStats(BaseModel):
 class MemoryIngestResult(BaseModel):
     name: str
     stats: MemoryIngestStats
+    entity_ids: list[str] = Field(default_factory=list)
 
 
 class MemoryRecallRelationship(BaseModel):
@@ -2697,6 +2698,17 @@ class MemoryRecallResult(BaseModel):
     name: str
     query: str
     items: list[MemoryRecallItem] = Field(default_factory=list)
+
+
+class MemoryDeleteEntitiesResult(BaseModel):
+    name: str
+    deleted_entities: int = 0
+    deleted_relationships: int = 0
+
+
+class MemoryDeleteRelationshipsResult(BaseModel):
+    name: str
+    deleted_relationships: int = 0
 
 
 class MemoryOptimizeDatasetStats(BaseModel):
@@ -2793,6 +2805,20 @@ class _MemoryRecallRequest(_MemoryNamedRequest):
     query: str
     limit: int = 5
     include_relationships: bool = True
+
+
+class _MemoryDeleteEntitiesRequest(_MemoryNamedRequest):
+    entity_ids: list[str]
+
+
+class MemoryRelationshipSelector(BaseModel):
+    source_entity_id: str
+    target_entity_id: str
+    relationship_type: Optional[str] = None
+
+
+class _MemoryDeleteRelationshipsRequest(_MemoryNamedRequest):
+    relationships: list[MemoryRelationshipSelector]
 
 
 class _MemoryOptimizeRequest(_MemoryNamedRequest):
@@ -3645,6 +3671,46 @@ class MemoryClient:
         )
         if isinstance(response, JsonContent):
             return MemoryRecallResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def delete_entities(
+        self,
+        *,
+        name: str,
+        entity_ids: List[str],
+        namespace: Optional[List[str]] = None,
+    ) -> MemoryDeleteEntitiesResult:
+        request_model = _MemoryDeleteEntitiesRequest(
+            name=name,
+            namespace=namespace,
+            entity_ids=entity_ids,
+        )
+        response = await self.room.send_request(
+            "memory.delete_entities", request_model.model_dump()
+        )
+        if isinstance(response, JsonContent):
+            return MemoryDeleteEntitiesResult.model_validate(response.json)
+
+        raise RoomException("unexpected return type")
+
+    async def delete_relationships(
+        self,
+        *,
+        name: str,
+        relationships: List[MemoryRelationshipSelector],
+        namespace: Optional[List[str]] = None,
+    ) -> MemoryDeleteRelationshipsResult:
+        request_model = _MemoryDeleteRelationshipsRequest(
+            name=name,
+            namespace=namespace,
+            relationships=relationships,
+        )
+        response = await self.room.send_request(
+            "memory.delete_relationships", request_model.model_dump()
+        )
+        if isinstance(response, JsonContent):
+            return MemoryDeleteRelationshipsResult.model_validate(response.json)
 
         raise RoomException("unexpected return type")
 
