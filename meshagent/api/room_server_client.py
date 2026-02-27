@@ -2749,6 +2749,7 @@ class _MemoryListRequest(BaseModel):
 
 class _MemoryCreateRequest(_MemoryNamedRequest):
     overwrite: bool = False
+    ignore_exists: bool = False
 
 
 class _MemoryDropRequest(_MemoryNamedRequest):
@@ -3411,9 +3412,13 @@ class MemoryClient:
         name: str,
         namespace: Optional[List[str]] = None,
         overwrite: bool = False,
+        ignore_exists: bool = False,
     ) -> None:
         request_model = _MemoryCreateRequest(
-            name=name, namespace=namespace, overwrite=overwrite
+            name=name,
+            namespace=namespace,
+            overwrite=overwrite,
+            ignore_exists=ignore_exists,
         )
         await self.room.send_request("memory.create", request_model.model_dump())
 
