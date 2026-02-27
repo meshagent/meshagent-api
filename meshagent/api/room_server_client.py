@@ -2638,6 +2638,8 @@ class MemoryEntityRecord(BaseModel):
     entity_type: Optional[str] = None
     context: Optional[str] = None
     confidence: Optional[float] = None
+    created_at: Optional[str] = None
+    valid_at: Optional[str] = None
     metadata: Optional[dict[str, str]] = None
 
 
@@ -2647,6 +2649,10 @@ class MemoryRelationshipRecord(BaseModel):
     relationship_type: str = "RELATED_TO"
     description: Optional[str] = None
     confidence: Optional[float] = None
+    created_at: Optional[str] = None
+    valid_at: Optional[str] = None
+    expired_at: Optional[str] = None
+    invalid_at: Optional[str] = None
     source_entity_name: Optional[str] = None
     target_entity_name: Optional[str] = None
     metadata: Optional[dict[str, str]] = None
@@ -2682,6 +2688,10 @@ class MemoryRecallRelationship(BaseModel):
     target_entity_id: str
     relationship_type: str
     description: Optional[str] = None
+    created_at: Optional[str] = None
+    valid_at: Optional[str] = None
+    expired_at: Optional[str] = None
+    invalid_at: Optional[str] = None
 
 
 class MemoryRecallItem(BaseModel):
@@ -2690,6 +2700,8 @@ class MemoryRecallItem(BaseModel):
     entity_type: str
     context: Optional[str] = None
     confidence: Optional[float] = None
+    created_at: Optional[str] = None
+    valid_at: Optional[str] = None
     score: float
     relationships: list[MemoryRecallRelationship] = Field(default_factory=list)
 
