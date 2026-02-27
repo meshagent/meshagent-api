@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 
+from .version import __version__
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Replace this single import line as needed
 from .participant_token import (  # noqa: E402, F401
@@ -11,6 +13,9 @@ from .participant_token import (  # noqa: E402, F401
     QueuesGrant,
     TableGrant,
     DatabaseGrant,
+    MemoryEntryGrant,
+    MemoryGrant,
+    MemoryPermissions,
     SyncGrant,
     SyncPathGrant,
     StorageGrant,
@@ -26,17 +31,12 @@ from .participant_token import (  # noqa: E402, F401
 # ────────────────────────────────────────────────────────────────────────────────
 def test_agents_grant_defaults() -> None:
     g = AgentsGrant()
-    assert all(
-        getattr(g, field)
-        for field in (
-            "register_agent",
-            "register_public_toolkit",
-            "register_private_toolkit",
-            "call",
-            "use_agents",
-            "use_tools",
-        )
-    )
+    assert g.register_agent
+    assert g.register_public_toolkit
+    assert g.register_private_toolkit
+    assert g.call
+    assert g.use_agents
+    assert g.use_tools
 
 
 @pytest.mark.parametrize(
@@ -74,12 +74,53 @@ def test_database_grant() -> None:
     # table‑level rules
     tables = [
         TableGrant(name="read_only", read=True, write=False, alter=False),
-        TableGrant(name="write_only", read=False, write=True, alter=False),
+        TableGrant(
+            name="write_only",
+            namespace=["analytics"],
+            read=False,
+            write=True,
+            alter=False,
+        ),
     ]
     g = DatabaseGrant(tables=tables)
     assert g.can_read("read_only") and not g.can_write("read_only")
-    assert g.can_write("write_only") and not g.can_read("write_only")
+    assert g.can_write("write_only", namespace=["analytics"])
+    assert not g.can_write("write_only", namespace=["default"])
+    assert not g.can_read("write_only", namespace=["analytics"])
     assert not g.can_read("unknown") and not g.can_write("unknown")
+
+
+def test_memory_grant_scoped_to_memory_name_and_namespace() -> None:
+    unrestricted = MemoryGrant()
+    assert unrestricted.can_create(name="profile")
+    assert unrestricted.can_query(name="profile")
+    assert unrestricted.can_recall(name="profile")
+
+    restricted = MemoryGrant(
+        memories=[
+            MemoryEntryGrant(
+                name="memories",
+                namespace=["agents", "assistant"],
+                permissions=MemoryPermissions(
+                    create=True,
+                    drop=False,
+                    inspect=True,
+                    query=True,
+                    upsert=True,
+                    ingest=True,
+                    recall=True,
+                    optimize=False,
+                ),
+            )
+        ]
+    )
+    assert restricted.can_create(name="memories", namespace=["agents", "assistant"])
+    assert not restricted.can_drop(name="memories", namespace=["agents", "assistant"])
+    assert not restricted.can_optimize(
+        name="memories", namespace=["agents", "assistant"]
+    )
+    assert not restricted.can_query(name="memories", namespace=["agents", "other"])
+    assert not restricted.can_query(name="other", namespace=["agents", "assistant"])
 
 
 def test_sync_grant_path_and_wildcard() -> None:
@@ -138,10 +179,10 @@ def test_participant_token_role_and_is_user() -> None:
     assert p.role == "admin" and not p.is_user
 
 
-def test_get_api_grant_defaults_to_full_for_old_versions() -> None:
+def test_get_api_grant_requires_explicit_api_scope() -> None:
     pt = ParticipantToken(name="bob", version="0.5.3")
     api = pt.get_api_grant()
-    assert isinstance(api, ApiScope) and api.queues and api.sync
+    assert api is None
 
 
 def test_token_json_round_trip() -> None:
@@ -172,7 +213,7 @@ def test_token_expiration() -> None:
     assert abs(decoded["exp"] - int(exp.timestamp())) < 2  # within clock skew
 
 
-def test_legacy_token():
+def test_unversioned_token_uses_current_version_and_no_implicit_api_scope():
     token = ParticipantToken.from_json(
         {
             "name": "72c17196-3f2d-4444-a55b-39825e35cbb7",
@@ -183,18 +224,8 @@ def test_legacy_token():
         }
     )
 
-    assert token.version == "0.5.3"
+    assert token.version == __version__
     api = token.get_api_grant()
-    assert api is not None
-    assert api.storage is not None
-    assert api.livekit is not None
-    assert api.agents is not None
-    assert api.developer is not None
-    assert api.database is not None
-    assert api.messaging is not None
-    assert api.queues is not None
-    assert api.containers is None
-    assert api.admin is None
+    assert api is None
     assert token.grant_scope("room") == "44bb91aa-2555-4487-8173-580027a87558"
     assert token.name == "72c17196-3f2d-4444-a55b-39825e35cbb7"
-    assert api.storage.can_read("/test")

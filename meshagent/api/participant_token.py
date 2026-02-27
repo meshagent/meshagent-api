@@ -3,13 +3,17 @@ import jwt
 from typing import Optional, List, Literal
 from datetime import datetime
 import json
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import logging
 from .keys import parse_api_key
 from .oauth import OAuthClientConfig, ConnectorRef
 from .version import __version__
 
 logger = logging.getLogger("participant-token")
+
+
+def _normalize_namespace(namespace: Optional[list[str]]) -> tuple[str, ...]:
+    return tuple(namespace or [])
 
 
 class AgentsGrant(BaseModel):
@@ -49,6 +53,7 @@ class MessagingGrant(BaseModel):
 
 class TableGrant(BaseModel):
     name: str
+    namespace: Optional[list[str]] = None
     write: bool = False
     read: bool = True
     alter: bool = False
@@ -58,39 +63,61 @@ class DatabaseGrant(BaseModel):
     tables: Optional[list[TableGrant]] = None
     list_tables: bool = True
 
-    def can_write(self, table: str):
+    def _matching_tables(
+        self, *, table: str, namespace: Optional[list[str]]
+    ) -> list[TableGrant]:
+        if self.tables is None:
+            return []
+
+        requested_namespace = _normalize_namespace(namespace)
+        matches = list[TableGrant]()
+        for table_grant in self.tables:
+            if table_grant.name != table:
+                continue
+            if table_grant.namespace is None:
+                matches.append(table_grant)
+                continue
+            if _normalize_namespace(table_grant.namespace) == requested_namespace:
+                matches.append(table_grant)
+
+        return matches
+
+    def can_write(self, table: str, *, namespace: Optional[list[str]] = None):
         if self.tables is None:
             return True
 
-        for t in self.tables:
-            if t.name == table:
-                return t.write
+        matches = self._matching_tables(table=table, namespace=namespace)
+        if len(matches) == 0:
+            return False
+        return any(table_grant.write for table_grant in matches)
 
-        return False
-
-    def can_read(self, table: str):
+    def can_read(self, table: str, *, namespace: Optional[list[str]] = None):
         if self.tables is None:
             return True
 
-        for t in self.tables:
-            if t.name == table:
-                return t.read
+        matches = self._matching_tables(table=table, namespace=namespace)
+        if len(matches) == 0:
+            return False
+        return any(table_grant.read for table_grant in matches)
 
-        return False
-
-    def can_alter(self, table: str):
+    def can_alter(self, table: str, *, namespace: Optional[list[str]] = None):
         if self.tables is None:
             return True
 
-        for t in self.tables:
-            if t.name == table:
-                return t.alter
+        matches = self._matching_tables(table=table, namespace=namespace)
+        if len(matches) == 0:
+            return False
+        return any(table_grant.alter for table_grant in matches)
 
-        return False
+    def can_access(self, table: str, *, namespace: Optional[list[str]] = None):
+        return (
+            self.can_read(table, namespace=namespace)
+            or self.can_write(table, namespace=namespace)
+            or self.can_alter(table, namespace=namespace)
+        )
 
 
-class MemoryGrant(BaseModel):
-    list: bool = True
+class MemoryPermissions(BaseModel):
     create: bool = True
     drop: bool = True
     inspect: bool = True
@@ -99,6 +126,149 @@ class MemoryGrant(BaseModel):
     ingest: bool = True
     recall: bool = True
     optimize: bool = True
+
+
+class MemoryEntryGrant(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+    permissions: MemoryPermissions = Field(default_factory=MemoryPermissions)
+
+
+class MemoryGrant(BaseModel):
+    list: bool = True
+    memories: Optional[List[MemoryEntryGrant]] = None
+
+    def _matching_memories(
+        self, *, name: str, namespace: Optional[List[str]]
+    ) -> List[MemoryEntryGrant]:
+        if self.memories is None:
+            return []
+
+        requested_namespace = _normalize_namespace(namespace)
+        matches = list[MemoryEntryGrant]()
+        for memory_grant in self.memories:
+            if memory_grant.name != name:
+                continue
+            if memory_grant.namespace is None:
+                matches.append(memory_grant)
+                continue
+            if _normalize_namespace(memory_grant.namespace) == requested_namespace:
+                matches.append(memory_grant)
+
+        return matches
+
+    def _can(
+        self,
+        *,
+        name: str,
+        namespace: Optional[List[str]],
+        permission: Literal[
+            "create",
+            "drop",
+            "inspect",
+            "query",
+            "upsert",
+            "ingest",
+            "recall",
+            "optimize",
+        ],
+    ) -> bool:
+        if self.memories is None:
+            return True
+
+        matches = self._matching_memories(name=name, namespace=namespace)
+        if len(matches) == 0:
+            return False
+
+        for memory_grant in matches:
+            permissions = memory_grant.permissions
+            if permission == "create" and permissions.create:
+                return True
+            if permission == "drop" and permissions.drop:
+                return True
+            if permission == "inspect" and permissions.inspect:
+                return True
+            if permission == "query" and permissions.query:
+                return True
+            if permission == "upsert" and permissions.upsert:
+                return True
+            if permission == "ingest" and permissions.ingest:
+                return True
+            if permission == "recall" and permissions.recall:
+                return True
+            if permission == "optimize" and permissions.optimize:
+                return True
+
+        return False
+
+    def can_create(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="create",
+        )
+
+    def can_drop(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="drop",
+        )
+
+    def can_inspect(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="inspect",
+        )
+
+    def can_query(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="query",
+        )
+
+    def can_upsert(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="upsert",
+        )
+
+    def can_ingest(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="ingest",
+        )
+
+    def can_recall(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="recall",
+        )
+
+    def can_optimize(self, *, name: str, namespace: Optional[List[str]] = None) -> bool:
+        return self._can(
+            name=name,
+            namespace=namespace,
+            permission="optimize",
+        )
+
+    def can_access_existing(
+        self, *, name: str, namespace: Optional[List[str]] = None
+    ) -> bool:
+        return (
+            self.can_drop(name=name, namespace=namespace)
+            or self.can_inspect(name=name, namespace=namespace)
+            or self.can_query(name=name, namespace=namespace)
+            or self.can_upsert(name=name, namespace=namespace)
+            or self.can_ingest(name=name, namespace=namespace)
+            or self.can_recall(name=name, namespace=namespace)
+            or self.can_optimize(name=name, namespace=namespace)
+        )
 
 
 class SyncPathGrant(BaseModel):
@@ -331,7 +501,7 @@ class ParticipantToken:
         api_key_id: str = None,
         grants: Optional[List[ParticipantGrant]] = None,
         extra_payload: Optional[dict] = None,
-        version: Optional[None] = None,
+        version: Optional[str] = None,
     ):
         if grants is None:
             grants = []
@@ -387,23 +557,7 @@ class ParticipantToken:
         return None
 
     def get_api_grant(self) -> ApiScope | None:
-        api = self.grant_scope("api")
-        if self.version < "0.6.0" and api is None:
-            # <= 0.6.0 did not use fine grained tokens and should default api access on
-            return ApiScope(
-                livekit=LivekitGrant(),
-                queues=QueuesGrant(),
-                messaging=MessagingGrant(),
-                database=DatabaseGrant(),
-                sync=SyncGrant(),
-                storage=StorageGrant(),
-                agents=AgentsGrant(),
-                developer=DeveloperGrant(),
-                # TODO: this should be removed so you have to use fine grained tokens to enable, temp hack to unblock powerboards
-                containers=ContainersGrant(),
-            )
-
-        return api
+        return self.grant_scope("api")
 
     def to_json(self) -> dict:
         j = {"name": self.name, "grants": [g.to_json() for g in self.grants]}
@@ -487,10 +641,8 @@ class ParticipantToken:
 
         if "version" in data:
             version = data.pop("version")
-
         else:
-            # did not encode a version prior to 0.5.3
-            version = "0.5.3"
+            version = __version__
 
         return ParticipantToken(
             name=name,
