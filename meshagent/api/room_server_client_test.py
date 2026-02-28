@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from collections.abc import AsyncIterator
 
 import pytest
@@ -16,7 +17,9 @@ from meshagent.api.messaging import (
 from meshagent.api.room_server_client import (
     AgentsClient,
     RoomException,
+    SyncClient,
 )
+from meshagent.api.schema import ElementType, MeshSchema
 
 
 class _FakeProtocol:
@@ -423,3 +426,72 @@ async def test_invoke_tool_sends_empty_content_when_input_omitted() -> None:
     request = room.requests[0]
     assert request[1]["arguments"] == {"type": "empty"}
     assert request[2] is None
+
+
+class _SyncRoom(_FakeRoom):
+    def __init__(self, *, schema_json: dict):
+        super().__init__()
+        self._schema_json = schema_json
+
+    async def send_request(
+        self, typ: str, request: dict, data: bytes | None = None
+    ) -> JsonContent | dict:
+        self.requests.append((typ, request, data))
+        if typ == "room.connect":
+            return {"schema": self._schema_json}
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_sync_client_normalizes_leading_slash_paths_for_open_sync_and_close() -> (
+    None
+):
+    schema = MeshSchema(
+        root_tag_name="thread",
+        elements=[ElementType(tag_name="thread", properties=[])],
+    )
+    room = _SyncRoom(schema_json=schema.to_json())
+    client = SyncClient(room=room)  # type: ignore[arg-type]
+    await client.start()
+
+    path = "/agents/assistant/threads/testing-chat-thread.thread"
+    normalized_path = "agents/assistant/threads/testing-chat-thread.thread"
+    try:
+        open_task = asyncio.create_task(client.open(path=path))
+
+        for _ in range(100):
+            if normalized_path in client._connected_documents:
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("sync client did not connect document")
+
+        assert room.requests[0][0] == "room.connect"
+        assert room.requests[0][1]["path"] == normalized_path
+
+        connected_doc = client._connected_documents[normalized_path].ref
+        payload = base64.standard_b64encode(connected_doc.get_state()).decode("utf-8")
+
+        await client._handle_sync(
+            protocol=room.protocol,  # type: ignore[arg-type]
+            message_id=1,
+            type="room.sync",
+            data=pack_message(
+                header={"path": normalized_path},
+                data=payload.encode("utf-8"),
+            ),
+        )
+
+        doc = await asyncio.wait_for(open_task, timeout=1)
+        assert doc is connected_doc
+
+        await client.sync(path=path, data=b"YQ==")
+        assert room.requests[-1][0] == "room.sync"
+        assert room.requests[-1][1]["path"] == normalized_path
+        assert room.requests[-1][2] == b"YQ=="
+
+        await client.close(path=path)
+        assert room.requests[-1][0] == "room.disconnect"
+        assert room.requests[-1][1]["path"] == normalized_path
+    finally:
+        await client.stop()

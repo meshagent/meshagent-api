@@ -120,6 +120,17 @@ logger = logging.getLogger("room_server_client")
 logger.setLevel(logging.WARN)
 
 
+def _normalize_sync_path(path: str) -> str:
+    normalized = path
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    while normalized.startswith("/"):
+        normalized = normalized[1:]
+    if normalized == ".":
+        return ""
+    return normalized
+
+
 class RoomException(Exception):
     def __init__(self, message: str, *, status_code: int = 400):
         self.status_code = status_code
@@ -685,10 +696,15 @@ class SyncClient:
             await asyncio.gather(self._main_task)
 
     async def create(self, *, path: str, json: Optional[dict] = None) -> None:
-        await self.room.send_request("room.create", {"path": path, "json": json})
+        normalized_path = _normalize_sync_path(path)
+        await self.room.send_request(
+            "room.create", {"path": normalized_path, "json": json}
+        )
 
     async def describe(self, *, path: str, create: bool = True) -> MeshDocument:
-        res = await self.room.send_request("room.describe", {"path": path})
+        res = await self.room.send_request(
+            "room.describe", {"path": _normalize_sync_path(path)}
+        )
         assert isinstance(res, JsonContent)
         return res.json
 
@@ -700,6 +716,7 @@ class SyncClient:
         initial_json: Optional[dict] = None,
         schema: Optional[MeshSchema] = None,
     ) -> MeshDocument:
+        path = _normalize_sync_path(path)
         if path in self._connecting_documents:
             await self._connecting_documents[path]
 
@@ -759,6 +776,7 @@ class SyncClient:
         return doc
 
     async def close(self, *, path: str) -> None:
+        path = _normalize_sync_path(path)
         if path not in self._connected_documents:
             raise RoomException("Not connected to " + path)
 
@@ -770,13 +788,14 @@ class SyncClient:
             runtime._unregister_document(doc=doc.ref)
 
     async def sync(self, *, path: str, data: bytes) -> None:
+        path = _normalize_sync_path(path)
         await self.room.send_request("room.sync", {"path": path}, data=data)
 
     async def _handle_sync(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
         header, payload = unpack_message(data=data)
-        path = header["path"]
+        path = _normalize_sync_path(header["path"])
 
         if path in self._connecting_documents:
             # Wait for document to be fully connected and initialized
