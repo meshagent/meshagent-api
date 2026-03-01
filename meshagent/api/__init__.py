@@ -49,6 +49,7 @@ from .helpers import (
 )
 from .webhooks import WebhookServer, RoomStartedEvent, RoomEndedEvent, CallEvent
 from .version import __version__
+from .error_codes import ErrorCode
 
 __all__ = [
     Meshagent,
@@ -99,5 +100,6 @@ __all__ = [
     RoomStartedEvent,
     RoomEndedEvent,
     CallEvent,
+    ErrorCode,
     __version__,
 ]

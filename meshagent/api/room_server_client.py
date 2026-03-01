@@ -50,6 +50,7 @@ from meshagent.api.messaging import (
     _ControlContent,
 )
 from meshagent.api.oauth import OAuthClientConfig, ConnectorRef
+from meshagent.api.error_codes import ErrorCode
 import uuid
 
 from datetime import datetime
@@ -132,8 +133,15 @@ def _normalize_sync_path(path: str) -> str:
 
 
 class RoomException(Exception):
-    def __init__(self, message: str, *, status_code: int = 400):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 400,
+        code: int | None = ErrorCode.INVALID_REQUEST,
+    ):
         self.status_code = status_code
+        self.code = code
         super().__init__(message)
 
 
@@ -597,7 +605,9 @@ class RoomClient:
 
             if isinstance(response, ErrorContent):
                 try:
-                    pr.fut.set_exception(RoomException(response.text))
+                    pr.fut.set_exception(
+                        RoomException(response.text, code=response.code)
+                    )
                 except asyncio.InvalidStateError as ex:
                     logger.error(
                         "unable to set exception for request id=%s type=%s cancelled=%s",
@@ -667,6 +677,13 @@ class SyncClient:
         self._sync_ch = Chan[_QueuedSync]()
         self._main_task = None
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from sync.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     def get_open_documents(self) -> dict[str, MeshDocument]:
         open_documents = {}
         for k, v in self._connected_documents.items():
@@ -702,10 +719,12 @@ class SyncClient:
         )
 
     async def describe(self, *, path: str, create: bool = True) -> MeshDocument:
+        del create
         res = await self.room.send_request(
             "room.describe", {"path": _normalize_sync_path(path)}
         )
-        assert isinstance(res, JsonContent)
+        if not isinstance(res, JsonContent):
+            raise self._unexpected_response_error(operation="describe")
         return res.json
 
     async def open(
@@ -729,6 +748,14 @@ class SyncClient:
         # todo: initial bytes loading
 
         connecting_fut = asyncio.Future[_RefCount[MeshDocument]]()
+
+        def _consume_exception(fut: asyncio.Future[_RefCount[MeshDocument]]) -> None:
+            try:
+                fut.exception()
+            except asyncio.CancelledError:
+                pass
+
+        connecting_fut.add_done_callback(_consume_exception)
         self._connecting_documents[path] = connecting_fut
 
         def publish_sync(base64: str):
@@ -749,6 +776,8 @@ class SyncClient:
             response = await self.room.send_request(
                 "room.connect", {"path": path, "create": create, **extra}
             )
+            if not isinstance(response, JsonContent):
+                raise self._unexpected_response_error(operation="open")
 
             schema_json = response["schema"]
             doc: MeshDocument = runtime.new_document(
@@ -778,7 +807,10 @@ class SyncClient:
     async def close(self, *, path: str) -> None:
         path = _normalize_sync_path(path)
         if path not in self._connected_documents:
-            raise RoomException("Not connected to " + path)
+            raise RoomException(
+                "Not connected to " + path,
+                code=ErrorCode.SYNC_NOT_CONNECTED,
+            )
 
         ref = self._connected_documents[path]
         ref.count = ref.count - 1
@@ -1017,6 +1049,13 @@ class ServicesClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from services.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     async def list(
         self,
     ) -> List[ServiceSpec]:
@@ -1039,7 +1078,7 @@ class ServicesClient:
         )
 
         if not isinstance(response, JsonContent):
-            raise RoomException("Invalid return type from list services call")
+            raise self._unexpected_response_error(operation="list")
 
         return _ListServicesResponse.model_validate(response.json)
 
@@ -1556,6 +1595,13 @@ class StorageClient:
         room.protocol.register_handler("storage.file.deleted", self._on_file_deleted)
         room.protocol.register_handler("storage.file.updated", self._on_file_updated)
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from storage.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     def on(self, event_name: str, func: Callable):
         if event_name not in self._events:
             self._events[event_name] = []
@@ -1603,22 +1649,27 @@ class StorageClient:
         """
 
         response = await self.room.send_request("storage.exists", {"path": path})
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="exists")
         return response.json["exists"]
 
     async def stat(self, *, path: str) -> StorageEntry | None:
-        response = (await self.room.send_request("storage.stat", {"path": path})).json
-        exists = response["exists"]
+        response = await self.room.send_request("storage.stat", {"path": path})
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="stat")
+        payload = response.json
+        exists = payload["exists"]
         if not exists:
             return None
         else:
             return StorageEntry(
-                name=response["name"],
-                is_folder=response["is_folder"],
-                created_at=datetime.fromisoformat(response["created_at"])
-                if response.get("created_at") is not None
+                name=payload["name"],
+                is_folder=payload["is_folder"],
+                created_at=datetime.fromisoformat(payload["created_at"])
+                if payload.get("created_at") is not None
                 else None,
-                updated_at=datetime.fromisoformat(response["updated_at"])
-                if response.get("updated_at") is not None
+                updated_at=datetime.fromisoformat(payload["updated_at"])
+                if payload.get("updated_at") is not None
                 else None,
             )
 
@@ -1642,6 +1693,8 @@ class StorageClient:
         response = await self.room.send_request(
             "storage.open", {"path": path, "overwrite": overwrite}
         )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="open")
         return FileHandle(id=response["handle"])
 
     async def write(self, *, handle: FileHandle, data: bytes) -> None:
@@ -1694,6 +1747,8 @@ class StorageClient:
         """
 
         response = await self.room.send_request("storage.download", {"path": path})
+        if not isinstance(response, FileContent):
+            raise self._unexpected_response_error(operation="download")
         return response
 
     async def download_url(self, *, path: str) -> str:
@@ -1714,6 +1769,8 @@ class StorageClient:
         """
 
         response = await self.room.send_request("storage.download_url", {"path": path})
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="download_url")
         return response["url"]
 
     async def list(self, *, path: str) -> list[StorageEntry]:
@@ -1734,6 +1791,8 @@ class StorageClient:
         """
 
         response = await self.room.send_request("storage.list", {"path": path})
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list")
         return list(
             map(
                 lambda f: StorageEntry(
@@ -1786,14 +1845,22 @@ class QueuesClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from queues.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     async def list(
         self, *, name: str, message: dict, create: bool = True
     ) -> list[Queue]:
         response = await self.room.send_request("queues.list", {})
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list")
         queues = []
-        if isinstance(response, JsonContent):
-            for item in response.json["queues"]:
-                queues.append(Queue(name=item["name"], size=int(item["size"])))
+        for item in response.json["queues"]:
+            queues.append(Queue(name=item["name"], size=int(item["size"])))
         return queues
 
     async def send(self, *, name: str, message: dict, create: bool = True) -> None:
@@ -1822,7 +1889,7 @@ class QueuesClient:
         elif isinstance(response, TextContent):
             return response.text
         else:
-            raise RoomException("Unexpected response")
+            raise self._unexpected_response_error(operation="receive")
 
 
 class MessagingClient:
@@ -3415,6 +3482,13 @@ class MemoryClient:
     def __init__(self, room: RoomClient):
         self.room = room
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from memory.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     async def list(self, *, namespace: Optional[List[str]] = None) -> List[str]:
         request_model = _MemoryListRequest(namespace=namespace)
         response = await self.room.send_request(
@@ -3423,7 +3497,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return list(response.json.get("memories", []))
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="list")
 
     async def create(
         self,
@@ -3465,7 +3539,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryDetails.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="inspect")
 
     async def query(
         self,
@@ -3485,7 +3559,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return decode_records(response.json["results"])
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="query")
 
     async def upsert_table(
         self,
@@ -3563,7 +3637,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="ingest_text")
 
     async def ingest_image(
         self,
@@ -3596,7 +3670,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="ingest_image")
 
     async def ingest_file(
         self,
@@ -3626,7 +3700,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="ingest_file")
 
     async def ingest_from_table(
         self,
@@ -3658,7 +3732,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="ingest_from_table")
 
     async def ingest_from_storage(
         self,
@@ -3684,7 +3758,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="ingest_from_storage")
 
     async def recall(
         self,
@@ -3708,7 +3782,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryRecallResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="recall")
 
     async def delete_entities(
         self,
@@ -3728,7 +3802,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryDeleteEntitiesResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="delete_entities")
 
     async def delete_relationships(
         self,
@@ -3748,7 +3822,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryDeleteRelationshipsResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="delete_relationships")
 
     async def optimize(
         self,
@@ -3770,7 +3844,7 @@ class MemoryClient:
         if isinstance(response, JsonContent):
             return MemoryOptimizeResult.model_validate(response.json)
 
-        raise RoomException("unexpected return type")
+        raise self._unexpected_response_error(operation="optimize")
 
 
 class TableVersion(BaseModel):
@@ -4103,6 +4177,13 @@ class ContainersClient:
         self._ttys: Dict[str, ExecSession] = {}
         self._log_streams = dict[str, LogStream]()
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from containers.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     # ---- Event handlers ----
 
     async def _handle_log_chunk(
@@ -4163,6 +4244,8 @@ class ContainersClient:
 
     async def list_images(self) -> List[Image]:
         res = await self.room.send_request("containers.list_images", {})
+        if not isinstance(res, JsonContent):
+            raise self._unexpected_response_error(operation="list_images")
         imgs = res["images"]
         return [Image.model_validate(i) for i in imgs]
 
@@ -4244,8 +4327,7 @@ class ContainersClient:
             container_id: str = resp.json["container_id"]
             return container_id
 
-        else:
-            raise RoomException(f"Unexpected response type {resp}")
+        raise self._unexpected_response_error(operation="run")
 
     async def run_service(
         self, *, service_id: str, env: Optional[dict[str, str]] = None
@@ -4260,8 +4342,7 @@ class ContainersClient:
             container_id: str = resp.json["container_id"]
             return container_id
 
-        else:
-            raise RoomException(f"Unexpected response type {resp}")
+        raise self._unexpected_response_error(operation="run_service")
 
     async def exec(
         self,
@@ -4284,14 +4365,12 @@ class ContainersClient:
                 resp = await self.room.send_request(
                     "containers.exec", req.model_dump(exclude_none=True)
                 )
+                if not isinstance(resp, JsonContent):
+                    raise self._unexpected_response_error(operation="exec")
 
                 # close TTY on completion
 
-                status = (
-                    resp.json["status"]
-                    if isinstance(resp, JsonContent)
-                    else resp.get("status", "")
-                )
+                status = resp.json["status"]
 
                 return status
             finally:
@@ -4343,6 +4422,8 @@ class ContainersClient:
             "containers.list_containers",
             ListContainersRequest(all=all).model_dump(mode="json"),
         )
+        if not isinstance(res, JsonContent):
+            raise self._unexpected_response_error(operation="list")
         return [RoomContainer(**c) for c in res["containers"]]
 
 

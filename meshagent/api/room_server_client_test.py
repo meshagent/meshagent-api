@@ -14,9 +14,15 @@ from meshagent.api.messaging import (
     _ControlContent,
     pack_message,
 )
+from meshagent.api import ErrorCode
 from meshagent.api.room_server_client import (
     AgentsClient,
+    ContainersClient,
+    MemoryClient,
+    QueuesClient,
     RoomException,
+    ServicesClient,
+    StorageClient,
     SyncClient,
 )
 from meshagent.api.schema import ElementType, MeshSchema
@@ -31,6 +37,16 @@ class _FakeProtocol:
 
     async def wait_for_close(self) -> None:
         await asyncio.Future()
+
+
+def test_room_exception_defaults_to_invalid_request_code() -> None:
+    ex = RoomException("boom")
+    assert ex.code == ErrorCode.INVALID_REQUEST
+
+
+def test_room_exception_explicit_none_code_is_preserved() -> None:
+    ex = RoomException("boom", code=None)
+    assert ex.code is None
 
 
 class _FakeRoom:
@@ -51,6 +67,36 @@ class _FakeRoom:
             return JsonContent(json={"ok": True})
 
         return {}
+
+
+class _BadResponseRoom:
+    async def send_request(
+        self, typ: str, request: dict, data: bytes | None = None
+    ) -> dict:
+        del typ, request, data
+        return {}
+
+
+class _BadStorageResponseRoom:
+    def __init__(self) -> None:
+        self.protocol = _FakeProtocol()
+
+    async def send_request(
+        self, typ: str, request: dict, data: bytes | None = None
+    ) -> dict:
+        del typ, request, data
+        return {}
+
+
+class _BadSyncResponseRoom:
+    def __init__(self) -> None:
+        self.protocol = _FakeProtocol()
+
+    async def send_request(
+        self, typ: str, request: dict, data: bytes | None = None
+    ) -> TextContent:
+        del typ, request, data
+        return TextContent(text="unexpected")
 
 
 @pytest.mark.asyncio
@@ -76,6 +122,90 @@ async def test_tool_call_response_chunk_unpacks_json_chunk_payload() -> None:
     assert event["tool_call_id"] == "tc-1"
     assert isinstance(event["chunk"], JsonContent)
     assert event["chunk"].json == {"hello": "world"}
+
+
+@pytest.mark.asyncio
+async def test_memory_client_unexpected_response_uses_error_code() -> None:
+    client = MemoryClient(room=_BadResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from memory.list"
+    ) as ex:
+        await client.list()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_storage_client_unexpected_response_uses_error_code() -> None:
+    client = StorageClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from storage.exists"
+    ) as ex:
+        await client.exists(path="file.txt")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_services_client_unexpected_response_uses_error_code() -> None:
+    client = ServicesClient(room=_BadResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from services.list"
+    ) as ex:
+        await client.list_with_state()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_queues_client_list_unexpected_response_uses_error_code() -> None:
+    client = QueuesClient(room=_BadResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from queues.list"
+    ) as ex:
+        await client.list(name="jobs", message={})
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_queues_client_receive_unexpected_response_uses_error_code() -> None:
+    client = QueuesClient(room=_BadResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from queues.receive"
+    ) as ex:
+        await client.receive(name="jobs")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_run_unexpected_response_uses_error_code() -> None:
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.run"
+    ) as ex:
+        await client.run(image="alpine:latest")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_list_unexpected_response_uses_error_code() -> None:
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.list"
+    ) as ex:
+        await client.list()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
 
 @pytest.mark.asyncio
@@ -438,8 +568,10 @@ class _SyncRoom(_FakeRoom):
     ) -> JsonContent | dict:
         self.requests.append((typ, request, data))
         if typ == "room.connect":
-            return {"schema": self._schema_json}
-        return {}
+            return JsonContent(json={"schema": self._schema_json})
+        if typ == "room.describe":
+            return JsonContent(json={})
+        return JsonContent(json={})
 
 
 @pytest.mark.asyncio
@@ -495,3 +627,30 @@ async def test_sync_client_normalizes_leading_slash_paths_for_open_sync_and_clos
         assert room.requests[-1][1]["path"] == normalized_path
     finally:
         await client.stop()
+
+
+@pytest.mark.asyncio
+async def test_sync_client_close_not_connected_uses_error_code() -> None:
+    schema = MeshSchema(
+        root_tag_name="thread",
+        elements=[ElementType(tag_name="thread", properties=[])],
+    )
+    room = _SyncRoom(schema_json=schema.to_json())
+    client = SyncClient(room=room)  # type: ignore[arg-type]
+
+    with pytest.raises(RoomException, match="Not connected to missing.thread") as ex:
+        await client.close(path="missing.thread")
+
+    assert ex.value.code == ErrorCode.SYNC_NOT_CONNECTED
+
+
+@pytest.mark.asyncio
+async def test_sync_client_unexpected_response_uses_error_code() -> None:
+    client = SyncClient(room=_BadSyncResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sync.open"
+    ) as ex:
+        await client.open(path="thread.thread")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE

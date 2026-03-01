@@ -1,5 +1,6 @@
 from meshagent.api.messaging import (
     Content,
+    ErrorContent,
     RawOutputsContent,
     _ControlContent,
     content_types,
@@ -33,3 +34,13 @@ def test_unpack_control_content() -> None:
     response = unpack_content(payload)
     assert isinstance(response, _ControlContent)
     assert response.method == "open"
+
+
+def test_unpack_error_content_with_code() -> None:
+    payload = pack_message(
+        header={"type": "error", "text": "boom", "code": 2001},
+    )
+    response = unpack_content(payload)
+    assert isinstance(response, ErrorContent)
+    assert response.text == "boom"
+    assert response.code == 2001

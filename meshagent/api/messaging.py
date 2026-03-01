@@ -243,22 +243,36 @@ class ErrorContent(Content):
         self,
         *,
         text: str,
+        code: int | None = None,
     ):
         self.text = text
+        self.code = code
 
     def to_json(self) -> dict:
-        return {"type": "error", "text": self.text}
+        payload: dict[str, Any] = {"type": "error", "text": self.text}
+        if self.code is not None:
+            payload["code"] = self.code
+        return payload
 
     @staticmethod
     def unpack(*, header: dict, payload: bytes) -> "ErrorContent":
         del payload
-        return ErrorContent(text=header["text"])
+        code = header.get("code")
+        if isinstance(code, bool):
+            code = None
+        elif code is not None and not isinstance(code, int):
+            try:
+                code = int(code)
+            except Exception:
+                code = None
+
+        return ErrorContent(text=header["text"], code=code)
 
     def pack(self) -> bytes:
         return pack_message(header=self.to_json())
 
     def __str__(self) -> str:
-        return f"Error: text={self.text}"
+        return f"Error: text={self.text}, code={self.code}"
 
 
 content_types["error"] = ErrorContent
