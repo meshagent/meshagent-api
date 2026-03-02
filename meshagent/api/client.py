@@ -1326,6 +1326,55 @@ class Meshagent:
             await self._raise_for_status(resp)
             return ServiceTemplateSpec.model_validate_json(await resp.json())
 
+    async def discover_mcp_spec(
+        self,
+        *,
+        url: str,
+        format: Literal["service", "template"] = "service",
+    ) -> ServiceSpec | ServiceTemplateSpec:
+        """
+        POST /mcp/discover
+        Body:
+          {
+            "url": "https://.../mcp",
+            "format": "service" | "template"
+          }
+        Returns: ServiceSpec when format="service", ServiceTemplateSpec when
+        format="template".
+        """
+        if format not in ("service", "template"):
+            raise RoomException("format must be 'service' or 'template'")
+
+        url_path = f"{self.base_url}/mcp/discover"
+        async with self._session.post(
+            url_path,
+            headers=self._get_headers(),
+            json={"url": url, "format": format},
+        ) as resp:
+            await self._raise_for_status(resp)
+            payload = await resp.json()
+            if format == "service":
+                return ServiceSpec.model_validate(payload)
+            return ServiceTemplateSpec.model_validate(payload)
+
+    async def discover_mcp_service(self, *, url: str) -> ServiceSpec:
+        """
+        Discover an MCP server and return a generated Service spec.
+        """
+        result = await self.discover_mcp_spec(url=url, format="service")
+        if not isinstance(result, ServiceSpec):
+            raise RoomException("Unexpected response type from /mcp/discover")
+        return result
+
+    async def discover_mcp_service_template(self, *, url: str) -> ServiceTemplateSpec:
+        """
+        Discover an MCP server and return a generated ServiceTemplate spec.
+        """
+        result = await self.discover_mcp_spec(url=url, format="template")
+        if not isinstance(result, ServiceTemplateSpec):
+            raise RoomException("Unexpected response type from /mcp/discover")
+        return result
+
     async def create_service(
         self,
         *,
