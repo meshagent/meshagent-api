@@ -10,9 +10,9 @@ class ConnectorRef(BaseModel):
 
 class OAuthClientConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    client_id: str
+    client_id: Optional[str] = None
     client_secret: Optional[str] = None
-    authorization_endpoint: str
-    token_endpoint: str
+    authorization_endpoint: Optional[str] = None
+    token_endpoint: Optional[str] = None
     no_pkce: Optional[bool] = None
     scopes: Optional[list[str]] = None

@@ -393,13 +393,21 @@ class SecretsGrant(BaseModel):
 
         for t in self.request_oauth_token:
             if oauth is not None:
+                authorization_endpoint = (
+                    oauth.authorization_endpoint.strip()
+                    if isinstance(oauth.authorization_endpoint, str)
+                    else ""
+                )
+                client_id = (
+                    oauth.client_id.strip() if isinstance(oauth.client_id, str) else ""
+                )
+                if authorization_endpoint == "" or client_id == "":
+                    continue
                 if (
-                    t.endpoint == oauth.authorization_endpoint
+                    t.endpoint == authorization_endpoint
                     or t.endpoint.endswith("*")
-                    and oauth.authorization_endpoint.startswith(
-                        t.endpoint.removesuffix("*")
-                    )
-                ) and t.client_id == oauth.authorization_endpoint.client_id:
+                    and authorization_endpoint.startswith(t.endpoint.removesuffix("*"))
+                ) and t.client_id == client_id:
                     return True
 
         return False
