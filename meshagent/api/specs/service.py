@@ -297,6 +297,7 @@ class PortSpec(BaseModel):
 class ServiceTemplateVariable(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
+    title: Optional[str] = None
     description: Optional[str] = None
     obscure: bool = False
     enum: Optional[list[str]] = None
