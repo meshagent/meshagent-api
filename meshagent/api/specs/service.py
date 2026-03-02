@@ -358,14 +358,17 @@ def format_yaml_value(original: Optional[str], values: dict[str, str]):
     if original is None:
         return None
 
-    if original.startswith("!template "):
-        from jinja2 import Template
+    legacy_prefixed = original.startswith("!template ")
+    value = original.removeprefix("!template ") if legacy_prefixed else original
+    has_jinja_syntax = any(token in value for token in ("{{", "{%", "{#"))
 
-        template = Template(original.removeprefix("!template "))
-        return template.render(**values)
-
-    else:
+    if not legacy_prefixed and not has_jinja_syntax:
         return original
+
+    from jinja2 import Template
+
+    template = Template(value)
+    return template.render(**values)
 
 
 def format_yaml_map(original: Optional[dict[str, str]], values: dict[str, str]):

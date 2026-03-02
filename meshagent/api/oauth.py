@@ -5,6 +5,7 @@ from typing import Optional
 class ConnectorRef(BaseModel):
     openai_connector_id: Optional[str] = None
     server_url: Optional[str] = None
+    client_secret_id: Optional[str] = None
 
 
 class OAuthClientConfig(BaseModel):
