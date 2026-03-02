@@ -21,8 +21,14 @@ class LocalExposeHandle:
         self.server.close()
         await self.server.wait_closed()
         self.task.cancel()
-        with contextlib.suppress(Exception):
+        try:
             await self.task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+        except Exception:
+            pass
 
 
 async def port_forward(
