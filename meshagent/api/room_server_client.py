@@ -712,11 +712,18 @@ class SyncClient:
         if self._main_task is not None:
             await asyncio.gather(self._main_task)
 
-    async def create(self, *, path: str, json: Optional[dict] = None) -> None:
+    async def create(
+        self,
+        *,
+        path: str,
+        json: Optional[dict] = None,
+        schema: Optional[MeshSchema] = None,
+    ) -> None:
         normalized_path = _normalize_sync_path(path)
-        await self.room.send_request(
-            "room.create", {"path": normalized_path, "json": json}
-        )
+        request: dict[str, Any] = {"path": normalized_path, "json": json}
+        if schema is not None:
+            request["schema"] = schema.to_json()
+        await self.room.send_request("room.create", request)
 
     async def describe(self, *, path: str, create: bool = True) -> MeshDocument:
         del create

@@ -630,6 +630,30 @@ async def test_sync_client_normalizes_leading_slash_paths_for_open_sync_and_clos
 
 
 @pytest.mark.asyncio
+async def test_sync_client_create_includes_schema_when_provided() -> None:
+    schema = MeshSchema(
+        root_tag_name="thread",
+        elements=[ElementType(tag_name="thread", properties=[])],
+    )
+    room = _SyncRoom(schema_json=schema.to_json())
+    client = SyncClient(room=room)  # type: ignore[arg-type]
+
+    await client.create(
+        path="/agents/assistant/threads/testing-chat-thread.thread",
+        json={"thread": {"properties": []}},
+        schema=schema,
+    )
+
+    assert room.requests[0][0] == "room.create"
+    assert (
+        room.requests[0][1]["path"]
+        == "agents/assistant/threads/testing-chat-thread.thread"
+    )
+    assert room.requests[0][1]["json"] == {"thread": {"properties": []}}
+    assert room.requests[0][1]["schema"] == schema.to_json()
+
+
+@pytest.mark.asyncio
 async def test_sync_client_close_not_connected_uses_error_code() -> None:
     schema = MeshSchema(
         root_tag_name="thread",
