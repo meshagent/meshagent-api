@@ -1055,6 +1055,7 @@ class Meshagent:
         description: str = "",
         action: Optional[str] = None,
         payload: Optional[dict] = None,
+        secret: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/{project_id}/webhooks/{webhook_id}
@@ -1071,6 +1072,7 @@ class Meshagent:
             "events": events,
             "action": action,
             "payload": payload,
+            "secret": secret,
         }
 
         async with self._session.put(
