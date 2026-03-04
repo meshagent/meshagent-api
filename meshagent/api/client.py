@@ -277,6 +277,10 @@ class Balance(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class ProjectStatus(BaseModel):
+    enabled: bool
+
+
 class Transaction(BaseModel):
     id: str
     amount: float
@@ -745,18 +749,16 @@ class Meshagent:
             await self._ensure_success(resp, action="fetch pricing data")
             return await resp.json()
 
-    async def get_status(self, project_id: str) -> bool:
+    async def get_project_status(self, project_id: str) -> ProjectStatus:
         """GET /accounts/projects/{project_id}/status"""
         url = f"{self.base_url}/accounts/projects/{project_id}/status"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._ensure_success(resp, action="fetch project status")
             data = await resp.json()
-            enabled = data.get("enabled")
-            if not isinstance(enabled, bool):
-                raise RoomException(
-                    "Invalid status payload: expected boolean 'enabled'"
-                )
-            return enabled
+            try:
+                return ProjectStatus.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid project status payload: {exc}") from exc
 
     async def get_balance(self, project_id: str) -> Balance:
         """GET /accounts/projects/{project_id}/balance"""
