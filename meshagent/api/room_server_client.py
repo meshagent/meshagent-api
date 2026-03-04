@@ -696,9 +696,18 @@ class SyncClient:
         with contextlib.suppress(asyncio.CancelledError):
             async for q in self._sync_ch:
                 logger.info("client sync sending for {path}".format(path=q.path))
-                await self.room.send_request(
-                    "room.sync", {"path": q.path}, q.base64.encode("utf-8")
-                )
+                try:
+                    await self.room.send_request(
+                        "room.sync", {"path": q.path}, q.base64.encode("utf-8")
+                    )
+                except RoomException as ex:
+                    if ex.code == ErrorCode.SYNC_NOT_CONNECTED:
+                        logger.debug(
+                            "dropping stale queued sync for disconnected path %s",
+                            q.path,
+                        )
+                        continue
+                    raise
 
     async def start(self):
         if self._main_task is not None:

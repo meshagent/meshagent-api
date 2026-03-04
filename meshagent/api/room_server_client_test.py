@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -574,6 +575,19 @@ class _SyncRoom(_FakeRoom):
         return JsonContent(json={})
 
 
+class _SyncNotConnectedRoom(_FakeRoom):
+    async def send_request(
+        self, typ: str, request: dict, data: bytes | None = None
+    ) -> JsonContent | dict:
+        self.requests.append((typ, request, data))
+        if typ == "room.sync":
+            raise RoomException(
+                "attempted to sync to a document that is not connected",
+                code=ErrorCode.SYNC_NOT_CONNECTED,
+            )
+        return JsonContent(json={})
+
+
 @pytest.mark.asyncio
 async def test_sync_client_normalizes_leading_slash_paths_for_open_sync_and_close() -> (
     None
@@ -651,6 +665,23 @@ async def test_sync_client_create_includes_schema_when_provided() -> None:
     )
     assert room.requests[0][1]["json"] == {"thread": {"properties": []}}
     assert room.requests[0][1]["schema"] == schema.to_json()
+
+
+@pytest.mark.asyncio
+async def test_sync_client_ignores_stale_sync_not_connected_errors() -> None:
+    room = _SyncNotConnectedRoom()
+    client = SyncClient(room=room)  # type: ignore[arg-type]
+    await client.start()
+
+    try:
+        client._sync_ch.send_nowait(
+            SimpleNamespace(path="agents/assistant/test/index.threadl", base64="YQ==")
+        )
+        await asyncio.sleep(0)
+        assert client._main_task is not None
+        assert not client._main_task.done()
+    finally:
+        await client.stop()
 
 
 @pytest.mark.asyncio
