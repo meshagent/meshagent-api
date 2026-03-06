@@ -3944,6 +3944,25 @@ class ImagePullRequest(BaseModel):
     credentials: List[DockerSecret] = Field(default_factory=list)
 
 
+class ImagePushRequest(BaseModel):
+    tag: str
+    credentials: List[DockerSecret] = Field(default_factory=list)
+    private: bool = False
+
+
+class ImageLoadRequest(BaseModel):
+    mounts: List[ContainerMountSpec]
+    archive_path: str
+    private: bool = False
+
+
+class ImageSaveRequest(BaseModel):
+    tag: str
+    mounts: List[ContainerMountSpec]
+    archive_path: str
+    private: bool = False
+
+
 class ListContainersRequest(BaseModel):
     all: Optional[bool] = None
 
@@ -3965,6 +3984,15 @@ class _RunRequest(BaseModel):
     mounts: Optional[ContainerMountSpec] = None
     writable_root_fs: Optional[bool] = None
     private: Optional[bool] = None
+
+
+class _BuildRequest(BaseModel):
+    tag: str
+    mounts: List[ContainerMountSpec]
+    context_path: str
+    dockerfile_path: Optional[str] = None
+    private: bool = False
+    credentials: Optional[List[DockerSecret]] = None
 
 
 class _ExecRequest(BaseModel):
@@ -4296,6 +4324,74 @@ class ContainersClient:
 
         return None
 
+    async def push_image(
+        self,
+        *,
+        tag: str,
+        credentials: List[DockerSecret] | None = None,
+        private: bool = False,
+    ) -> str:
+        req = ImagePushRequest(
+            tag=tag,
+            credentials=credentials or [],
+            private=private,
+        )
+
+        resp = await self.room.send_request(
+            "containers.push_image", req.model_dump(exclude_none=True)
+        )
+        if isinstance(resp, JsonContent):
+            container_id: str = resp.json["container_id"]
+            return container_id
+
+        raise self._unexpected_response_error(operation="push_image")
+
+    async def load_image(
+        self,
+        *,
+        mounts: List[ContainerMountSpec],
+        archive_path: str,
+        private: bool = False,
+    ) -> str:
+        req = ImageLoadRequest(
+            mounts=mounts,
+            archive_path=archive_path,
+            private=private,
+        )
+
+        resp = await self.room.send_request(
+            "containers.load_image", req.model_dump(exclude_none=True)
+        )
+        if isinstance(resp, JsonContent):
+            container_id: str = resp.json["container_id"]
+            return container_id
+
+        raise self._unexpected_response_error(operation="load_image")
+
+    async def save_image(
+        self,
+        *,
+        tag: str,
+        mounts: List[ContainerMountSpec],
+        archive_path: str,
+        private: bool = False,
+    ) -> str:
+        req = ImageSaveRequest(
+            tag=tag,
+            mounts=mounts,
+            archive_path=archive_path,
+            private=private,
+        )
+
+        resp = await self.room.send_request(
+            "containers.save_image", req.model_dump(exclude_none=True)
+        )
+        if isinstance(resp, JsonContent):
+            container_id: str = resp.json["container_id"]
+            return container_id
+
+        raise self._unexpected_response_error(operation="save_image")
+
     # ---- Run Container ----
 
     async def run(
@@ -4344,6 +4440,34 @@ class ContainersClient:
             return container_id
 
         raise self._unexpected_response_error(operation="run")
+
+    async def build(
+        self,
+        *,
+        tag: str,
+        mounts: List[ContainerMountSpec],
+        context_path: str,
+        dockerfile_path: Optional[str] = None,
+        private: bool = False,
+        credentials: List[DockerSecret] | None = None,
+    ) -> str:
+        req = _BuildRequest(
+            tag=tag,
+            mounts=mounts,
+            context_path=context_path,
+            dockerfile_path=dockerfile_path,
+            private=private,
+            credentials=credentials or [],
+        )
+
+        resp = await self.room.send_request(
+            "containers.build", req.model_dump(exclude_none=True)
+        )
+        if isinstance(resp, JsonContent):
+            container_id: str = resp.json["container_id"]
+            return container_id
+
+        raise self._unexpected_response_error(operation="build")
 
     async def run_service(
         self, *, service_id: str, env: Optional[dict[str, str]] = None

@@ -26,6 +26,7 @@ from meshagent.api.room_server_client import (
     StorageClient,
     SyncClient,
 )
+from meshagent.api.specs.service import ContainerMountSpec, RoomStorageMountSpec
 from meshagent.api.schema import ElementType, MeshSchema
 
 
@@ -205,6 +206,83 @@ async def test_containers_client_list_unexpected_response_uses_error_code() -> N
         RoomException, match="unexpected return type from containers.list"
     ) as ex:
         await client.list()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_build_unexpected_response_uses_error_code() -> None:
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.build"
+    ) as ex:
+        await client.build(
+            tag="example:latest",
+            mounts=[
+                ContainerMountSpec(
+                    room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
+                )
+            ],
+            context_path="/workspace",
+        )
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_push_image_unexpected_response_uses_error_code() -> (
+    None
+):
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.push_image"
+    ) as ex:
+        await client.push_image(tag="example:latest")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_load_image_unexpected_response_uses_error_code() -> (
+    None
+):
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.load_image"
+    ) as ex:
+        await client.load_image(
+            mounts=[
+                ContainerMountSpec(
+                    room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
+                )
+            ],
+            archive_path="/workspace/image.tar",
+        )
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_save_image_unexpected_response_uses_error_code() -> (
+    None
+):
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.save_image"
+    ) as ex:
+        await client.save_image(
+            tag="example:latest",
+            mounts=[
+                ContainerMountSpec(
+                    room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
+                )
+            ],
+            archive_path="/workspace/image.tar",
+        )
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
