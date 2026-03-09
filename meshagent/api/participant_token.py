@@ -350,7 +350,7 @@ class ContainersGrant(BaseModel):
             return True
 
         for t in self.pull:
-            if tag == t or tag.startswith(t.removesuffix("*")):
+            if tag == t or (t.endswith("*") and tag.startswith(t.removesuffix("*"))):
                 return True
 
         return False
@@ -360,7 +360,7 @@ class ContainersGrant(BaseModel):
             return True
 
         for t in self.run:
-            if tag == t or tag.startswith(t.removesuffix("*")):
+            if tag == t or (t.endswith("*") and tag.startswith(t.removesuffix("*"))):
                 return True
 
         return False

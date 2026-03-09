@@ -3,11 +3,19 @@ from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
 import json
 import asyncio
 import logging
+import mimetypes
 import os
 import aiohttp
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
-from pydantic import BaseModel, Field, JsonValue, ConfigDict, TypeAdapter
+from pydantic import (
+    BaseModel,
+    Field,
+    JsonValue,
+    ConfigDict,
+    TypeAdapter,
+    ValidationError,
+)
 from typing import (
     Optional,
     Callable,
@@ -38,6 +46,7 @@ from meshagent.api.chan import Chan
 from meshagent.api.messaging import (
     unpack_content,
     unpack_content_parts,
+    BinaryContent,
     ControlCloseStatus,
     Content,
     TextContent,
@@ -53,7 +62,7 @@ from meshagent.api.oauth import OAuthClientConfig, ConnectorRef
 from meshagent.api.error_codes import ErrorCode
 import uuid
 
-from datetime import datetime
+from datetime import date, datetime, timezone
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -94,6 +103,14 @@ def _encode_record_value(value: Any) -> Any:
             "encoding": "base64",
             "data": base64.b64encode(value).decode(),
         }
+
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")
+
+    if isinstance(value, date):
+        return value.isoformat()
 
     if isinstance(value, list):
         return [_encode_record_value(item) for item in value]
@@ -424,6 +441,10 @@ class RoomClient:
         self.protocol.register_handler("room.status", self._handle_status)
         self.protocol.register_handler("connected", self._handle_participant)
         self.protocol.register_handler("__response__", self._handle_response)
+        self.protocol.register_handler(
+            "room.tool_call_response_chunk",
+            self._handle_tool_call_response_chunk,
+        )
 
         self._pending_requests = dict[int, _PendingRequest]()
         self._debug_pending_requests = os.getenv(
@@ -436,6 +457,8 @@ class RoomClient:
         self._ready = asyncio.Future()
         self._local_participant_ready = asyncio.Future()
         self._events = {}
+        self._tool_call_streams = dict[str, _ToolCallChunkStream]()
+        self._close_watcher_task: Optional[asyncio.Task[None]] = None
 
         self.agents = AgentsClient(room=self)
         self.storage = StorageClient(room=self)
@@ -655,6 +678,359 @@ class RoomClient:
             attributes = message["attributes"]
             self._on_participant_init(participant_id, attributes)
 
+    def _ensure_close_watcher(self) -> None:
+        if self._close_watcher_task is not None:
+            return
+
+        async def watch_for_close() -> None:
+            await self.protocol.wait_for_close()
+            self._fail_tool_call_streams(
+                error=RoomException("room client was closed before tool call completed")
+            )
+
+        self._close_watcher_task = asyncio.create_task(watch_for_close())
+
+    def _fail_tool_call_streams(self, *, error: BaseException) -> None:
+        open_streams = list(self._tool_call_streams.values())
+        self._tool_call_streams.clear()
+        for stream in open_streams:
+            stream.close_with_error(error)
+
+    async def _handle_tool_call_response_chunk(
+        self, protocol: Protocol, message_id: int, typ: str, data: bytes
+    ) -> None:
+        del protocol
+        del message_id
+        del typ
+        header, payload = unpack_message(data)
+        tool_call_id = header.get("tool_call_id")
+        if not isinstance(tool_call_id, str) or tool_call_id == "":
+            logger.warning("ignoring tool call response chunk without tool_call_id")
+            return
+
+        chunk_payload = header.get("chunk")
+        if isinstance(chunk_payload, dict) and isinstance(
+            chunk_payload.get("type"), str
+        ):
+            try:
+                chunk_payload = unpack_content_parts(
+                    header=chunk_payload, payload=payload
+                )
+            except KeyError:
+                pass
+            except Exception as ex:
+                logger.warning(
+                    "unable to unpack tool call response chunk payload",
+                    exc_info=ex,
+                )
+
+        stream = self._tool_call_streams.get(tool_call_id, None)
+        if stream is not None:
+            try:
+                stream_chunk = (
+                    chunk_payload
+                    if isinstance(chunk_payload, Content)
+                    else ensure_content(chunk_payload)
+                )
+                stream._push_chunk(stream_chunk)
+            except Exception as ex:
+                stream.close_with_error(
+                    RoomException(f"unable to decode tool call stream chunk: {ex}")
+                )
+
+        self.emit(
+            "room.tool_call_response_chunk",
+            event={
+                "tool_call_id": tool_call_id,
+                "toolkit": header.get("toolkit"),
+                "tool": header.get("tool"),
+                "chunk": chunk_payload,
+            },
+        )
+
+    def _make_tool_call_stream(
+        self, *, tool_call_id: str, request_task: asyncio.Task[Content]
+    ) -> "_ToolCallChunkStream":
+        call_stream = _ToolCallChunkStream(
+            tool_call_id=tool_call_id,
+            task=request_task,
+            on_close=lambda: self._tool_call_streams.pop(tool_call_id, None),
+        )
+        self._tool_call_streams[tool_call_id] = call_stream
+        return call_stream
+
+    async def _send_tool_call_request_chunk(
+        self,
+        *,
+        tool_call_id: str,
+        chunk: Content,
+    ) -> None:
+        request_header, request_data = pack_request_parts(chunk)
+        await self.send_request(
+            "room.tool_call_request_chunk",
+            {"tool_call_id": tool_call_id, "chunk": request_header},
+            data=request_data,
+        )
+
+    async def _stream_tool_call_request_chunks(
+        self,
+        *,
+        tool_call_id: str,
+        request_stream_parts: AsyncIterable[Content],
+    ) -> None:
+        # Let the invoke request be queued first to avoid early chunk races.
+        await asyncio.sleep(0)
+        try:
+            async for item in request_stream_parts:
+                if not isinstance(item, Content):
+                    raise RoomException(
+                        "invoke_tool input stream items must be Content values"
+                    )
+                await self._send_tool_call_request_chunk(
+                    tool_call_id=tool_call_id,
+                    chunk=item,
+                )
+        finally:
+            await self._send_tool_call_request_chunk(
+                tool_call_id=tool_call_id,
+                chunk=_ControlContent(method="close"),
+            )
+
+    async def call(
+        self,
+        *,
+        name: str,
+        url: str,
+        arguments: dict,
+        api: Optional[ApiScope] = None,
+    ) -> None:
+        await self.send_request(
+            "room.call",
+            _MakeCallRequest(
+                name=name,
+                url=url,
+                arguments=arguments,
+                api=api,
+            ).model_dump(mode="json"),
+        )
+
+    async def invoke(
+        self,
+        *,
+        toolkit: str,
+        tool: str,
+        input: str | dict | Content | AsyncIterable[Content] | None = None,
+        participant_id: Optional[str] = None,
+        on_behalf_of_id: Optional[str] = None,
+        caller_context: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Content | AsyncIterator[Content]:
+        if "arguments" in kwargs and input is None:
+            input = kwargs.pop("arguments")
+            logger.warning(
+                "invoke_tool(arguments=...) is deprecated; use invoke_tool(input=...)"
+            )
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(
+                f"invoke_tool() got unexpected keyword argument(s): {unexpected}"
+            )
+        if input is None:
+            input = EmptyContent()
+
+        resolved_tool_call_id = uuid.uuid4().hex
+
+        request_payload: Dict[str, Any] = {
+            "toolkit": toolkit,
+            "tool": tool,
+            "participant_id": participant_id,
+            "on_behalf_of_id": on_behalf_of_id,
+        }
+
+        request_stream_task: Optional[asyncio.Task[None]] = None
+        invoke_data: bytes | None = None
+        if isinstance(input, AsyncIterable):
+            # Request streaming starts with the initial open control chunk
+            # carried in invoke arguments.
+            request_header, _ = pack_request_parts(_ControlContent(method="open"))
+            request_payload["arguments"] = request_header
+            request_stream_task = asyncio.create_task(
+                self._stream_tool_call_request_chunks(
+                    tool_call_id=resolved_tool_call_id,
+                    request_stream_parts=input,
+                )
+            )
+        elif isinstance(input, (str, dict, Content)):
+            input_content = ensure_content(input)
+            request_header, invoke_data = pack_request_parts(input_content)
+            request_payload["arguments"] = request_header
+        else:
+            raise RoomException(
+                "invoke_tool input must be str, dict, Content, or an async iterable of Content values"
+            )
+
+        if caller_context is not None:
+            request_payload["caller_context"] = caller_context
+
+        request_payload["tool_call_id"] = resolved_tool_call_id
+
+        self._ensure_close_watcher()
+        invoke_task = asyncio.create_task(
+            self.send_request(
+                "room.invoke_tool",
+                request_payload,
+                invoke_data,
+            )
+        )
+        call_stream = self._make_tool_call_stream(
+            tool_call_id=resolved_tool_call_id, request_task=invoke_task
+        )
+        if request_stream_task is not None:
+
+            def on_request_stream_done(task: asyncio.Task[None]) -> None:
+                try:
+                    task.result()
+                except asyncio.CancelledError:
+                    return
+                except Exception as ex:
+                    if isinstance(ex, RoomException):
+                        wrapped_error = RoomException(
+                            f"request stream failed: {ex}",
+                            status_code=ex.status_code,
+                            code=ex.code,
+                        )
+                    else:
+                        wrapped_error = RoomException(f"request stream failed: {ex}")
+                    call_stream.close_with_error(wrapped_error)
+
+            request_stream_task.add_done_callback(on_request_stream_done)
+
+        try:
+            response = ensure_content(await invoke_task)
+        except asyncio.CancelledError as ex:
+            if request_stream_task is not None and not request_stream_task.done():
+                request_stream_task.cancel()
+                await asyncio.gather(request_stream_task, return_exceptions=True)
+            if call_stream.error is not None:
+                raise call_stream.error from ex
+            raise
+        except Exception:
+            if request_stream_task is not None and not request_stream_task.done():
+                request_stream_task.cancel()
+                await asyncio.gather(request_stream_task, return_exceptions=True)
+            raise
+
+        if isinstance(response, _ControlContent) and response.method == "open":
+            if request_stream_task is not None:
+                call_stream.attach_request_stream_task(request_stream_task)
+            return call_stream.stream()
+
+        if request_stream_task is not None:
+            await request_stream_task
+        return response
+
+    async def list_toolkits(
+        self,
+        *,
+        participant_id: Optional[str] = None,
+        participant_name: Optional[str] = None,
+        timeout: Optional[int] = None,
+    ) -> List["ToolkitDescription"]:
+        """
+        Fetch a list of available toolkits and parse into `ToolkitDescription` objects.
+        """
+        request: Dict[str, Any] = {}
+        if participant_id is not None:
+            request["participant_id"] = participant_id
+        if participant_name is not None:
+            request["participant_name"] = participant_name
+        if timeout is not None:
+            request["timeout"] = timeout
+
+        response = await self.send_request("room.list_toolkits", request)
+        # 'response["tools"]' is assumed to be a dict of toolkits by name
+        toolkits_data = response["tools"]
+
+        result = []
+        for toolkit_name, tk_json in toolkits_data.items():
+            # Parse top-level toolkit properties
+            title = tk_json.get("title", "")
+            description = tk_json.get("description", "")
+            thumbnail_url = tk_json.get("thumbnail_url", None)
+            participant_id = tk_json.get("participant_id", None)
+
+            # Tools are usually a dict keyed by tool name
+            tools = []
+            raw_tools = tk_json.get("tools", {})
+            for tool_name, tool_json in raw_tools.items():
+                supports_context = tool_json.get(
+                    "supports_context",
+                    tool_json.get("supportsContext", False),
+                )
+                input_spec = ToolContentSpec.from_json(tool_json.get("input_spec"))
+                legacy_input_schema = tool_json.get("input_schema")
+                if legacy_input_schema is not None and input_spec is None:
+                    input_spec = ToolContentSpec(
+                        types=["json"],
+                        schema=legacy_input_schema,
+                    )
+                elif (
+                    legacy_input_schema is not None
+                    and input_spec is not None
+                    and input_spec.includes("json")
+                    and input_spec.schema is None
+                ):
+                    input_spec = ToolContentSpec(
+                        types=input_spec.types,
+                        stream=input_spec.stream,
+                        schema=legacy_input_schema,
+                    )
+
+                output_spec = ToolContentSpec.from_json(tool_json.get("output_spec"))
+                legacy_output_schema = tool_json.get("output_schema")
+                if legacy_output_schema is not None and output_spec is None:
+                    output_spec = ToolContentSpec(
+                        types=["json"],
+                        schema=legacy_output_schema,
+                    )
+                elif (
+                    legacy_output_schema is not None
+                    and output_spec is not None
+                    and output_spec.includes("json")
+                    and output_spec.schema is None
+                ):
+                    output_spec = ToolContentSpec(
+                        types=output_spec.types,
+                        stream=output_spec.stream,
+                        schema=legacy_output_schema,
+                    )
+
+                tools.append(
+                    ToolDescription(
+                        name=tool_name,
+                        title=tool_json.get("title", ""),
+                        description=tool_json.get("description", ""),
+                        input_spec=input_spec,
+                        output_spec=output_spec,
+                        thumbnail_url=tool_json.get("thumbnail_url", None),
+                        defs=tool_json.get("defs", None),
+                        pricing=tool_json.get("pricing", None),
+                        supports_context=supports_context,
+                    )
+                )
+
+            result.append(
+                ToolkitDescription(
+                    name=toolkit_name,
+                    title=title,
+                    description=description,
+                    tools=tools,
+                    thumbnail_url=thumbnail_url,
+                    participant_id=participant_id,
+                )
+            )
+        return result
+
 
 T = TypeVar("T")
 
@@ -665,17 +1041,140 @@ class _RefCount(Generic[T]):
         self.count = 1
 
 
+class _SyncOpenStartChunkHeaders(BaseModel):
+    kind: Literal["start"]
+    path: str
+    create: bool = True
+    vector: str | None = None
+    schema_value: dict[str, Any] | None = Field(default=None, alias="schema")
+    schema_path: str | None = None
+    initial_json: dict[str, Any] | None = None
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class _SyncOpenInputChunkHeaders(BaseModel):
+    kind: Literal["sync"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SyncOpenStateChunkHeaders(BaseModel):
+    kind: Literal["state"]
+    path: str
+    schema_value: dict[str, Any] = Field(alias="schema")
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class _SyncOpenOutputChunkHeaders(BaseModel):
+    kind: Literal["sync"]
+    path: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SyncOpenStreamState:
+    _INPUT_STREAM_CLOSE = object()
+
+    def __init__(
+        self,
+        *,
+        path: str,
+        create: bool,
+        vector: str | None,
+        schema: dict[str, Any] | None,
+        schema_path: str | None,
+        initial_json: dict[str, Any] | None,
+    ) -> None:
+        self._path = path
+        self._create = create
+        self._vector = vector
+        self._schema = schema
+        self._schema_path = schema_path
+        self._initial_json = initial_json
+        self._input_q: asyncio.Queue[BinaryContent | object] = asyncio.Queue()
+        self._input_closed = False
+        self._task: asyncio.Task[None] | None = None
+        self._error: BaseException | None = None
+
+    @property
+    def error(self) -> BaseException | None:
+        return self._error
+
+    async def input_stream(self) -> AsyncIterator[Content]:
+        yield BinaryContent(
+            data=b"",
+            headers={
+                "kind": "start",
+                "path": self._path,
+                "create": self._create,
+                "vector": self._vector,
+                "schema": self._schema,
+                "schema_path": self._schema_path,
+                "initial_json": self._initial_json,
+            },
+        )
+
+        while True:
+            chunk = await self._input_q.get()
+            if chunk is self._INPUT_STREAM_CLOSE:
+                return
+            if not isinstance(chunk, BinaryContent):
+                raise RoomException("sync input queue produced an invalid stream chunk")
+            yield chunk
+
+    def attach_task(self, task: asyncio.Task[None]) -> None:
+        self._task = task
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as ex:
+            self._error = ex
+        finally:
+            self.close_input_stream()
+
+    def close_input_stream(self) -> None:
+        if self._input_closed:
+            return
+        self._input_closed = True
+        self._input_q.put_nowait(self._INPUT_STREAM_CLOSE)
+
+    def queue_sync(self, *, data: bytes) -> None:
+        if self._error is not None:
+            if isinstance(self._error, Exception):
+                raise self._error
+            raise RoomException(f"sync stream failed: {self._error}")
+        if self._input_closed:
+            raise RoomException(
+                "attempted to sync to a document that is not connected",
+                code=ErrorCode.SYNC_NOT_CONNECTED,
+            )
+        self._input_q.put_nowait(
+            BinaryContent(
+                data=data,
+                headers={"kind": "sync"},
+            )
+        )
+
+    async def wait(self) -> None:
+        if self._task is not None:
+            await self._task
+
+
 class SyncClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
-        room.protocol.register_handler("room.sync", self._handle_sync)
-
         self._connected_documents = dict[str, _RefCount[MeshDocument]]()
         self._connecting_documents = dict[
             str, asyncio.Future[_RefCount[MeshDocument]]
         ]()
-        self._sync_ch = Chan[_QueuedSync]()
-        self._main_task = None
+        self._document_streams = dict[str, _SyncOpenStreamState]()
+        self._started = False
 
     @staticmethod
     def _unexpected_response_error(*, operation: str) -> RoomException:
@@ -690,36 +1189,41 @@ class SyncClient:
             open_documents[k] = v.ref
         return open_documents
 
-    async def _main(self):
-        import contextlib
-
-        with contextlib.suppress(asyncio.CancelledError):
-            async for q in self._sync_ch:
-                logger.info("client sync sending for {path}".format(path=q.path))
-                try:
-                    await self.room.send_request(
-                        "room.sync", {"path": q.path}, q.base64.encode("utf-8")
-                    )
-                except RoomException as ex:
-                    if ex.code == ErrorCode.SYNC_NOT_CONNECTED:
-                        logger.debug(
-                            "dropping stale queued sync for disconnected path %s",
-                            q.path,
-                        )
-                        continue
-                    raise
+    @staticmethod
+    def _apply_sync_payload(*, doc: _RefCount[MeshDocument], payload: bytes) -> None:
+        if payload:
+            runtime.apply_backend_changes(doc.ref.id, payload.decode("utf-8"))
+        if not doc.ref.synchronized.done():
+            doc.ref.synchronized.set_result(True)
 
     async def start(self):
-        if self._main_task is not None:
+        if self._started:
             raise Exception("client already started")
-
-        self._main_task = asyncio.create_task(self._main())
+        self._started = True
 
     async def stop(self):
-        self._sync_ch.close()
+        for path in list(self._connected_documents.keys()):
+            ref = self._connected_documents.get(path)
+            if ref is None:
+                continue
+            ref.count = 1
+            try:
+                await self.close(path=path)
+            except Exception as ex:
+                logger.debug("sync stream close failed for %s", path, exc_info=ex)
+        self._started = False
 
-        if self._main_task is not None:
-            await asyncio.gather(self._main_task)
+    async def _invoke(
+        self,
+        *,
+        operation: str,
+        input: dict | Content | AsyncIterable[Content],
+    ) -> Content | AsyncIterator[Content]:
+        return await self.room.invoke(
+            toolkit="sync",
+            tool=operation,
+            input=input,
+        )
 
     async def create(
         self,
@@ -729,19 +1233,30 @@ class SyncClient:
         schema: Optional[MeshSchema] = None,
     ) -> None:
         normalized_path = _normalize_sync_path(path)
-        request: dict[str, Any] = {"path": normalized_path, "json": json}
-        if schema is not None:
-            request["schema"] = schema.to_json()
-        await self.room.send_request("room.create", request)
-
-    async def describe(self, *, path: str, create: bool = True) -> MeshDocument:
-        del create
-        res = await self.room.send_request(
-            "room.describe", {"path": _normalize_sync_path(path)}
+        await self._invoke(
+            operation="create",
+            input={
+                "path": normalized_path,
+                "json": json,
+                "schema": None if schema is None else schema.to_json(),
+                "schema_path": None,
+            },
         )
-        if not isinstance(res, JsonContent):
+
+    async def describe(self, *, path: str, create: bool = True) -> dict:
+        del create
+        response = await self._invoke(
+            operation="describe",
+            input={
+                "path": _normalize_sync_path(path),
+                "schema_path": None,
+            },
+        )
+        if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="describe")
-        return res.json
+        if not isinstance(response.json, dict):
+            raise self._unexpected_response_error(operation="describe")
+        return response.json
 
     async def open(
         self,
@@ -774,36 +1289,82 @@ class SyncClient:
         connecting_fut.add_done_callback(_consume_exception)
         self._connecting_documents[path] = connecting_fut
 
-        def publish_sync(base64: str):
-            self._sync_ch.send_nowait(_QueuedSync(path=path, base64=base64))
-
         # if locally cached, can send state vector
         # vec = doc.get_state_vector()
         # "vector": base64.standard_b64encode(vec).decode("utf-8")
         try:
-            extra = {}
-
-            if schema is not None:
-                extra["schema"] = schema.to_json()
-
-            if initial_json is not None:
-                extra["initial_json"] = initial_json
-
-            response = await self.room.send_request(
-                "room.connect", {"path": path, "create": create, **extra}
+            stream_state = _SyncOpenStreamState(
+                path=path,
+                create=create,
+                vector=None,
+                schema=None if schema is None else schema.to_json(),
+                schema_path=None,
+                initial_json=initial_json,
             )
-            if not isinstance(response, JsonContent):
+            response = await self._invoke(
+                operation="open",
+                input=stream_state.input_stream(),
+            )
+            if isinstance(response, Content):
                 raise self._unexpected_response_error(operation="open")
 
-            schema_json = response["schema"]
+            response_stream = response.__aiter__()
+            try:
+                first_chunk = await response_stream.__anext__()
+            except StopAsyncIteration as exc:
+                raise RoomException(
+                    "sync.open stream closed before the initial document state was returned",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                ) from exc
+
+            if isinstance(first_chunk, ErrorContent):
+                raise RoomException(first_chunk.text, code=first_chunk.code)
+            if not isinstance(first_chunk, BinaryContent):
+                raise self._unexpected_response_error(operation="open")
+
+            try:
+                state_headers = _SyncOpenStateChunkHeaders.model_validate(
+                    first_chunk.headers
+                )
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="open") from exc
+
+            if _normalize_sync_path(state_headers.path) != path:
+                raise RoomException(
+                    "sync.open stream returned a mismatched path",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+
+            def publish_sync(base64: str) -> None:
+                try:
+                    stream_state.queue_sync(data=base64.encode("utf-8"))
+                except Exception as ex:
+                    logger.debug(
+                        "dropping sync for closed document stream %s",
+                        path,
+                        exc_info=ex,
+                    )
+
             doc: MeshDocument = runtime.new_document(
-                schema=MeshSchema.from_json(schema_json),
+                schema=MeshSchema.from_json(state_headers.schema_value),
                 on_document_sync=publish_sync,
                 factory=MeshDocument,
             )
 
             ref = _RefCount(doc)
             self._connected_documents[path] = ref
+            self._document_streams[path] = stream_state
+            self._apply_sync_payload(doc=ref, payload=first_chunk.data)
+            stream_state.attach_task(
+                asyncio.create_task(
+                    self._consume_open_stream(
+                        path=path,
+                        doc=ref,
+                        response_stream=response_stream,
+                        stream_state=stream_state,
+                    )
+                )
+            )
             connecting_fut.set_result(ref)
             self._connecting_documents.pop(path)
 
@@ -813,6 +1374,8 @@ class SyncClient:
             raise
 
         except Exception as e:
+            if "stream_state" in locals():
+                stream_state.close_input_stream()
             connecting_fut.set_exception(e)
             self._connecting_documents.pop(path)
             raise
@@ -832,39 +1395,79 @@ class SyncClient:
         ref.count = ref.count - 1
         if ref.count == 0:
             doc = self._connected_documents.pop(path)
-            await self.room.send_request("room.disconnect", {"path": path})
-            runtime._unregister_document(doc=doc.ref)
+            stream_state = self._document_streams.pop(path, None)
+            if stream_state is not None:
+                stream_state.close_input_stream()
+                try:
+                    await stream_state.wait()
+                finally:
+                    runtime._unregister_document(doc=doc.ref)
+            else:
+                runtime._unregister_document(doc=doc.ref)
 
     async def sync(self, *, path: str, data: bytes) -> None:
         path = _normalize_sync_path(path)
-        await self.room.send_request("room.sync", {"path": path}, data=data)
+        if path not in self._connected_documents:
+            raise RoomException(
+                "attempted to sync to a document that is not connected",
+                code=ErrorCode.SYNC_NOT_CONNECTED,
+            )
+        stream_state = self._document_streams.get(path)
+        if stream_state is None:
+            raise RoomException(
+                "attempted to sync to a document that is not connected",
+                code=ErrorCode.SYNC_NOT_CONNECTED,
+            )
+        stream_state.queue_sync(data=data)
+
+    async def _consume_open_stream(
+        self,
+        *,
+        path: str,
+        doc: _RefCount[MeshDocument],
+        response_stream: AsyncIterator[Content],
+        stream_state: _SyncOpenStreamState,
+    ) -> None:
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation="open")
+                if not isinstance(chunk, BinaryContent):
+                    raise self._unexpected_response_error(operation="open")
+
+                try:
+                    chunk_headers = _SyncOpenOutputChunkHeaders.model_validate(
+                        chunk.headers
+                    )
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation="open") from exc
+
+                if _normalize_sync_path(chunk_headers.path) != path:
+                    raise RoomException(
+                        "sync.open stream returned a mismatched path",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    )
+
+                try:
+                    self._apply_sync_payload(doc=doc, payload=chunk.data)
+                except ChanClosed:
+                    pass
+        finally:
+            stream_state.close_input_stream()
 
     async def _handle_sync(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
-        header, payload = unpack_message(data=data)
-        path = _normalize_sync_path(header["path"])
-
-        if path in self._connecting_documents:
-            # Wait for document to be fully connected and initialized
-            await self._connecting_documents[path]
-
-        if path in self._connected_documents:
-            doc = self._connected_documents[path]
-
-            try:
-                runtime.apply_backend_changes(doc.ref.id, payload.decode("utf-8"))
-                if not doc.ref.synchronized.done():
-                    doc.ref.synchronized.set_result(True)
-
-            except ChanClosed:
-                # ignore channel closing during sync (happens if connection is closed after receiving changes from server)
-                pass
-        else:
-            logger.debug("received change for a document that is not connected:" + path)
+        del protocol, message_id, type, data
+        logger.debug("ignoring legacy room.sync message for streamed sync client")
 
 
 ToolContentType = Literal[
+    "binary",
     "json",
     "text",
     "file",
@@ -872,6 +1475,7 @@ ToolContentType = Literal[
     "empty",
 ]
 _SUPPORTED_TOOL_CONTENT_KINDS: set[str] = {
+    "binary",
     "json",
     "text",
     "file",
@@ -1061,6 +1665,16 @@ class _ListServicesResponse(ListServicesResult):
     pass
 
 
+class _ListServicesToolkitResponse(BaseModel):
+    services_json: list[str] = Field(default_factory=list)
+    service_states: list[ServiceRuntimeState] = Field(default_factory=list)
+
+
+class _LivekitConnectionInfoResponse(BaseModel):
+    url: str
+    token: str
+
+
 class ServicesClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
@@ -1088,23 +1702,43 @@ class ServicesClient:
         Fetch a list of services plus runtime state details from the service controller.
         """
 
-        response = await self.room.send_request(
-            "services.list",
-            {},
+        response = await self.room.invoke(
+            toolkit="services",
+            tool="list",
+            input={},
         )
 
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list")
 
-        return _ListServicesResponse.model_validate(response.json)
+        try:
+            payload = _ListServicesToolkitResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list") from exc
+
+        try:
+            services = [
+                ServiceSpec.model_validate_json(service_json)
+                for service_json in payload.services_json
+            ]
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list") from exc
+
+        return ListServicesResult(
+            services=services,
+            service_states={
+                state.service_id: state for state in payload.service_states
+            },
+        )
 
     async def restart(self, *, service_id: str) -> None:
         """
         Restart a managed room service by service id.
         """
-        await self.room.send_request(
-            "services.restart",
-            {"service_id": service_id},
+        await self.room.invoke(
+            toolkit="services",
+            tool="restart",
+            input={"service_id": service_id},
         )
 
 
@@ -1123,6 +1757,7 @@ class _ToolCallChunkStream:
         self._error: Optional[BaseException] = None
         self._closed = False
         self._opened = False
+        self._request_stream_task: Optional[asyncio.Task[None]] = None
         task.add_done_callback(self._on_task_done)
 
     @property
@@ -1139,6 +1774,12 @@ class _ToolCallChunkStream:
 
     def __await__(self):
         return self.result.__await__()
+
+    def attach_request_stream_task(self, task: asyncio.Task[None]) -> None:
+        self._request_stream_task = task
+
+    async def _drain_request_stream_task(self, task: asyncio.Task[None]) -> None:
+        await asyncio.gather(task, return_exceptions=True)
 
     def _close(
         self,
@@ -1157,6 +1798,14 @@ class _ToolCallChunkStream:
             self._queue.put_nowait(result)
 
         self._queue.put_nowait(None)
+        if (
+            self._request_stream_task is not None
+            and not self._request_stream_task.done()
+        ):
+            self._request_stream_task.cancel()
+            asyncio.create_task(
+                self._drain_request_stream_task(self._request_stream_task)
+            )
         try:
             self._on_close()
         except Exception as ex:
@@ -1166,6 +1815,21 @@ class _ToolCallChunkStream:
         self._close(error=error)
         if not self._task.done():
             self._task.cancel()
+
+    async def cancel(self) -> None:
+        request_stream_task = self._request_stream_task
+        task = self._task
+        self._close()
+        if not task.done():
+            task.cancel()
+
+        awaitables: list[asyncio.Future[Any] | asyncio.Task[Any]] = []
+        if request_stream_task is not None and not request_stream_task.done():
+            awaitables.append(request_stream_task)
+        if not task.done():
+            awaitables.append(task)
+        if awaitables:
+            await asyncio.gather(*awaitables, return_exceptions=True)
 
     def _on_task_done(self, task: asyncio.Task[Content]) -> None:
         if self._closed:
@@ -1191,6 +1855,8 @@ class _ToolCallChunkStream:
                 )
                 return
             self._close(result=result)
+        except asyncio.CancelledError:
+            self._close()
         except Exception as ex:
             self._close(error=ex)
 
@@ -1198,7 +1864,6 @@ class _ToolCallChunkStream:
         if self._closed:
             return
 
-        self._queue.put_nowait(response_chunk)
         if (
             isinstance(response_chunk, _ControlContent)
             and response_chunk.method == "close"
@@ -1215,7 +1880,10 @@ class _ToolCallChunkStream:
                     )
                 )
             else:
-                self._close()
+                self._close(result=response_chunk)
+            return
+
+        self._queue.put_nowait(response_chunk)
 
     async def __aiter__(self) -> AsyncIterator[Content]:
         while True:
@@ -1227,109 +1895,54 @@ class _ToolCallChunkStream:
             yield item
 
     def stream(self) -> AsyncIterator[Content]:
-        return self.__aiter__()
+        async def wrapped() -> AsyncIterator[Content]:
+            try:
+                async for item in self:
+                    yield item
+            finally:
+                await self.cancel()
+
+        return wrapped()
 
 
 class AgentsClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
-        self._tool_call_streams: Dict[str, _ToolCallChunkStream] = {}
-        self._close_watcher_task: Optional[asyncio.Task[None]] = None
-        self.room.protocol.register_handler(
-            "agent.tool_call_response_chunk", self._handle_tool_call_response_chunk
-        )
 
     def _ensure_close_watcher(self) -> None:
-        if self._close_watcher_task is not None:
-            return
-
-        async def watch_for_close() -> None:
-            await self.room.protocol.wait_for_close()
-            self._fail_tool_call_streams(
-                error=RoomException("room client was closed before tool call completed")
-            )
-
-        self._close_watcher_task = asyncio.create_task(watch_for_close())
+        self.room._ensure_close_watcher()
 
     def _fail_tool_call_streams(self, *, error: BaseException) -> None:
-        open_streams = list(self._tool_call_streams.values())
-        self._tool_call_streams.clear()
-        for stream in open_streams:
-            stream.close_with_error(error)
+        self.room._fail_tool_call_streams(error=error)
 
     async def _handle_tool_call_response_chunk(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
     ) -> None:
-        del protocol
-        del message_id
-        del typ
-        header, payload = unpack_message(data)
-        tool_call_id = header.get("tool_call_id")
-        if not isinstance(tool_call_id, str) or tool_call_id == "":
-            logger.warning("ignoring tool call response chunk without tool_call_id")
-            return
-
-        chunk_payload = header.get("chunk")
-        if isinstance(chunk_payload, dict) and isinstance(
-            chunk_payload.get("type"), str
-        ):
-            try:
-                chunk_payload = unpack_content_parts(
-                    header=chunk_payload, payload=payload
-                )
-            except KeyError:
-                pass
-            except Exception as ex:
-                logger.warning(
-                    "unable to unpack tool call response chunk payload",
-                    exc_info=ex,
-                )
-
-        stream = self._tool_call_streams.get(tool_call_id, None)
-        if stream is not None:
-            try:
-                stream_chunk = (
-                    chunk_payload
-                    if isinstance(chunk_payload, Content)
-                    else ensure_content(chunk_payload)
-                )
-                stream._push_chunk(stream_chunk)
-            except Exception as ex:
-                stream.close_with_error(
-                    RoomException(f"unable to decode tool call stream chunk: {ex}")
-                )
-
-        self.room.emit(
-            "agent.tool_call_response_chunk",
-            event={
-                "tool_call_id": tool_call_id,
-                "toolkit": header.get("toolkit"),
-                "tool": header.get("tool"),
-                "chunk": chunk_payload,
-            },
+        await self.room._handle_tool_call_response_chunk(
+            protocol=protocol,
+            message_id=message_id,
+            typ=typ,
+            data=data,
         )
 
     async def make_call(
         self, *, name: str, url: str, arguments: dict, api: Optional[ApiScope] = None
     ) -> None:
-        await self.room.send_request(
-            "agent.call",
-            _MakeCallRequest(
-                name=name, url=url, arguments=arguments, api=api
-            ).model_dump(mode="json"),
+        await self.room.call(
+            name=name,
+            url=url,
+            arguments=arguments,
+            api=api,
         )
         return None
 
     def _make_tool_call_stream(
         self, *, tool_call_id: str, request_task: asyncio.Task[Content]
     ) -> _ToolCallChunkStream:
-        call_stream = _ToolCallChunkStream(
+        return self.room._make_tool_call_stream(
             tool_call_id=tool_call_id,
-            task=request_task,
-            on_close=lambda: self._tool_call_streams.pop(tool_call_id, None),
+            request_task=request_task,
         )
-        self._tool_call_streams[tool_call_id] = call_stream
-        return call_stream
 
     async def _send_tool_call_request_chunk(
         self,
@@ -1337,11 +1950,9 @@ class AgentsClient:
         tool_call_id: str,
         chunk: Content,
     ) -> None:
-        request_header, request_data = pack_request_parts(chunk)
-        await self.room.send_request(
-            "agent.tool_call_request_chunk",
-            {"tool_call_id": tool_call_id, "chunk": request_header},
-            data=request_data,
+        await self.room._send_tool_call_request_chunk(
+            tool_call_id=tool_call_id,
+            chunk=chunk,
         )
 
     async def _stream_tool_call_request_chunks(
@@ -1350,23 +1961,10 @@ class AgentsClient:
         tool_call_id: str,
         request_stream_parts: AsyncIterable[Content],
     ) -> None:
-        # Let the invoke request be queued first to avoid early chunk races.
-        await asyncio.sleep(0)
-        try:
-            async for item in request_stream_parts:
-                if not isinstance(item, Content):
-                    raise RoomException(
-                        "invoke_tool input stream items must be Content values"
-                    )
-                await self._send_tool_call_request_chunk(
-                    tool_call_id=tool_call_id,
-                    chunk=item,
-                )
-        finally:
-            await self._send_tool_call_request_chunk(
-                tool_call_id=tool_call_id,
-                chunk=_ControlContent(method="close"),
-            )
+        await self.room._stream_tool_call_request_chunks(
+            tool_call_id=tool_call_id,
+            request_stream_parts=request_stream_parts,
+        )
 
     async def invoke_tool(
         self,
@@ -1379,101 +1977,15 @@ class AgentsClient:
         caller_context: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Content | AsyncIterator[Content]:
-        if "arguments" in kwargs and input is None:
-            input = kwargs.pop("arguments")
-            logger.warning(
-                "invoke_tool(arguments=...) is deprecated; use invoke_tool(input=...)"
-            )
-        if kwargs:
-            unexpected = ", ".join(sorted(kwargs.keys()))
-            raise TypeError(
-                f"invoke_tool() got unexpected keyword argument(s): {unexpected}"
-            )
-        if input is None:
-            input = EmptyContent()
-
-        resolved_tool_call_id = uuid.uuid4().hex
-
-        request_payload: Dict[str, Any] = {
-            "toolkit": toolkit,
-            "tool": tool,
-            "participant_id": participant_id,
-            "on_behalf_of_id": on_behalf_of_id,
-        }
-
-        request_stream_task: Optional[asyncio.Task[None]] = None
-        invoke_data: bytes | None = None
-        if isinstance(input, AsyncIterable):
-            # Request streaming starts with the initial open control chunk
-            # carried in invoke arguments.
-            request_header, _ = pack_request_parts(_ControlContent(method="open"))
-            request_payload["arguments"] = request_header
-            request_stream_task = asyncio.create_task(
-                self._stream_tool_call_request_chunks(
-                    tool_call_id=resolved_tool_call_id,
-                    request_stream_parts=input,
-                )
-            )
-        elif isinstance(input, (str, dict, Content)):
-            input_content = ensure_content(input)
-            request_header, invoke_data = pack_request_parts(input_content)
-            request_payload["arguments"] = request_header
-        else:
-            raise RoomException(
-                "invoke_tool input must be str, dict, Content, or an async iterable of Content values"
-            )
-
-        if caller_context is not None:
-            request_payload["caller_context"] = caller_context
-
-        request_payload["tool_call_id"] = resolved_tool_call_id
-
-        self._ensure_close_watcher()
-        invoke_task = asyncio.create_task(
-            self.room.send_request(
-                "agent.invoke_tool",
-                request_payload,
-                invoke_data,
-            )
+        return await self.room.invoke(
+            toolkit=toolkit,
+            tool=tool,
+            input=input,
+            participant_id=participant_id,
+            on_behalf_of_id=on_behalf_of_id,
+            caller_context=caller_context,
+            **kwargs,
         )
-        call_stream = self._make_tool_call_stream(
-            tool_call_id=resolved_tool_call_id, request_task=invoke_task
-        )
-        if request_stream_task is not None:
-
-            def on_request_stream_done(task: asyncio.Task[None]) -> None:
-                try:
-                    task.result()
-                except asyncio.CancelledError:
-                    return
-                except Exception as ex:
-                    call_stream.close_with_error(
-                        RoomException(f"request stream failed: {ex}")
-                    )
-
-            request_stream_task.add_done_callback(on_request_stream_done)
-
-        try:
-            response = ensure_content(await invoke_task)
-        except asyncio.CancelledError as ex:
-            if request_stream_task is not None and not request_stream_task.done():
-                request_stream_task.cancel()
-                await asyncio.gather(request_stream_task, return_exceptions=True)
-            if call_stream.error is not None:
-                raise call_stream.error from ex
-            raise
-        except Exception:
-            if request_stream_task is not None and not request_stream_task.done():
-                request_stream_task.cancel()
-                await asyncio.gather(request_stream_task, return_exceptions=True)
-            raise
-
-        if isinstance(response, _ControlContent) and response.method == "open":
-            return call_stream.stream()
-
-        if request_stream_task is not None:
-            await request_stream_task
-        return response
 
     async def list_toolkits(
         self,
@@ -1485,88 +1997,11 @@ class AgentsClient:
         """
         Fetch a list of available toolkits and parse into `ToolkitDescription` objects.
         """
-        request: Dict[str, Any] = {}
-        if participant_id is not None:
-            request["participant_id"] = participant_id
-        if participant_name is not None:
-            request["participant_name"] = participant_name
-        if timeout is not None:
-            request["timeout"] = timeout
-
-        response = await self.room.send_request("agent.list_toolkits", request)
-        # 'response["tools"]' is assumed to be a dict of toolkits by name
-        toolkits_data = response["tools"]
-
-        result = []
-        for toolkit_name, tk_json in toolkits_data.items():
-            # Parse top-level toolkit properties
-            title = tk_json.get("title", "")
-            description = tk_json.get("description", "")
-            thumbnail_url = tk_json.get("thumbnail_url", None)
-            participant_id = tk_json.get("participant_id", None)
-
-            # Each toolkit has a dict of 'tools'
-            tool_descriptions = []
-            if "tools" in tk_json:
-                for tool_name, tool_info in tk_json["tools"].items():
-                    input_spec = ToolContentSpec.from_json(
-                        tool_info.get("input_spec", None)
-                    )
-                    output_spec = ToolContentSpec.from_json(
-                        tool_info.get("output_spec", None)
-                    )
-
-                    # Backwards compatibility for servers still sending top-level schema fields.
-                    legacy_input_schema = tool_info.get("input_schema", None)
-                    if isinstance(legacy_input_schema, dict) and input_spec is None:
-                        input_spec = ToolContentSpec(
-                            types=["json"],
-                            stream=False,
-                            schema=legacy_input_schema,
-                        )
-
-                    legacy_output_schema = tool_info.get("output_schema", None)
-                    if isinstance(legacy_output_schema, dict):
-                        if output_spec is None:
-                            output_spec = ToolContentSpec(
-                                types=["json"],
-                                stream=False,
-                                schema=legacy_output_schema,
-                            )
-                        elif (
-                            output_spec.includes("json") and output_spec.schema is None
-                        ):
-                            output_spec = ToolContentSpec(
-                                types=[*output_spec.types],
-                                stream=output_spec.stream,
-                                schema=legacy_output_schema,
-                            )
-
-                    tool_descriptions.append(
-                        ToolDescription(
-                            name=tool_name,
-                            title=tool_info.get("title", ""),
-                            description=tool_info.get("description", ""),
-                            input_spec=input_spec,
-                            output_spec=output_spec,
-                            thumbnail_url=tool_info.get("thumbnail_url", None),
-                            defs=tool_info.get("defs", None),
-                            pricing=tool_info.get("pricing", None),
-                            supports_context=tool_info.get("supports_context", False),
-                        )
-                    )
-
-            toolkit = ToolkitDescription(
-                name=toolkit_name,
-                title=title,
-                description=description,
-                tools=tool_descriptions,
-                thumbnail_url=thumbnail_url,
-                participant_id=participant_id,
-            )
-            result.append(toolkit)
-
-        return result
+        return await self.room.list_toolkits(
+            participant_id=participant_id,
+            participant_name=participant_name,
+            timeout=timeout,
+        )
 
 
 class LivekitConnectionInfo:
@@ -1579,22 +2014,39 @@ class LivekitClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
 
+    @staticmethod
+    def _unexpected_response_error() -> RoomException:
+        return RoomException(
+            "unexpected return type from livekit.connect",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
     async def get_connection_info(
         self, *, breakout_room: Optional[str] = None
     ) -> LivekitConnectionInfo:
-        response = await self.room.send_request(
-            "livekit.connect", {"breakout_room": breakout_room}
+        response = await self.room.invoke(
+            toolkit="livekit",
+            tool="connect",
+            input={"breakout_room": breakout_room},
         )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error()
+
+        try:
+            payload = _LivekitConnectionInfoResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error() from exc
 
         return LivekitConnectionInfo(
-            url=response["url"],
-            token=response["token"],
+            url=payload.url,
+            token=payload.token,
         )
 
 
 class StorageEntry(BaseModel):
     name: str
     is_folder: bool
+    size: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -1649,6 +2101,23 @@ class StorageClient:
             participant_id=payload["participant_id"],
         )
 
+    async def _invoke(
+        self,
+        *,
+        operation: str,
+        input: dict | Content,
+        caller_context: Optional[dict[str, Any]] = None,
+    ) -> Content:
+        response = await self.room.invoke(
+            toolkit="storage",
+            tool=operation,
+            input=input,
+            caller_context=caller_context,
+        )
+        if not isinstance(response, Content):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
     async def exists(self, *, path: str):
         """
         Determines whether a file or folder exists at the specified path.
@@ -1664,13 +2133,13 @@ class StorageClient:
                 print("Data file exists!")
         """
 
-        response = await self.room.send_request("storage.exists", {"path": path})
+        response = await self._invoke(operation="exists", input={"path": path})
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="exists")
         return response.json["exists"]
 
     async def stat(self, *, path: str) -> StorageEntry | None:
-        response = await self.room.send_request("storage.stat", {"path": path})
+        response = await self._invoke(operation="stat", input={"path": path})
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="stat")
         payload = response.json
@@ -1681,6 +2150,7 @@ class StorageClient:
             return StorageEntry(
                 name=payload["name"],
                 is_folder=payload["is_folder"],
+                size=payload.get("size"),
                 created_at=datetime.fromisoformat(payload["created_at"])
                 if payload.get("created_at") is not None
                 else None,
@@ -1689,63 +2159,178 @@ class StorageClient:
                 else None,
             )
 
-    async def open(self, *, path: str, overwrite: bool = False):
-        """
-        Opens a file for writing. Returns a file handle that can be used to
-        write data or close the file.
+    @staticmethod
+    def _default_upload_name(*, path: str, name: str | None) -> str:
+        if isinstance(name, str) and name != "":
+            return name
+        return os.path.basename(path)
 
-        Arguments:
-            path (str): The file path to open.
-            overwrite (bool): Whether to overwrite if the file already exists.
-                              Defaults to False.
+    @staticmethod
+    def _default_upload_mime_type(*, name: str, mime_type: str | None) -> str:
+        if isinstance(mime_type, str) and mime_type != "":
+            return mime_type
+        guessed_mime_type, _ = mimetypes.guess_type(name)
+        if guessed_mime_type is None:
+            return "application/octet-stream"
+        return guessed_mime_type
 
-        Returns:
-            FileHandle: An object representing an open file.
-
-        Example:
-            handle = await storage_client.open(path="files/new.txt", overwrite=True)
-        """
-
-        response = await self.room.send_request(
-            "storage.open", {"path": path, "overwrite": overwrite}
+    async def upload_stream(
+        self,
+        *,
+        path: str,
+        chunks: AsyncIterable[bytes],
+        overwrite: bool = False,
+        chunk_size: int = 64 * 1024,
+        size: int | None = None,
+        name: str | None = None,
+        mime_type: str | None = None,
+    ) -> None:
+        resolved_name = self._default_upload_name(path=path, name=name)
+        resolved_mime_type = self._default_upload_mime_type(
+            name=resolved_name,
+            mime_type=mime_type,
         )
-        if not isinstance(response, JsonContent):
-            raise self._unexpected_response_error(operation="open")
-        return FileHandle(id=response["handle"])
+        input_stream = _StorageUploadInputStream(
+            path=path,
+            overwrite=overwrite,
+            chunks=chunks,
+            chunk_size=chunk_size,
+            size=size,
+            name=resolved_name,
+            mime_type=resolved_mime_type,
+        )
+        response = await self.room.invoke(
+            toolkit="storage",
+            tool="upload",
+            input=input_stream,
+        )
+        if isinstance(response, Content) or not isinstance(response, AsyncIterable):
+            input_stream.close()
+            raise self._unexpected_response_error(operation="upload")
 
-    async def write(self, *, handle: FileHandle, data: bytes) -> None:
+        try:
+            async for chunk in response:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation="upload")
+                if not isinstance(chunk, BinaryContent):
+                    raise self._unexpected_response_error(operation="upload")
+                if chunk.headers.get("kind") != "pull":
+                    raise self._unexpected_response_error(operation="upload")
+                input_stream.request_next()
+        finally:
+            input_stream.close()
+
+    async def upload(
+        self,
+        *,
+        path: str,
+        data: bytes,
+        overwrite: bool = False,
+        name: str | None = None,
+        mime_type: str | None = None,
+    ) -> None:
         """
-        Writes binary data to an open file handle.
+        Uploads binary data to a storage path.
 
         Arguments:
-            handle (FileHandle): The file handle to which data will be written.
+            path (str): The destination file path.
             data (bytes): The data to be written.
+            overwrite (bool): Whether to overwrite an existing file.
+            name (str | None): Optional file name metadata for the upload stream.
+            mime_type (str | None): Optional MIME type metadata for the upload stream.
 
         Returns:
             None
 
         Example:
             data_to_write = b"Sample data"
-            await storage_client.write(handle=my_handle, data=data_to_write)
+            await storage_client.upload(
+                path="files/new.txt",
+                data=data_to_write,
+                overwrite=True,
+            )
         """
 
-        await self.room.send_request("storage.write", {"handle": handle.id}, data=data)
+        async def single_chunk() -> AsyncIterator[bytes]:
+            yield data
 
-    async def close(self, *, handle: FileHandle):
-        """
-        Closes an open file handle, ensuring all data has been written.
+        await self.upload_stream(
+            path=path,
+            chunks=single_chunk(),
+            overwrite=overwrite,
+            size=len(data),
+            name=name,
+            mime_type=mime_type,
+        )
 
-        Arguments:
-            handle (FileHandle): The file handle to close.
+    async def download_stream(
+        self, *, path: str, chunk_size: int = 64 * 1024
+    ) -> AsyncIterator[BinaryContent]:
+        input_stream = _StorageDownloadInputStream(path=path, chunk_size=chunk_size)
+        response = await self.room.invoke(
+            toolkit="storage",
+            tool="download",
+            input=input_stream,
+        )
+        if isinstance(response, Content) or not isinstance(response, AsyncIterable):
+            input_stream.close()
+            raise self._unexpected_response_error(operation="download")
 
-        Returns:
-            None
+        response_stream = response
+        metadata_received = False
+        expected_size: int | None = None
+        bytes_received = 0
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        if not metadata_received:
+                            raise self._unexpected_response_error(operation="download")
+                        if expected_size is None or bytes_received != expected_size:
+                            raise self._unexpected_response_error(operation="download")
+                        return
+                    raise self._unexpected_response_error(operation="download")
+                if not isinstance(chunk, BinaryContent):
+                    raise self._unexpected_response_error(operation="download")
 
-        Example:
-            await storage_client.close(handle=my_handle)
-        """
+                kind = chunk.headers.get("kind")
+                if kind == "start":
+                    if metadata_received:
+                        raise self._unexpected_response_error(operation="download")
+                    chunk_name = chunk.headers.get("name")
+                    chunk_mime_type = chunk.headers.get("mime_type")
+                    chunk_size_value = chunk.headers.get("size")
+                    if (
+                        not isinstance(chunk_name, str)
+                        or not isinstance(chunk_mime_type, str)
+                        or not isinstance(chunk_size_value, int)
+                        or chunk_size_value < 0
+                    ):
+                        raise self._unexpected_response_error(operation="download")
+                    metadata_received = True
+                    expected_size = chunk_size_value
+                    yield chunk
+                    if expected_size > 0:
+                        input_stream.request_next()
+                    continue
 
-        await self.room.send_request("storage.close", {"handle": handle.id})
+                if kind != "data" or not metadata_received or expected_size is None:
+                    raise self._unexpected_response_error(operation="download")
+
+                bytes_received += len(chunk.data)
+                if bytes_received > expected_size:
+                    raise self._unexpected_response_error(operation="download")
+                yield chunk
+                if bytes_received < expected_size:
+                    input_stream.request_next()
+        finally:
+            input_stream.close()
 
     async def download(self, *, path: str) -> FileContent:
         """
@@ -1761,11 +2346,40 @@ class StorageClient:
             file_response = await storage_client.download(path="files/data.bin")
             print(file_response.data)  # raw bytes
         """
+        file_name: str | None = None
+        mime_type: str | None = None
+        expected_size: int | None = None
+        bytes_received = 0
+        chunks = bytearray()
+        async for chunk in self.download_stream(path=path):
+            kind = chunk.headers.get("kind")
+            if kind == "start":
+                chunk_name = chunk.headers.get("name")
+                chunk_mime_type = chunk.headers.get("mime_type")
+                chunk_size_value = chunk.headers.get("size")
+                if (
+                    not isinstance(chunk_name, str)
+                    or not isinstance(chunk_mime_type, str)
+                    or not isinstance(chunk_size_value, int)
+                    or chunk_size_value < 0
+                ):
+                    raise self._unexpected_response_error(operation="download")
+                file_name = chunk_name
+                mime_type = chunk_mime_type
+                expected_size = chunk_size_value
+                continue
 
-        response = await self.room.send_request("storage.download", {"path": path})
-        if not isinstance(response, FileContent):
+            if kind != "data":
+                raise self._unexpected_response_error(operation="download")
+            chunks.extend(chunk.data)
+            bytes_received += len(chunk.data)
+
+        if file_name is None or mime_type is None or expected_size is None:
             raise self._unexpected_response_error(operation="download")
-        return response
+        if bytes_received != expected_size:
+            raise self._unexpected_response_error(operation="download")
+
+        return FileContent(data=bytes(chunks), name=file_name, mime_type=mime_type)
 
     async def download_url(self, *, path: str) -> str:
         """
@@ -1784,7 +2398,7 @@ class StorageClient:
             print("Download using:", url)
         """
 
-        response = await self.room.send_request("storage.download_url", {"path": path})
+        response = await self._invoke(operation="download_url", input={"path": path})
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="download_url")
         return response["url"]
@@ -1806,7 +2420,7 @@ class StorageClient:
                 print(e.name, e.is_folder)
         """
 
-        response = await self.room.send_request("storage.list", {"path": path})
+        response = await self._invoke(operation="list", input={"path": path})
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list")
         return list(
@@ -1814,6 +2428,7 @@ class StorageClient:
                 lambda f: StorageEntry(
                     name=f["name"],
                     is_folder=f["is_folder"],
+                    size=f.get("size"),
                     created_at=datetime.fromisoformat(f["created_at"])
                     if f.get("created_at") is not None
                     else None,
@@ -1825,7 +2440,7 @@ class StorageClient:
             )
         )
 
-    async def delete(self, path: str, recursive: Optional[True] = None):
+    async def delete(self, path: str, recursive: Optional[bool] = None):
         """
         Deletes a file  at the given path.
 
@@ -1839,14 +2454,139 @@ class StorageClient:
             await storage_client.delete("folder/old_file.txt")
         """
 
-        await self.room.send_request(
-            "storage.delete", {"path": path, "recursive": recursive}
+        await self._invoke(
+            operation="delete",
+            input={"path": path, "recursive": recursive},
         )
+
+
+class _StorageDownloadInputStream:
+    def __init__(self, *, path: str, chunk_size: int):
+        self._path = path
+        self._chunk_size = chunk_size
+        self._closed = asyncio.Event()
+        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+
+    def request_next(self) -> None:
+        if self._closed.is_set():
+            return
+        self._pulls.put_nowait(object())
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._pulls.put_nowait(object())
+
+    def __aiter__(self) -> AsyncIterator[Content]:
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Content]:
+        yield BinaryContent(
+            data=b"",
+            headers={
+                "kind": "start",
+                "path": self._path,
+                "chunk_size": self._chunk_size,
+            },
+        )
+        while True:
+            await self._pulls.get()
+            if self._closed.is_set():
+                return
+            yield BinaryContent(data=b"", headers={"kind": "pull"})
+
+
+class _StorageUploadInputStream:
+    def __init__(
+        self,
+        *,
+        path: str,
+        overwrite: bool,
+        chunks: AsyncIterable[bytes],
+        chunk_size: int,
+        size: int | None,
+        name: str,
+        mime_type: str,
+    ):
+        self._path = path
+        self._overwrite = overwrite
+        self._source = chunks.__aiter__()
+        self._chunk_size = chunk_size
+        self._size = size
+        self._name = name
+        self._mime_type = mime_type
+        self._closed = asyncio.Event()
+        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+        self._pending_chunk = b""
+        self._pending_offset = 0
+        self._source_exhausted = False
+
+    def request_next(self) -> None:
+        if self._closed.is_set():
+            return
+        self._pulls.put_nowait(object())
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._pulls.put_nowait(object())
+
+    def __aiter__(self) -> AsyncIterator[Content]:
+        return self._stream()
+
+    async def _next_data_chunk(self) -> bytes | None:
+        while True:
+            if self._pending_offset < len(self._pending_chunk):
+                start = self._pending_offset
+                end = min(start + self._chunk_size, len(self._pending_chunk))
+                self._pending_offset = end
+                return self._pending_chunk[start:end]
+
+            if self._source_exhausted:
+                return None
+
+            try:
+                next_chunk = bytes(await self._source.__anext__())
+            except StopAsyncIteration:
+                self._source_exhausted = True
+                return None
+
+            if len(next_chunk) == 0:
+                continue
+
+            self._pending_chunk = next_chunk
+            self._pending_offset = 0
+
+    async def _stream(self) -> AsyncIterator[Content]:
+        yield BinaryContent(
+            data=b"",
+            headers={
+                "kind": "start",
+                "path": self._path,
+                "overwrite": self._overwrite,
+                "name": self._name,
+                "mime_type": self._mime_type,
+                "size": self._size,
+            },
+        )
+        while True:
+            await self._pulls.get()
+            if self._closed.is_set():
+                return
+
+            next_chunk = await self._next_data_chunk()
+            if next_chunk is None:
+                return
+
+            yield BinaryContent(data=next_chunk, headers={"kind": "data"})
 
 
 class Queue:
     def __init__(self, *, name: str, size: int):
         self._name = name
+        self._size = size
 
     @property
     def name(self):
@@ -1868,10 +2608,27 @@ class QueuesClient:
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
+    async def _invoke(self, *, operation: str, arguments: dict) -> Content:
+        response = await self.room.invoke(
+            toolkit="queues",
+            tool=operation,
+            input=arguments,
+        )
+        if not isinstance(response, Content):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
     async def list(
-        self, *, name: str, message: dict, create: bool = True
+        self,
+        *,
+        name: str | None = None,
+        message: dict | None = None,
+        create: bool = True,
     ) -> list[Queue]:
-        response = await self.room.send_request("queues.list", {})
+        del name
+        del message
+        del create
+        response = await self._invoke(operation="list", arguments={})
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list")
         queues = []
@@ -1879,33 +2636,43 @@ class QueuesClient:
             queues.append(Queue(name=item["name"], size=int(item["size"])))
         return queues
 
+    async def open(self, *, name: str) -> None:
+        response = await self._invoke(operation="open", arguments={"name": name})
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="open")
+
     async def send(self, *, name: str, message: dict, create: bool = True) -> None:
-        (
-            await self.room.send_request(
-                "queues.send", {"name": name, "create": create, "message": message}
-            )
+        response = await self._invoke(
+            operation="send",
+            arguments={"name": name, "create": create, "message": message},
         )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="send")
 
     async def drain(self, *, name: str) -> None:
-        (await self.room.send_request("queues.drain", {"name": name}))
+        response = await self._invoke(operation="drain", arguments={"name": name})
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="drain")
 
     async def close(self, *, name: str) -> None:
-        (await self.room.send_request("queues.close", {"name": name}))
+        response = await self._invoke(operation="close", arguments={"name": name})
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="close")
 
     async def receive(
         self, *, name: str, create: bool = True, wait: bool = True
-    ) -> dict | None:
-        response = await self.room.send_request(
-            "queues.receive", {"name": name, "create": create, "wait": wait}
+    ) -> dict | str | None:
+        response = await self._invoke(
+            operation="receive",
+            arguments={"name": name, "create": create, "wait": wait},
         )
         if isinstance(response, EmptyContent):
             return None
-        elif isinstance(response, JsonContent):
+        if isinstance(response, JsonContent):
             return response.json
-        elif isinstance(response, TextContent):
+        if isinstance(response, TextContent):
             return response.text
-        else:
-            raise self._unexpected_response_error(operation="receive")
+        raise self._unexpected_response_error(operation="receive")
 
 
 class MessagingClient:
@@ -1920,6 +2687,23 @@ class MessagingClient:
         self._remote_streams: Dict[str, MessageStream] = {}
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task = None
+
+    @staticmethod
+    def _message_json(message: dict) -> str:
+        return json.dumps(message)
+
+    @staticmethod
+    def _attachment_base64(attachment: Optional[bytes]) -> str | None:
+        if attachment is None:
+            return None
+        return base64.b64encode(attachment).decode("utf-8")
+
+    async def _invoke(self, *, operation: str, input: dict) -> None:
+        await self.room.invoke(
+            toolkit="messaging",
+            tool=operation,
+            input=input,
+        )
 
     @property
     def remote_participants(self) -> list[RemoteParticipant]:
@@ -1966,11 +2750,11 @@ class MessagingClient:
         *,
         on_stream_accept: Optional[Callable[["MessageStream"], None]] = None,
     ):
-        await self.room.send_request("messaging.enable", {})
+        await self._invoke(operation="enable", input={})
         self._on_stream_accept_callback = on_stream_accept
 
     async def disable(self):
-        await self.room.send_request("messaging.disable", {})
+        await self._invoke(operation="disable", input={})
 
     async def _handle_message_send(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -2016,14 +2800,14 @@ class MessagingClient:
     async def _send_messages(self):
         async for msg in self._message_queue:
             try:
-                body = {
-                    "type": msg.type,
-                    "message": msg.message,
-                }
-
-                body["to_participant_id"] = msg.to.id
-                await self.room.send_request(
-                    "messaging.send", body, data=msg.attachment
+                await self._invoke(
+                    operation="send",
+                    input={
+                        "to_participant_id": msg.to.id,
+                        "type": msg.type,
+                        "message_json": self._message_json(msg.message),
+                        "attachment_base64": self._attachment_base64(msg.attachment),
+                    },
                 )
                 msg.fut.set_result(True)
 
@@ -2085,8 +2869,13 @@ class MessagingClient:
     async def broadcast_message(
         self, *, type: str, message: dict, attachment: Optional[bytes] = None
     ):
-        await self.room.send_request(
-            "messaging.broadcast", {"type": type, "message": message}, data=attachment
+        await self._invoke(
+            operation="broadcast",
+            input={
+                "type": type,
+                "message_json": self._message_json(message),
+                "attachment_base64": self._attachment_base64(attachment),
+            },
         )
 
     def _on_participant_enabled(self, message: RoomMessage):
@@ -2366,6 +3155,12 @@ class MessageStream:
         )
 
 
+@dataclass
+class RoomLogEvent:
+    type: str
+    data: dict[str, Any]
+
+
 class DeveloperClient:
     def __init__(self, room: RoomClient):
         self._room = room
@@ -2392,21 +3187,31 @@ class DeveloperClient:
     ) -> None:
         raw_json, _ = unpack_message(data)
 
-        type = raw_json.get("type", "unknown")
-        data = raw_json.get("data", {})
+        log_type = raw_json.get("type", "unknown")
+        log_data = raw_json.get("data", {})
 
-        self.emit("log", type=type, data=data)
+        self.emit("log", type=log_type, data=log_data)
+
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from developer.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    async def _invoke(self, *, operation: str, input: dict) -> None:
+        await self._room.invoke(
+            toolkit="developer",
+            tool=operation,
+            input=input,
+        )
 
     async def log(self, *, type: str, data: dict):
-        await self._room.send_request(
-            type="developer.log", request={"type": type, "data": data}
-        )
+        await self._invoke(operation="log", input={"type": type, "data": data})
 
     def log_nowait(self, *, type: str, data: dict):
         task = asyncio.ensure_future(
-            self._room.send_request(
-                type="developer.log", request={"type": type, "data": data}
-            )
+            self._invoke(operation="log", input={"type": type, "data": data})
         )
         task.add_done_callback(
             lambda t: self._handle_developer_log_result(
@@ -2416,8 +3221,9 @@ class DeveloperClient:
 
     def info(self, message: str, *, extra: Optional[dict] = None):
         task = asyncio.ensure_future(
-            self._room.send_request(
-                type="developer.info", request={"message": message, "extra": extra}
+            self._invoke(
+                operation="info",
+                input={"message": message, "extra": extra or {}},
             )
         )
         task.add_done_callback(
@@ -2428,8 +3234,9 @@ class DeveloperClient:
 
     def warning(self, message: str, *, extra: Optional[dict] = None):
         task = asyncio.ensure_future(
-            self._room.send_request(
-                type="developer.warning", request={"message": message, "extra": extra}
+            self._invoke(
+                operation="warning",
+                input={"message": message, "extra": extra or {}},
             )
         )
         task.add_done_callback(
@@ -2440,8 +3247,9 @@ class DeveloperClient:
 
     def error(self, message: str, *, extra: Optional[dict] = None):
         task = asyncio.ensure_future(
-            self._room.send_request(
-                type="developer.error", request={"message": message, "extra": extra}
+            self._invoke(
+                operation="error",
+                input={"message": message, "extra": extra or {}},
             )
         )
         task.add_done_callback(
@@ -2463,11 +3271,75 @@ class DeveloperClient:
                 exc_info=exc,
             )
 
-    async def enable(self):
-        await self._room.send_request(type="developer.watch", request={})
+    async def logs(self) -> AsyncIterator[RoomLogEvent]:
+        input_stream = _DeveloperLogInputStream()
+        response = await self._room.invoke(
+            toolkit="developer",
+            tool="logs",
+            input=input_stream,
+        )
+        if isinstance(response, Content):
+            input_stream.close()
+            raise self._unexpected_response_error(operation="logs")
 
-    async def disable(self):
-        await self._room.send_request(type="developer.unwatch", request={})
+        response_stream = response
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation="logs")
+                if not isinstance(chunk, BinaryContent):
+                    raise self._unexpected_response_error(operation="logs")
+
+                log_type = chunk.headers.get("type")
+                if not isinstance(log_type, str):
+                    raise RoomException(
+                        "developer.logs returned a chunk without a valid type",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    )
+
+                try:
+                    payload = (
+                        json.loads(chunk.data.decode("utf-8")) if chunk.data else {}
+                    )
+                except Exception as ex:
+                    raise RoomException(
+                        "developer.logs returned invalid JSON data",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    ) from ex
+
+                if not isinstance(payload, dict):
+                    raise RoomException(
+                        "developer.logs returned invalid JSON data",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    )
+
+                event = RoomLogEvent(type=log_type, data=payload)
+                self.emit("log", type=event.type, data=event.data)
+                yield event
+        finally:
+            input_stream.close()
+
+
+class _DeveloperLogInputStream:
+    def __init__(self) -> None:
+        self._closed = asyncio.Event()
+
+    def close(self) -> None:
+        self._closed.set()
+
+    def __aiter__(self) -> "_DeveloperLogInputStream":
+        return self
+
+    async def __anext__(self) -> Content:
+        if self._closed.is_set():
+            raise StopAsyncIteration
+
+        await self._closed.wait()
+        raise StopAsyncIteration
 
 
 class DataType(BaseModel, ABC):
@@ -2953,43 +3825,651 @@ class _SqlRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
+def _database_metadata_entries(metadata: dict | None) -> list[dict[str, str]] | None:
+    if metadata is None:
+        return None
+
+    entries = list[dict[str, str]]()
+    for key, value in metadata.items():
+        encoded_value = (
+            value if isinstance(value, str) else json.dumps(_encode_record_value(value))
+        )
+        entries.append({"key": str(key), "value": encoded_value})
+    return entries
+
+
+def _database_metadata_dict(metadata: object) -> dict[str, str]:
+    if metadata is None:
+        return {}
+    if not isinstance(metadata, list):
+        raise RoomException(
+            "unexpected return type from database.inspect",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    result = dict[str, str]()
+    for entry in metadata:
+        if not isinstance(entry, dict):
+            raise RoomException(
+                "unexpected return type from database.inspect",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        key = entry.get("key")
+        value = entry.get("value")
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise RoomException(
+                "unexpected return type from database.inspect",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        result[key] = value
+    return result
+
+
+def _database_toolkit_data_type_json(data_type: DataType) -> dict[str, Any]:
+    metadata = _database_metadata_entries(data_type.metadata)
+    payload: dict[str, Any] = {
+        "type": data_type.type,
+        "nullable": data_type.nullable,
+        "metadata": metadata,
+    }
+
+    if isinstance(data_type, VectorDataType):
+        payload["size"] = data_type.size
+        payload["element_type"] = _database_toolkit_data_type_json(
+            data_type.element_type
+        )
+    elif isinstance(data_type, ListDataType):
+        payload["element_type"] = _database_toolkit_data_type_json(
+            data_type.element_type
+        )
+    elif isinstance(data_type, StructDataType):
+        payload["fields"] = [
+            {
+                "name": field_name,
+                "data_type": _database_toolkit_data_type_json(field_type),
+            }
+            for field_name, field_type in data_type.fields.items()
+        ]
+
+    return payload
+
+
+def _database_toolkit_schema_entries(
+    schema: dict[str, DataType] | None,
+) -> list[dict[str, Any]] | None:
+    if schema is None:
+        return None
+
+    return [
+        {
+            "name": name,
+            "data_type": _database_toolkit_data_type_json(data_type),
+        }
+        for name, data_type in schema.items()
+    ]
+
+
+def _database_public_data_type_json(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RoomException(
+            "unexpected return type from database.inspect",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    type_name = value.get("type")
+    if not isinstance(type_name, str):
+        raise RoomException(
+            "unexpected return type from database.inspect",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    payload: dict[str, Any] = {
+        "type": type_name,
+        "nullable": value.get("nullable"),
+        "metadata": _database_metadata_dict(value.get("metadata")),
+    }
+
+    if type_name == "vector":
+        payload["size"] = value.get("size")
+        payload["element_type"] = _database_public_data_type_json(
+            value.get("element_type")
+        )
+    elif type_name == "list":
+        payload["element_type"] = _database_public_data_type_json(
+            value.get("element_type")
+        )
+    elif type_name == "struct":
+        raw_fields = value.get("fields")
+        if not isinstance(raw_fields, list):
+            raise RoomException(
+                "unexpected return type from database.inspect",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        payload["fields"] = {
+            field_name: _database_public_data_type_json(field_value)
+            for field_name, field_value in (
+                (
+                    field.get("name"),
+                    field.get("data_type"),
+                )
+                for field in raw_fields
+                if isinstance(field, dict)
+            )
+            if isinstance(field_name, str)
+        }
+        if len(payload["fields"]) != len(raw_fields):
+            raise RoomException(
+                "unexpected return type from database.inspect",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+
+    return payload
+
+
+def _database_data_type_from_toolkit(value: object) -> DataType:
+    return _data_type_adapter.validate_python(_database_public_data_type_json(value))
+
+
+def _database_schema_from_toolkit(
+    value: object,
+) -> dict[str, DataType]:
+    if not isinstance(value, list):
+        raise RoomException(
+            "unexpected return type from database.inspect",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    result = dict[str, DataType]()
+    for field in value:
+        if not isinstance(field, dict):
+            raise RoomException(
+                "unexpected return type from database.inspect",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        name = field.get("name")
+        if not isinstance(name, str):
+            raise RoomException(
+                "unexpected return type from database.inspect",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        result[name] = _database_data_type_from_toolkit(field.get("data_type"))
+    return result
+
+
+def _database_records_json(records: object) -> str:
+    if not isinstance(records, list):
+        raise RoomException(
+            "database toolkit records must be a list of objects",
+            code=ErrorCode.INVALID_REQUEST,
+        )
+    return json.dumps(_encode_record_value(records))
+
+
+def _database_data_json(data: object | None) -> str | None:
+    if data is None:
+        return None
+    return json.dumps(_encode_record_value(data))
+
+
+def _database_results_from_json(
+    *,
+    payload: dict[str, Any],
+    operation: str,
+) -> list[dict[str, Any]]:
+    results_json = payload.get("results_json")
+    if not isinstance(results_json, str):
+        raise RoomException(
+            f"unexpected return type from database.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    try:
+        parsed = json.loads(results_json)
+    except json.JSONDecodeError as exc:
+        raise RoomException(
+            f"unexpected return type from database.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        ) from exc
+
+    if not isinstance(parsed, list):
+        raise RoomException(
+            f"unexpected return type from database.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+    return decode_records(parsed)
+
+
+def _database_value_json(value: Any) -> str:
+    return json.dumps(_encode_record_value(value))
+
+
+def _database_stream_encode_value(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "bool", "value": value}
+    if isinstance(value, int):
+        return {"type": "int", "value": value}
+    if isinstance(value, float):
+        return {"type": "float", "value": value}
+    if isinstance(value, str):
+        return {"type": "text", "value": value}
+    if isinstance(value, bytes):
+        return {
+            "type": "binary",
+            "data": base64.b64encode(value).decode("utf-8"),
+        }
+    if isinstance(value, datetime):
+        normalized = value.astimezone(timezone.utc) if value.tzinfo else value
+        return {
+            "type": "timestamp",
+            "value": normalized.isoformat().replace("+00:00", "Z"),
+        }
+    if isinstance(value, date):
+        return {"type": "date", "value": value.isoformat()}
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "items": [_database_stream_encode_value(item) for item in value],
+        }
+    if isinstance(value, dict):
+        return {
+            "type": "struct",
+            "fields": [
+                {
+                    "name": str(key),
+                    "value": _database_stream_encode_value(item),
+                }
+                for key, item in value.items()
+            ],
+        }
+    raise RoomException(
+        f"database stream does not support value type {type(value).__name__}",
+        code=ErrorCode.INVALID_REQUEST,
+    )
+
+
+def _database_stream_decode_value(
+    value: object,
+    *,
+    operation: str,
+) -> Any:
+    if not isinstance(value, dict):
+        raise RoomException(
+            f"unexpected return type from database.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+    type_name = value.get("type")
+    if not isinstance(type_name, str):
+        raise RoomException(
+            f"unexpected return type from database.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    if type_name == "null":
+        return None
+    if type_name in ("bool", "int", "float", "text", "date", "timestamp"):
+        return value.get("value")
+    if type_name == "binary":
+        data = value.get("data")
+        if not isinstance(data, str):
+            raise RoomException(
+                f"unexpected return type from database.{operation}",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        try:
+            return base64.b64decode(data.encode("utf-8"))
+        except Exception as exc:
+            raise RoomException(
+                f"unexpected return type from database.{operation}",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            ) from exc
+    if type_name == "list":
+        items = value.get("items")
+        if not isinstance(items, list):
+            raise RoomException(
+                f"unexpected return type from database.{operation}",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        return [
+            _database_stream_decode_value(item, operation=operation) for item in items
+        ]
+    if type_name == "struct":
+        fields = value.get("fields")
+        if not isinstance(fields, list):
+            raise RoomException(
+                f"unexpected return type from database.{operation}",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        result = dict[str, Any]()
+        for field in fields:
+            if not isinstance(field, dict):
+                raise RoomException(
+                    f"unexpected return type from database.{operation}",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            name = field.get("name")
+            if not isinstance(name, str):
+                raise RoomException(
+                    f"unexpected return type from database.{operation}",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            result[name] = _database_stream_decode_value(
+                field.get("value"),
+                operation=operation,
+            )
+        return result
+    raise RoomException(
+        f"unexpected return type from database.{operation}",
+        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+    )
+
+
+def _database_stream_rows_chunk(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "kind": "rows",
+        "rows": [
+            {
+                "columns": [
+                    {
+                        "name": str(key),
+                        "value": _database_stream_encode_value(value),
+                    }
+                    for key, value in record.items()
+                ]
+            }
+            for record in records
+        ],
+    }
+
+
+def _typed_rows_records_from_chunk(
+    *,
+    payload: dict[str, Any],
+    operation: str,
+) -> list[dict[str, Any]]:
+    if payload.get("kind") != "rows":
+        raise RoomException(
+            f"unexpected return type from {operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise RoomException(
+            f"unexpected return type from {operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    result = list[dict[str, Any]]()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RoomException(
+                f"unexpected return type from {operation}",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        columns = row.get("columns")
+        if not isinstance(columns, list):
+            raise RoomException(
+                f"unexpected return type from {operation}",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        decoded_row = dict[str, Any]()
+        for column in columns:
+            if not isinstance(column, dict):
+                raise RoomException(
+                    f"unexpected return type from {operation}",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            name = column.get("name")
+            if not isinstance(name, str):
+                raise RoomException(
+                    f"unexpected return type from {operation}",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            decoded_row[name] = _database_stream_decode_value(
+                column.get("value"),
+                operation=operation,
+            )
+        result.append(decoded_row)
+    return result
+
+
+def _database_stream_records_from_chunk(
+    *,
+    payload: dict[str, Any],
+    operation: str,
+) -> list[dict[str, Any]]:
+    return _typed_rows_records_from_chunk(
+        payload=payload,
+        operation=f"database.{operation}",
+    )
+
+
+def _database_row_chunk_list(
+    records: list[dict[str, Any]],
+    *,
+    rows_per_chunk: int = 128,
+) -> list[list[dict[str, Any]]]:
+    if not isinstance(records, list):
+        raise RoomException(
+            "database stream records must be a list of objects",
+            code=ErrorCode.INVALID_REQUEST,
+        )
+    if rows_per_chunk <= 0:
+        raise RoomException(
+            "rows_per_chunk must be greater than zero",
+            code=ErrorCode.INVALID_REQUEST,
+        )
+    return [
+        records[index : index + rows_per_chunk]
+        for index in range(0, len(records), rows_per_chunk)
+    ]
+
+
+async def _database_async_row_chunks(
+    chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+) -> AsyncIterator[list[dict[str, Any]]]:
+    if isinstance(chunks, AsyncIterable):
+        async for chunk in chunks:
+            yield chunk
+        return
+    for chunk in chunks:
+        yield chunk
+
+
+class _DatabaseWriteInputStream:
+    def __init__(
+        self,
+        *,
+        start: dict[str, Any],
+        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+    ) -> None:
+        self._start = start
+        self._source = _database_async_row_chunks(chunks).__aiter__()
+        self._closed = asyncio.Event()
+        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+        self._sent_start = False
+
+    def request_next(self) -> None:
+        if self._closed.is_set():
+            return
+        self._pulls.put_nowait(object())
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._pulls.put_nowait(object())
+
+    def __aiter__(self) -> "_DatabaseWriteInputStream":
+        return self
+
+    async def __anext__(self) -> Content:
+        if not self._sent_start:
+            self._sent_start = True
+            return JsonContent(json=self._start)
+
+        await self._pulls.get()
+        if self._closed.is_set():
+            raise StopAsyncIteration
+
+        try:
+            next_chunk = await self._source.__anext__()
+        except StopAsyncIteration as exc:
+            raise StopAsyncIteration from exc
+
+        return JsonContent(json=_database_stream_rows_chunk(next_chunk))
+
+
+class _DatabaseReadInputStream:
+    def __init__(self, *, start: dict[str, Any]) -> None:
+        self._start = start
+        self._closed = asyncio.Event()
+        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+        self._sent_start = False
+
+    def request_next(self) -> None:
+        if self._closed.is_set():
+            return
+        self._pulls.put_nowait(object())
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._pulls.put_nowait(object())
+
+    def __aiter__(self) -> "_DatabaseReadInputStream":
+        return self
+
+    async def __anext__(self) -> Content:
+        if not self._sent_start:
+            self._sent_start = True
+            return JsonContent(json=self._start)
+
+        await self._pulls.get()
+        if self._closed.is_set():
+            raise StopAsyncIteration
+
+        return JsonContent(json={"kind": "pull"})
+
+
 class DatabaseClient:
     """
-    A client for interacting with the 'database' extension on the room server.
+    A client for interacting with the 'database' toolkit on the room server.
     """
 
     def __init__(self, room: RoomClient):
-        """
-        :param room: The RoomClient used to send requests.
-        """
         self.room = room
 
-    async def list_tables(self, *, namespace: Optional[list[str]] = None) -> List[str]:
-        """
-        List all tables in the database.
-
-        :return: A list of table names.
-        """
-        request_model = _ListTablesRequest(namespace=namespace)
-        response: JsonContent = await self.room.send_request(
-            "database.list_tables", request_model.model_dump()
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from database.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
+
+    async def _invoke(self, *, operation: str, input: dict) -> Content:
+        response = await self.room.invoke(
+            toolkit="database",
+            tool=operation,
+            input=input,
+        )
+        if not isinstance(response, Content):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
+    async def _invoke_stream(
+        self,
+        *,
+        operation: str,
+        input: AsyncIterable[Content],
+    ) -> AsyncIterable[Content]:
+        response = await self.room.invoke(
+            toolkit="database",
+            tool=operation,
+            input=input,
+        )
+        if isinstance(response, Content) or not isinstance(response, AsyncIterable):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
+    async def _drain_write_stream(
+        self,
+        *,
+        operation: str,
+        input_stream: _DatabaseWriteInputStream,
+    ) -> None:
+        response_stream = await self._invoke_stream(
+            operation=operation,
+            input=input_stream,
+        )
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation=operation)
+                if not isinstance(chunk, JsonContent):
+                    raise self._unexpected_response_error(operation=operation)
+                if chunk.json.get("kind") != "pull":
+                    raise self._unexpected_response_error(operation=operation)
+                input_stream.request_next()
+        finally:
+            input_stream.close()
+
+    async def _stream_rows(
+        self,
+        *,
+        operation: str,
+        start: dict[str, Any],
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        input_stream = _DatabaseReadInputStream(start=start)
+        response_stream = await self._invoke_stream(
+            operation=operation,
+            input=input_stream,
+        )
+        input_stream.request_next()
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation=operation)
+                if not isinstance(chunk, JsonContent):
+                    raise self._unexpected_response_error(operation=operation)
+                yield _database_stream_records_from_chunk(
+                    payload=chunk.json,
+                    operation=operation,
+                )
+                input_stream.request_next()
+        finally:
+            input_stream.close()
+
+    async def list_tables(self, *, namespace: Optional[list[str]] = None) -> List[str]:
+        response = await self._invoke(
+            operation="list_tables",
+            input={"namespace": namespace},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list_tables")
         return response.json.get("tables", [])
 
     async def inspect(
         self, *, table: str, namespace: Optional[list[str]] = None
     ) -> dict[str, DataType]:
-        request_model = _InspectTableRequest(table=table, namespace=namespace)
-        response: JsonContent = await self.room.send_request(
-            "database.inspect", request_model.model_dump()
+        response = await self._invoke(
+            operation="inspect",
+            input={"table": table, "namespace": namespace},
         )
-
-        schema = dict[str, DataType]()
-
-        for k, v in response.json["schema"].items():
-            schema[k] = _data_type_adapter.validate_python(v)
-
-        return schema
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="inspect")
+        return _database_schema_from_toolkit(response.json.get("fields"))
 
     async def _create_table(
         self,
@@ -3001,28 +4481,28 @@ class DatabaseClient:
         namespace: Optional[list[str]] = None,
         metadata: Optional[dict] = None,
     ) -> None:
-        """
-        Create a new table.
-
-        :param name: Table name.
-        :param data: Optional initial data (list/dict).
-        :param schema: Optional schema definition.
-        :param mode: "create" or "overwrite" (default: "create")
-        :return: Server response dict containing "status", "table", etc.
-        """
-
-        request_model = _CreateTableRequest(
-            name=name,
-            data=data,
-            table_schema=schema,
-            mode=mode,
-            namespace=namespace,
-            metadata=metadata,
+        chunks = (
+            []
+            if data is None
+            else _database_row_chunk_list(
+                data if isinstance(data, list) else [data],
+            )
         )
-        await self.room.send_request(
-            "database.create_table", request_model.model_dump(by_alias=True)
+        input_stream = _DatabaseWriteInputStream(
+            start={
+                "kind": "start",
+                "name": name,
+                "fields": _database_toolkit_schema_entries(schema),
+                "mode": mode,
+                "namespace": namespace,
+                "metadata": _database_metadata_entries(metadata),
+            },
+            chunks=chunks,
         )
-        return None
+        await self._drain_write_stream(
+            operation="create_table",
+            input_stream=input_stream,
+        )
 
     async def create_table_with_schema(
         self,
@@ -3060,6 +4540,32 @@ class DatabaseClient:
             metadata=metadata,
         )
 
+    async def create_table_from_data_stream(
+        self,
+        *,
+        name: str,
+        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        schema: Optional[Dict[str, DataType]] = None,
+        mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        input_stream = _DatabaseWriteInputStream(
+            start={
+                "kind": "start",
+                "name": name,
+                "fields": _database_toolkit_schema_entries(schema),
+                "mode": mode,
+                "namespace": namespace,
+                "metadata": _database_metadata_entries(metadata),
+            },
+            chunks=chunks,
+        )
+        await self._drain_write_stream(
+            operation="create_table",
+            input_stream=input_stream,
+        )
+
     async def drop_table(
         self,
         *,
@@ -3067,30 +4573,26 @@ class DatabaseClient:
         ignore_missing: bool = False,
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Drop (delete) a table.
-
-        :param name: Table name.
-        :param ignore_missing: If True, ignore if table doesn't exist.
-        """
-        request_model = _DropTableRequest(
-            name=name, ignore_missing=ignore_missing, namespace=namespace
+        await self._invoke(
+            operation="drop_table",
+            input={
+                "name": name,
+                "ignore_missing": ignore_missing,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request("database.drop_table", request_model.model_dump())
-        return None
 
     async def drop_index(
         self, *, table: str, name: str, namespace: Optional[list[str]] = None
     ) -> None:
-        """
-        Drop (delete) a index.
-
-        :param table: table name
-        :param name: index name.
-        """
-        request_model = _DropIndexRequest(table=table, name=name, namespace=namespace)
-        await self.room.send_request("database.drop_index", request_model.model_dump())
-        return None
+        await self._invoke(
+            operation="drop_index",
+            input={
+                "table": table,
+                "name": name,
+                "namespace": namespace,
+            },
+        )
 
     async def add_columns(
         self,
@@ -3099,18 +4601,32 @@ class DatabaseClient:
         new_columns: Dict[str, str | DataType],
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Add new columns to an existing table.
-
-        :param table: Table name.
-        :param new_columns: Dict of {column_name: default_value_expression}.
-        """
-
-        request_model = _AddColumnsRequest(
-            table=table, new_columns=new_columns, namespace=namespace
+        columns = []
+        for column_name, column_value in new_columns.items():
+            if isinstance(column_value, DataType):
+                columns.append(
+                    {
+                        "name": column_name,
+                        "value_sql": None,
+                        "data_type": _database_toolkit_data_type_json(column_value),
+                    }
+                )
+            else:
+                columns.append(
+                    {
+                        "name": column_name,
+                        "value_sql": column_value,
+                        "data_type": None,
+                    }
+                )
+        await self._invoke(
+            operation="add_columns",
+            input={
+                "table": table,
+                "columns": columns,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request("database.add_columns", request_model.model_dump())
-        return None
 
     # TODO: not ready yet on lance side
     async def _alter_columns(
@@ -3120,37 +4636,26 @@ class DatabaseClient:
         columns: Dict[str, DataType],
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Add new columns to an existing table.
-
-        :param table: Table name.
-        :param new_columns: Dict of {column_name: default_value_expression}.
-        """
-
-        request_model = _AlterColumnsRequest(
-            table=table, columns=columns, namespace=namespace
+        await self._invoke(
+            operation="alter_columns",
+            input={
+                "table": table,
+                "columns": _database_toolkit_schema_entries(columns),
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request(
-            "database.alter_columns", request_model.model_dump()
-        )
-        return None
 
     async def drop_columns(
         self, *, table: str, columns: List[str], namespace: Optional[list[str]] = None
     ) -> None:
-        """
-        Drop columns from an existing table.
-
-        :param table: Table name.
-        :param columns: List of column names to drop.
-        """
-        request_model = _DropColumnsRequest(
-            table=table, columns=columns, namespace=namespace
+        await self._invoke(
+            operation="drop_columns",
+            input={
+                "table": table,
+                "columns": columns,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request(
-            "database.drop_columns", request_model.model_dump()
-        )
-        return None
 
     async def insert(
         self,
@@ -3159,19 +4664,28 @@ class DatabaseClient:
         records: List[Dict[str, Any]],
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Insert new records into a table.
-
-        :param table: Table name.
-        :param records: The record(s) to insert (list or dict).
-        """
-
-        request_model = _InsertRequest(
+        await self.insert_stream(
             table=table,
-            records=encode_records(records),
+            chunks=_database_row_chunk_list(records),
             namespace=namespace,
         )
-        await self.room.send_request("database.insert", request_model.model_dump())
+
+    async def insert_stream(
+        self,
+        *,
+        table: str,
+        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        input_stream = _DatabaseWriteInputStream(
+            start={
+                "kind": "start",
+                "table": table,
+                "namespace": namespace,
+            },
+            chunks=chunks,
+        )
+        await self._drain_write_stream(operation="insert", input_stream=input_stream)
 
     async def update(
         self,
@@ -3182,36 +4696,45 @@ class DatabaseClient:
         values_sql: Optional[Dict[str, str]] = None,
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Update existing records in a table.
-
-        :param table: Table name.
-        :param where: SQL WHERE clause (e.g. "id = 123").
-        :param values: Dict of column updates, e.g. {"col1": "new_value"}.
-        :param values_sql: Dict of SQL expressions for updates, e.g. {"col2": "col2 + 1"}.
-        """
-        request_model = _UpdateRequest(
-            table=table,
-            where=where,
-            values=values,
-            values_sql=values_sql,
-            namespace=namespace,
+        await self._invoke(
+            operation="update",
+            input={
+                "table": table,
+                "where": where,
+                "values": (
+                    [
+                        {
+                            "column": column,
+                            "value_json": _database_value_json(value),
+                        }
+                        for column, value in values.items()
+                    ]
+                    if values is not None
+                    else None
+                ),
+                "values_sql": (
+                    [
+                        {"column": column, "expression": expression}
+                        for column, expression in values_sql.items()
+                    ]
+                    if values_sql is not None
+                    else None
+                ),
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request("database.update", request_model.model_dump())
 
     async def delete(
         self, *, table: str, where: str, namespace: Optional[list[str]] = None
     ) -> None:
-        """
-        Delete records from a table.
-
-        :param table: Table name.
-        :param where: SQL WHERE clause (e.g. "id = 123").
-        """
-        request_model = _DeleteRequest(table=table, where=where, namespace=namespace)
-        await self.room.send_request("database.delete", request_model.model_dump())
-
-        return None
+        await self._invoke(
+            operation="delete",
+            input={
+                "table": table,
+                "where": where,
+                "namespace": namespace,
+            },
+        )
 
     async def merge(
         self,
@@ -3221,18 +4744,31 @@ class DatabaseClient:
         records: Any,
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Merge (upsert) records into a table.
-
-        :param table: Table name.
-        :param on: Column name to match on (e.g. "id").
-        :param records: The record(s) to merge.
-        """
-        request_model = _MergeRequest(
-            table=table, on=on, records=records, namespace=namespace
+        await self.merge_stream(
+            table=table,
+            on=on,
+            chunks=_database_row_chunk_list(records),
+            namespace=namespace,
         )
-        await self.room.send_request("database.merge", request_model.model_dump())
-        return None
+
+    async def merge_stream(
+        self,
+        *,
+        table: str,
+        on: str,
+        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        input_stream = _DatabaseWriteInputStream(
+            start={
+                "kind": "start",
+                "table": table,
+                "on": on,
+                "namespace": namespace,
+            },
+            chunks=chunks,
+        )
+        await self._drain_write_stream(operation="merge", input_stream=input_stream)
 
     async def sql(
         self,
@@ -3241,28 +4777,40 @@ class DatabaseClient:
         tables: List[SqlTableReference | str],
         params: Optional[Dict[str, Any]] = None,
     ) -> list[Dict[str, Any]]:
-        """
-        Execute a SQL query against one or more tables.
+        results = list[dict[str, Any]]()
+        async for batch in self.sql_stream(
+            query=query,
+            tables=tables,
+            params=params,
+        ):
+            results.extend(batch)
+        return results
 
-        :param query: SQL statement to execute.
-        :param tables: Tables to register for the query.
-        :param params: Typed parameters for DataFusion parameter binding.
-        """
+    async def sql_stream(
+        self,
+        *,
+        query: str,
+        tables: List[SqlTableReference | str],
+        params: Optional[Dict[str, Any]] = None,
+    ) -> AsyncIterator[list[Dict[str, Any]]]:
         table_refs = [
             SqlTableReference(name=table) if isinstance(table, str) else table
             for table in tables
         ]
-        request_model = _SqlRequest(
-            query=query,
-            tables=table_refs,
-            params=params,
-        )
-        response = await self.room.send_request(
-            "database.sql", request_model.model_dump()
-        )
-        if isinstance(response, JsonContent):
-            return decode_records(response.json["results"])
-        return []
+        async for batch in self._stream_rows(
+            operation="sql",
+            start={
+                "kind": "start",
+                "query": query,
+                "tables": [table.model_dump() for table in table_refs],
+                "params_json": (
+                    json.dumps(_encode_record_value(params))
+                    if params is not None
+                    else None
+                ),
+            },
+        ):
+            yield batch
 
     async def search(
         self,
@@ -3276,36 +4824,52 @@ class DatabaseClient:
         select: Optional[List[str]] = None,
         namespace: Optional[list[str]] = None,
     ) -> list[Dict[str, Any]]:
-        """
-        Search for records in a table.
-
-        :param table: Table name.
-        :param text: The search text
-        :param where: A filter clause or values to match
-        :param limit: Limit the number of results.
-        :param select: Columns to select.
-        """
-
-        if isinstance(where, dict):
-            where = " AND ".join(
-                map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
-            )
-        request_model = _SearchRequest(
+        results = list[dict[str, Any]]()
+        async for batch in self.search_stream(
             table=table,
-            where=where,
             text=text,
             vector=vector,
+            where=where,
             offset=offset,
             limit=limit,
             select=select,
             namespace=namespace,
-        )
-        response = await self.room.send_request(
-            "database.search", request_model.model_dump()
-        )
-        if isinstance(response, JsonContent):
-            return decode_records(response.json["results"])
-        return []
+        ):
+            results.extend(batch)
+        return results
+
+    async def search_stream(
+        self,
+        *,
+        table: str,
+        text: Optional[str] = None,
+        vector: Optional[list[float]] = None,
+        where: Optional[str] | dict = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        select: Optional[List[str]] = None,
+        namespace: Optional[list[str]] = None,
+    ) -> AsyncIterator[list[Dict[str, Any]]]:
+        if isinstance(where, dict):
+            where = " AND ".join(
+                map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
+            )
+        async for batch in self._stream_rows(
+            operation="search",
+            start={
+                "kind": "start",
+                "table": table,
+                "text": text,
+                "vector": vector,
+                "text_columns": None,
+                "where": where,
+                "offset": offset,
+                "limit": limit,
+                "select": select,
+                "namespace": namespace,
+            },
+        ):
+            yield batch
 
     async def count(
         self,
@@ -3316,85 +4880,100 @@ class DatabaseClient:
         where: Optional[str] | dict = None,
         namespace: Optional[list[str]] = None,
     ) -> list[Dict[str, Any]]:
-        """
-        Search for records in a table.
-
-        :param table: Table name.
-        :param text: The search text
-        :param where: A filter clause or values to match
-        """
-
         if isinstance(where, dict):
             where = " AND ".join(
                 map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
             )
-        request_model = _CountRequest(
-            table=table,
-            where=where,
-            text=text,
-            vector=vector,
-            namespace=namespace,
+        response = await self._invoke(
+            operation="count",
+            input={
+                "table": table,
+                "text": text,
+                "vector": vector,
+                "text_columns": None,
+                "where": where,
+                "namespace": namespace,
+            },
         )
-        response = await self.room.send_request(
-            "database.count", request_model.model_dump()
-        )
-        if isinstance(response, JsonContent):
-            return response.json["count"]
-        return []
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="count")
+        if not isinstance(response.json.get("count"), int):
+            raise self._unexpected_response_error(operation="count")
+        return response.json["count"]
 
     async def optimize(
         self, *, table: str, namespace: Optional[list[str]] = None
     ) -> None:
-        """
-        Optimize (compact/prune) a table.
-
-        :param table: Table name.
-        """
-        request_model = _OptimizeRequest(table=table, namespace=namespace)
-        await self.room.send_request("database.optimize", request_model.model_dump())
-        return None
+        await self._invoke(
+            operation="optimize",
+            input={
+                "table": table,
+                "namespace": namespace,
+            },
+        )
 
     async def restore(
         self, *, table: str, version: int, namespace: Optional[list[str]] = None
     ) -> None:
-        """
-        restore a table version.
-
-        :param table: Table name.
-        """
-        request_model = _RestoreRequest(
-            table=table, version=version, namespace=namespace
+        await self._invoke(
+            operation="restore",
+            input={
+                "table": table,
+                "version": version,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request("database.restore", request_model.model_dump())
-        return None
 
     async def checkout(
         self, *, table: str, version: int, namespace: Optional[list[str]] = None
     ) -> None:
-        """
-        checkout a table version.
-
-        :param table: Table name.
-        """
-        request_model = _CheckoutRequest(
-            table=table, version=version, namespace=namespace
+        await self._invoke(
+            operation="checkout",
+            input={
+                "table": table,
+                "version": version,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request("database.checkout", request_model.model_dump())
-        return None
 
     async def list_versions(
         self, *, table: str, namespace: Optional[list[str]] = None
     ) -> list["TableVersion"]:
-        """
-        list a table's versions
-
-        :param table: Table name.
-        """
-        request_model = _ListVersionsRequest(table=table, namespace=namespace)
-        resp = await self.room.send_request(
-            "database.list_versions", request_model.model_dump()
+        response = await self._invoke(
+            operation="list_versions",
+            input={
+                "table": table,
+                "namespace": namespace,
+            },
         )
-        return [TableVersion.model_validate(v) for v in resp.json["versions"]]
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list_versions")
+        versions = response.json.get("versions")
+        if not isinstance(versions, list):
+            raise self._unexpected_response_error(operation="list_versions")
+        parsed_versions = list[TableVersion]()
+        for version in versions:
+            if not isinstance(version, dict):
+                raise self._unexpected_response_error(operation="list_versions")
+            metadata_json = version.get("metadata_json")
+            if not isinstance(metadata_json, str):
+                raise self._unexpected_response_error(operation="list_versions")
+            try:
+                metadata = json.loads(metadata_json)
+            except json.JSONDecodeError as exc:
+                raise self._unexpected_response_error(
+                    operation="list_versions"
+                ) from exc
+            parsed_versions.append(
+                TableVersion.model_validate(
+                    {
+                        "version": version.get("version"),
+                        "timestamp": version.get("timestamp"),
+                        "metadata": metadata,
+                    }
+                )
+            )
+        return parsed_versions
 
     async def create_vector_index(
         self,
@@ -3404,22 +4983,15 @@ class DatabaseClient:
         replace: Optional[bool] = None,
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Create a vector index on a given column.
-
-        :param table: Table name.
-        :param column: Vector column name.
-        """
-        request_model = _CreateVectorIndexRequest(
-            table=table,
-            column=column,
-            replace=replace,
-            namespace=namespace,
+        await self._invoke(
+            operation="create_vector_index",
+            input={
+                "table": table,
+                "column": column,
+                "replace": replace,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request(
-            "database.create_vector_index", request_model.model_dump()
-        )
-        return None
 
     async def create_scalar_index(
         self,
@@ -3429,22 +5001,15 @@ class DatabaseClient:
         replace: Optional[bool] = None,
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Create a scalar index on a given column.
-
-        :param table: Table name.
-        :param column: Column name.
-        """
-        request_model = _CreateScalarIndexRequest(
-            table=table,
-            column=column,
-            replace=replace,
-            namespace=namespace,
+        await self._invoke(
+            operation="create_scalar_index",
+            input={
+                "table": table,
+                "column": column,
+                "replace": replace,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request(
-            "database.create_scalar_index", request_model.model_dump()
-        )
-        return None
 
     async def create_full_text_search_index(
         self,
@@ -3454,40 +5019,32 @@ class DatabaseClient:
         replace: Optional[bool] = None,
         namespace: Optional[list[str]] = None,
     ) -> None:
-        """
-        Create a full-text search index on a given text column.
-
-        :param table: Table name.
-        :param column: Text column name.
-        """
-        request_model = _CreateFullTextSearchIndexRequest(
-            table=table,
-            column=column,
-            replace=replace,
-            namespace=namespace,
+        await self._invoke(
+            operation="create_full_text_search_index",
+            input={
+                "table": table,
+                "column": column,
+                "replace": replace,
+                "namespace": namespace,
+            },
         )
-        await self.room.send_request(
-            "database.create_full_text_search_index",
-            request_model.model_dump(),
-        )
-        return None
 
     async def list_indexes(
         self, *, table: str, namespace: Optional[list[str]] = None
     ) -> list["TableIndex"]:
-        """
-        List all indexes on a table.
-
-        :param table: Table name.
-        """
-        request_model = _ListIndexesRequest(table=table, namespace=namespace)
-        response = await self.room.send_request(
-            "database.list_indexes", request_model.model_dump()
+        response = await self._invoke(
+            operation="list_indexes",
+            input={
+                "table": table,
+                "namespace": namespace,
+            },
         )
-        if isinstance(response, JsonContent):
-            return [TableIndex.model_validate(i) for i in response.json["indexes"]]
-
-        raise RoomException("unexpected return type")
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list_indexes")
+        indexes = response.json.get("indexes")
+        if not isinstance(indexes, list):
+            raise self._unexpected_response_error(operation="list_indexes")
+        return [TableIndex.model_validate(index_data) for index_data in indexes]
 
 
 class MemoryClient:
@@ -3505,10 +5062,18 @@ class MemoryClient:
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
+    async def _invoke(self, *, operation: str, input: dict) -> Content:
+        return await self.room.invoke(
+            toolkit="memory",
+            tool=operation,
+            input=input,
+        )
+
     async def list(self, *, namespace: Optional[List[str]] = None) -> List[str]:
         request_model = _MemoryListRequest(namespace=namespace)
-        response = await self.room.send_request(
-            "memory.list", request_model.model_dump()
+        response = await self._invoke(
+            operation="list",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return list(response.json.get("memories", []))
@@ -3529,7 +5094,10 @@ class MemoryClient:
             overwrite=overwrite,
             ignore_exists=ignore_exists,
         )
-        await self.room.send_request("memory.create", request_model.model_dump())
+        await self._invoke(
+            operation="create",
+            input=request_model.model_dump(),
+        )
 
     async def drop(
         self,
@@ -3543,14 +5111,18 @@ class MemoryClient:
             namespace=namespace,
             ignore_missing=ignore_missing,
         )
-        await self.room.send_request("memory.drop", request_model.model_dump())
+        await self._invoke(
+            operation="drop",
+            input=request_model.model_dump(),
+        )
 
     async def inspect(
         self, *, name: str, namespace: Optional[List[str]] = None
     ) -> MemoryDetails:
         request_model = _MemoryInspectRequest(name=name, namespace=namespace)
-        response = await self.room.send_request(
-            "memory.inspect", request_model.model_dump()
+        response = await self._invoke(
+            operation="inspect",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryDetails.model_validate(response.json)
@@ -3569,11 +5141,17 @@ class MemoryClient:
             namespace=namespace,
             statement=statement,
         )
-        response = await self.room.send_request(
-            "memory.query", request_model.model_dump()
+        response = await self._invoke(
+            operation="query",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
-            return decode_records(response.json["results"])
+            if isinstance(response.json.get("results"), list):
+                return decode_records(response.json["results"])
+            return _typed_rows_records_from_chunk(
+                payload=response.json,
+                operation="memory.query",
+            )
 
         raise self._unexpected_response_error(operation="query")
 
@@ -3593,7 +5171,16 @@ class MemoryClient:
             records=encode_records(records),
             merge=merge,
         )
-        await self.room.send_request("memory.upsert_table", request_model.model_dump())
+        await self._invoke(
+            operation="upsert_table",
+            input={
+                "name": request_model.name,
+                "namespace": request_model.namespace,
+                "table": request_model.table,
+                "records_json": json.dumps(request_model.records),
+                "merge": request_model.merge,
+            },
+        )
 
     async def upsert_nodes(
         self,
@@ -3609,7 +5196,17 @@ class MemoryClient:
             records=records,
             merge=merge,
         )
-        await self.room.send_request("memory.upsert_nodes", request_model.model_dump())
+        await self._invoke(
+            operation="upsert_nodes",
+            input={
+                "name": request_model.name,
+                "namespace": request_model.namespace,
+                "records_json": json.dumps(
+                    [record.model_dump() for record in request_model.records]
+                ),
+                "merge": request_model.merge,
+            },
+        )
 
     async def upsert_relationships(
         self,
@@ -3625,8 +5222,16 @@ class MemoryClient:
             records=records,
             merge=merge,
         )
-        await self.room.send_request(
-            "memory.upsert_relationships", request_model.model_dump()
+        await self._invoke(
+            operation="upsert_relationships",
+            input={
+                "name": request_model.name,
+                "namespace": request_model.namespace,
+                "records_json": json.dumps(
+                    [record.model_dump() for record in request_model.records]
+                ),
+                "merge": request_model.merge,
+            },
         )
 
     async def ingest_text(
@@ -3647,8 +5252,9 @@ class MemoryClient:
             llm_model=llm_model,
             llm_temperature=llm_temperature,
         )
-        response = await self.room.send_request(
-            "memory.ingest_text", request_model.model_dump()
+        response = await self._invoke(
+            operation="ingest_text",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
@@ -3680,8 +5286,24 @@ class MemoryClient:
             llm_model=llm_model,
             llm_temperature=llm_temperature,
         )
-        response = await self.room.send_request(
-            "memory.ingest_image", request_model.model_dump(), data
+        response = await self._invoke(
+            operation="ingest_image",
+            input={
+                "name": request_model.name,
+                "namespace": request_model.namespace,
+                "caption": request_model.caption,
+                "data_base64": None
+                if data is None
+                else base64.b64encode(data).decode("utf-8"),
+                "mime_type": request_model.mime_type,
+                "source": request_model.source,
+                "annotations_json": None
+                if request_model.annotations is None
+                else json.dumps(request_model.annotations),
+                "strategy": request_model.strategy,
+                "llm_model": request_model.llm_model,
+                "llm_temperature": request_model.llm_temperature,
+            },
         )
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
@@ -3710,8 +5332,9 @@ class MemoryClient:
             llm_model=llm_model,
             llm_temperature=llm_temperature,
         )
-        response = await self.room.send_request(
-            "memory.ingest_file", request_model.model_dump()
+        response = await self._invoke(
+            operation="ingest_file",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
@@ -3742,8 +5365,9 @@ class MemoryClient:
             llm_model=llm_model,
             llm_temperature=llm_temperature,
         )
-        response = await self.room.send_request(
-            "memory.ingest_from_table", request_model.model_dump()
+        response = await self._invoke(
+            operation="ingest_from_table",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
@@ -3768,8 +5392,9 @@ class MemoryClient:
             llm_model=llm_model,
             llm_temperature=llm_temperature,
         )
-        response = await self.room.send_request(
-            "memory.ingest_from_storage", request_model.model_dump()
+        response = await self._invoke(
+            operation="ingest_from_storage",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryIngestResult.model_validate(response.json)
@@ -3792,8 +5417,9 @@ class MemoryClient:
             limit=limit,
             include_relationships=include_relationships,
         )
-        response = await self.room.send_request(
-            "memory.recall", request_model.model_dump()
+        response = await self._invoke(
+            operation="recall",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryRecallResult.model_validate(response.json)
@@ -3812,8 +5438,9 @@ class MemoryClient:
             namespace=namespace,
             entity_ids=entity_ids,
         )
-        response = await self.room.send_request(
-            "memory.delete_entities", request_model.model_dump()
+        response = await self._invoke(
+            operation="delete_entities",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryDeleteEntitiesResult.model_validate(response.json)
@@ -3832,8 +5459,9 @@ class MemoryClient:
             namespace=namespace,
             relationships=relationships,
         )
-        response = await self.room.send_request(
-            "memory.delete_relationships", request_model.model_dump()
+        response = await self._invoke(
+            operation="delete_relationships",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryDeleteRelationshipsResult.model_validate(response.json)
@@ -3854,8 +5482,9 @@ class MemoryClient:
             compact=compact,
             cleanup=cleanup,
         )
-        response = await self.room.send_request(
-            "memory.optimize", request_model.model_dump()
+        response = await self._invoke(
+            operation="optimize",
+            input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
             return MemoryOptimizeResult.model_validate(response.json)
@@ -4085,9 +5714,64 @@ class LogStream(Generic[T]):
             yield p
 
 
+class _ContainerLogInputStream:
+    def __init__(
+        self,
+        *,
+        request_id: str,
+        container_id: str,
+        follow: bool,
+    ):
+        self._start_chunk = BinaryContent(
+            data=b"",
+            headers={
+                "kind": "start",
+                "request_id": request_id,
+                "container_id": container_id,
+                "follow": follow,
+            },
+        )
+        self._closed = asyncio.Event()
+
+    def close(self) -> None:
+        self._closed.set()
+
+    async def __aiter__(self) -> AsyncIterator[Content]:
+        yield self._start_chunk
+        await self._closed.wait()
+
+
+class _ContainerLogStream(LogStream[T]):
+    async def logs(self) -> AsyncIterator[str]:
+        try:
+            async for line in super().logs():
+                yield line
+        finally:
+            await self.cancel()
+
+
 # ---------------------------
 # Container TTY
 # ---------------------------
+
+
+def _container_string_pairs(
+    value: dict[str, str] | None,
+) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    return [{"key": key, "value": item} for key, item in value.items()]
+
+
+def _container_port_pairs(
+    value: dict[int, int] | None,
+) -> list[dict[str, int]]:
+    if value is None:
+        return []
+    return [
+        {"container_port": int(container_port), "host_port": int(host_port)}
+        for container_port, host_port in value.items()
+    ]
 
 
 class ExecSession:
@@ -4095,17 +5779,37 @@ class ExecSession:
     Provides async input/output streams for an interactive container session.
     """
 
-    def __init__(self, *, room: RoomClient, request_id: str, task: asyncio.Task):
+    _INPUT_STREAM_CLOSE = object()
+
+    def __init__(
+        self,
+        *,
+        room: RoomClient,
+        request_id: str,
+        container_id: str,
+        command: Optional[list[str]] | str,
+        tty: Optional[bool],
+        task: asyncio.Task[int],
+    ):
         self._room = room
         self._request_id = request_id
+        self._container_id = container_id
+        self._command = command
+        self._tty = tty
         self._error_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._output_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self._input_q: asyncio.Queue[BinaryContent | object] = asyncio.Queue()
         self._closed = asyncio.ensure_future(task)
         self._task = task
         self._ready = asyncio.Future[bool]()
+        self._input_closed = False
+        self._last_resize_width: int | None = None
+        self._last_resize_height: int | None = None
         task.add_done_callback(self._on_task_done)
 
     def _on_task_done(self, t):
+        del t
+        self._close_input_stream()
         self._output_q.put_nowait(None)
         self._error_q.put_nowait(None)
         if not self._ready.done():
@@ -4121,23 +5825,63 @@ class ExecSession:
     def request_id(self):
         return self._request_id
 
+    async def input_stream(self) -> AsyncIterator[Content]:
+        yield BinaryContent(
+            data=b"",
+            headers={
+                "kind": "start",
+                "request_id": self._request_id,
+                "container_id": self._container_id,
+                "command": self._command,
+                "tty": self._tty,
+            },
+        )
+
+        while True:
+            chunk = await self._input_q.get()
+            if chunk is self._INPUT_STREAM_CLOSE:
+                return
+            if not isinstance(chunk, BinaryContent):
+                raise RoomException(
+                    "container input queue produced an invalid stream chunk"
+                )
+            yield chunk
+
+    def _close_input_stream(self) -> None:
+        if self._input_closed:
+            return
+        self._input_closed = True
+        self._input_q.put_nowait(self._INPUT_STREAM_CLOSE)
+
+    def _queue_input(
+        self,
+        *,
+        channel: int,
+        data: bytes = b"",
+        width: int | None = None,
+        height: int | None = None,
+    ) -> None:
+        if self._input_closed:
+            raise RoomException("container exec session is already closed")
+        self._input_q.put_nowait(
+            BinaryContent(
+                data=data,
+                headers={
+                    "kind": "input",
+                    "channel": channel,
+                    "width": width,
+                    "height": height,
+                },
+            )
+        )
+
     async def close_stdin(self) -> None:
         await self._ready
-        # If server supports TTY input; adjust route name if different.
-        await self._room.send_request(
-            "containers.container_input",
-            {"request_id": self._request_id, "channel": 255},
-            data=b"",
-        )
+        self._queue_input(channel=255)
 
     async def write(self, data: bytes) -> None:
         await self._ready
-        # If server supports TTY input; adjust route name if different.
-        await self._room.send_request(
-            "containers.container_input",
-            {"request_id": self._request_id, "channel": 1},
-            data=data,
-        )
+        self._queue_input(channel=1, data=data)
 
     async def wait_for_ready(self):
         await self._ready
@@ -4147,15 +5891,11 @@ class ExecSession:
         Resize the TTY for the running container.
         This sends a control message (channel 4) to adjust terminal dimensions.
         """
-        await self._room.send_request(
-            "containers.container_input",
-            {
-                "request_id": self._request_id,
-                "channel": 4,
-                "width": width,
-                "height": height,
-            },
-        )
+        if self._last_resize_width == width and self._last_resize_height == height:
+            return
+        self._last_resize_width = width
+        self._last_resize_height = height
+        self._queue_input(channel=4, width=width, height=height)
 
     async def stderr(self) -> AsyncIterator[bytes]:
         while True:
@@ -4172,15 +5912,11 @@ class ExecSession:
             yield chunk
 
     async def stop(self):
-        # send a kill message on channel 5
-        await self._room.send_request(
-            "containers.container_input",
-            {"request_id": self._request_id, "channel": 5},
-            data={},
-        )
+        self._close_input_stream()
 
     def _mark_ready(self):
-        self._ready.set_result(True)
+        if not self._ready.done():
+            self._ready.set_result(True)
 
     # Internal
     def _push_output(self, data: bytes):
@@ -4191,12 +5927,9 @@ class ExecSession:
         self._error_q.put_nowait(data)
 
     async def kill(self):
-        await self._room.send_request(
-            "containers.stop_exec",
-            {
-                "request_id": self._request_id,
-            },
-        )
+        if self._input_closed:
+            return
+        self._queue_input(channel=5)
 
 
 # ---------------------------
@@ -4207,19 +5940,6 @@ class ExecSession:
 class ContainersClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
-        # Hook server -> client events
-        self.room.protocol.register_handler(
-            "containers.log.chunk", self._handle_log_chunk
-        )
-        self.room.protocol.register_handler(
-            "containers.run.output", self._handle_container_run_chunk
-        )
-        self.room.protocol.register_handler(
-            "containers.progress", self._handle_progress
-        )
-
-        self._ttys: Dict[str, ExecSession] = {}
-        self._log_streams = dict[str, LogStream]()
 
     @staticmethod
     def _unexpected_response_error(*, operation: str) -> RoomException:
@@ -4228,101 +5948,66 @@ class ContainersClient:
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
-    # ---- Event handlers ----
-
-    async def _handle_log_chunk(
-        self, protocol: Protocol, message_id: int, typ: str, data: bytes
-    ):
-        header, _ = unpack_message(data)
-        req_id = header["request_id"]
-        log_line = header.get("log", "")
-        q = self._log_streams.get(req_id)
-        if q:
-            q._logs_q.put_nowait(str(log_line))
-
-    async def _handle_container_run_chunk(
-        self, protocol: Protocol, message_id: int, typ: str, data: bytes
-    ):
-        header, payload = unpack_message(data)
-
-        req_id: str = header["request_id"]
-        channel: int = int(header["channel"])
-
-        tty = self._ttys.get(req_id)
-        if tty is None:
-            logger.warning("received output from missing container %s", req_id)
-            return  # tty closed or missing
-
-        if channel == 2:
-            tty._push_err(payload)
-
-        elif channel == 1:
-            tty._push_output(payload)
-
-        elif channel == -1:
-            control = json.loads(payload)
-            if control["started"]:
-                tty._mark_ready()
-            else:
-                logger.warning("unexpected control message, started missing")
-        else:
-            logger.warning("unexpected message received")
-
-    async def _handle_progress(
-        self, protocol: Protocol, message_id: int, typ: str, data: bytes
-    ):
-        header, _ = unpack_message(data)
-        req_id = header["request_id"]
-        detail = header.get("detail") or {}
-        lp = LogProgress(
-            layer=header.get("layer"),
-            message=header.get("message"),
-            current=(detail.get("current") if detail else None),
-            total=(detail.get("total") if detail else None),
-        )
-        pq = self._log_streams.get(req_id)
-        if pq:
-            pq._progress_q.put_nowait(lp)
-
-    # ---- High-level API ----
+    @staticmethod
+    def _image_payload(item: object) -> dict[str, Any]:
+        if not isinstance(item, dict):
+            raise RoomException(
+                "unexpected return type from containers.list_images",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        payload = dict(item)
+        labels = payload.get("labels")
+        if isinstance(labels, list):
+            normalized_labels = dict[str, str]()
+            for entry in labels:
+                if not isinstance(entry, dict):
+                    raise RoomException(
+                        "unexpected return type from containers.list_images",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    )
+                key = entry.get("key")
+                value = entry.get("value")
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise RoomException(
+                        "unexpected return type from containers.list_images",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    )
+                normalized_labels[key] = value
+            payload["labels"] = normalized_labels
+        return payload
 
     async def list_images(self) -> List[Image]:
-        res = await self.room.send_request("containers.list_images", {})
+        res = await self.room.invoke(
+            toolkit="containers",
+            tool="list_images",
+            input={},
+        )
         if not isinstance(res, JsonContent):
             raise self._unexpected_response_error(operation="list_images")
         imgs = res["images"]
-        return [Image.model_validate(i) for i in imgs]
+        return [Image.model_validate(self._image_payload(i)) for i in imgs]
 
     async def delete_image(self, *, image: str) -> None:
-        await self.room.send_request("containers.delete_image", {"image": image})
-
-    # ---- Streaming helpers ----
-
-    def _make_stream(
-        self,
-        *,
-        cancel_cb: Callable[[], asyncio.Future[Any]],
-        task: asyncio.Task,
-        request_id: str,
-    ) -> LogStream:
-        log_stream = LogStream(cancel_cb=cancel_cb, task=task)
-        self._log_streams[request_id] = log_stream
-
-        def _pop(t):
-            self._log_streams.pop(request_id)
-
-        task.add_done_callback(_pop)
-
-        return log_stream
+        await self.room.invoke(
+            toolkit="containers",
+            tool="delete_image",
+            input={"image": image},
+        )
 
     async def pull_image(
         self, *, tag: str, credentials: List[DockerSecret] | None = None
     ) -> None:
-        req = ImagePullRequest(tag=tag, credentials=credentials or [])
-
-        await self.room.send_request("containers.pull_image", req.model_dump())
-
-        return None
+        await self.room.invoke(
+            toolkit="containers",
+            tool="pull_image",
+            input={
+                "tag": tag,
+                "credentials": [
+                    credential.model_dump(mode="json")
+                    for credential in (credentials or [])
+                ],
+            },
+        )
 
     async def push_image(
         self,
@@ -4331,14 +6016,17 @@ class ContainersClient:
         credentials: List[DockerSecret] | None = None,
         private: bool = False,
     ) -> str:
-        req = ImagePushRequest(
-            tag=tag,
-            credentials=credentials or [],
-            private=private,
-        )
-
-        resp = await self.room.send_request(
-            "containers.push_image", req.model_dump(exclude_none=True)
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="push_image",
+            input={
+                "tag": tag,
+                "credentials": [
+                    credential.model_dump(mode="json")
+                    for credential in (credentials or [])
+                ],
+                "private": private,
+            },
         )
         if isinstance(resp, JsonContent):
             container_id: str = resp.json["container_id"]
@@ -4353,14 +6041,16 @@ class ContainersClient:
         archive_path: str,
         private: bool = False,
     ) -> str:
-        req = ImageLoadRequest(
-            mounts=mounts,
-            archive_path=archive_path,
-            private=private,
-        )
-
-        resp = await self.room.send_request(
-            "containers.load_image", req.model_dump(exclude_none=True)
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="load_image",
+            input={
+                "mounts": [
+                    mount.model_dump(mode="json", exclude_none=True) for mount in mounts
+                ],
+                "archive_path": archive_path,
+                "private": private,
+            },
         )
         if isinstance(resp, JsonContent):
             container_id: str = resp.json["container_id"]
@@ -4376,15 +6066,17 @@ class ContainersClient:
         archive_path: str,
         private: bool = False,
     ) -> str:
-        req = ImageSaveRequest(
-            tag=tag,
-            mounts=mounts,
-            archive_path=archive_path,
-            private=private,
-        )
-
-        resp = await self.room.send_request(
-            "containers.save_image", req.model_dump(exclude_none=True)
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="save_image",
+            input={
+                "tag": tag,
+                "mounts": [
+                    mount.model_dump(mode="json", exclude_none=True) for mount in mounts
+                ],
+                "archive_path": archive_path,
+                "private": private,
+            },
         )
         if isinstance(resp, JsonContent):
             container_id: str = resp.json["container_id"]
@@ -4412,28 +6104,31 @@ class ContainersClient:
         writable_root_fs: Optional[bool] = None,
         private: Optional[bool] = None,
     ) -> str:
-        request_id = uuid.uuid4().hex
-
-        req = _RunRequest(
-            name=name,
-            request_id=request_id,
-            image=image,
-            command=command,
-            working_dir=working_dir,
-            env=env or {},
-            mount_path=mount_path,
-            mount_subpath=mount_subpath,
-            role=role,
-            participant_name=participant_name,
-            ports=ports or {},
-            credentials=credentials or [],
-            mounts=mounts,
-            writable_root_fs=writable_root_fs,
-            private=private,
-        )
-
-        resp = await self.room.send_request(
-            "containers.run", req.model_dump(exclude_none=True)
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="run",
+            input={
+                "image": image,
+                "command": command,
+                "working_dir": working_dir,
+                "env": _container_string_pairs(env),
+                "mount_path": mount_path,
+                "mount_subpath": mount_subpath,
+                "role": role,
+                "participant_name": participant_name,
+                "ports": _container_port_pairs(ports),
+                "credentials": [
+                    credential.model_dump(mode="json")
+                    for credential in (credentials or [])
+                ],
+                "name": name,
+                "annotations": None,
+                "mounts": mounts.model_dump(mode="json", exclude_none=True)
+                if mounts is not None
+                else None,
+                "writable_root_fs": writable_root_fs,
+                "private": private,
+            },
         )
         if isinstance(resp, JsonContent):
             container_id: str = resp.json["container_id"]
@@ -4451,17 +6146,22 @@ class ContainersClient:
         private: bool = False,
         credentials: List[DockerSecret] | None = None,
     ) -> str:
-        req = _BuildRequest(
-            tag=tag,
-            mounts=mounts,
-            context_path=context_path,
-            dockerfile_path=dockerfile_path,
-            private=private,
-            credentials=credentials or [],
-        )
-
-        resp = await self.room.send_request(
-            "containers.build", req.model_dump(exclude_none=True)
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="build",
+            input={
+                "tag": tag,
+                "mounts": [
+                    mount.model_dump(mode="json", exclude_none=True) for mount in mounts
+                ],
+                "context_path": context_path,
+                "dockerfile_path": dockerfile_path,
+                "private": private,
+                "credentials": [
+                    credential.model_dump(mode="json")
+                    for credential in (credentials or [])
+                ],
+            },
         )
         if isinstance(resp, JsonContent):
             container_id: str = resp.json["container_id"]
@@ -4472,12 +6172,14 @@ class ContainersClient:
     async def run_service(
         self, *, service_id: str, env: Optional[dict[str, str]] = None
     ) -> str:
-        req = {
-            "service_id": service_id,
-            "env": env,
-        }
-
-        resp = await self.room.send_request("containers.run_service", req)
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="run_service",
+            input={
+                "service_id": service_id,
+                "env": _container_string_pairs(env),
+            },
+        )
         if isinstance(resp, JsonContent):
             container_id: str = resp.json["container_id"]
             return container_id
@@ -4493,33 +6195,71 @@ class ContainersClient:
     ) -> ExecSession:
         request_id = str(uuid.uuid4())
 
-        req = _ExecRequest(
+        async def run():
+            try:
+                response = await self.room.invoke(
+                    toolkit="containers",
+                    tool="exec",
+                    input=container.input_stream(),
+                )
+                if isinstance(response, Content):
+                    raise self._unexpected_response_error(operation="exec")
+                container._mark_ready()
+                async for chunk in response:
+                    if isinstance(chunk, ErrorContent):
+                        raise RoomException(chunk.text, code=chunk.code)
+                    if isinstance(chunk, _ControlContent):
+                        if chunk.method == "close":
+                            break
+                        raise self._unexpected_response_error(operation="exec")
+                    if not isinstance(chunk, BinaryContent):
+                        raise self._unexpected_response_error(operation="exec")
+
+                    channel_value = chunk.headers.get("channel")
+                    if isinstance(channel_value, bool) or not isinstance(
+                        channel_value, int
+                    ):
+                        raise RoomException(
+                            "containers.exec returned a chunk without a valid channel",
+                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        )
+
+                    if channel_value == 1:
+                        container._push_output(chunk.data)
+                        continue
+                    if channel_value == 2:
+                        container._push_err(chunk.data)
+                        continue
+                    if channel_value == 3:
+                        status_payload = json.loads(chunk.data.decode("utf-8"))
+                        status = status_payload.get("status")
+                        if isinstance(status, int):
+                            return status
+                        raise RoomException(
+                            "containers.exec returned an invalid status payload",
+                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        )
+
+                    logger.warning(
+                        "ignoring unexpected containers.exec channel %s",
+                        channel_value,
+                    )
+
+                raise RoomException(
+                    "containers.exec stream closed before a status was returned",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            finally:
+                container._close_input_stream()
+
+        container = ExecSession(
+            room=self.room,
             request_id=request_id,
+            task=asyncio.create_task(run()),
             container_id=container_id,
             command=command,
             tty=tty,
         )
-
-        async def run():
-            try:
-                resp = await self.room.send_request(
-                    "containers.exec", req.model_dump(exclude_none=True)
-                )
-                if not isinstance(resp, JsonContent):
-                    raise self._unexpected_response_error(operation="exec")
-
-                # close TTY on completion
-
-                status = resp.json["status"]
-
-                return status
-            finally:
-                self._ttys.pop(request_id, None)
-
-        container = ExecSession(
-            room=self.room, request_id=request_id, task=asyncio.create_task(run())
-        )
-        self._ttys[request_id] = container
 
         return container
 
@@ -4527,40 +6267,106 @@ class ContainersClient:
 
     def logs(self, *, container_id: str, follow: bool = False) -> LogStream[None]:
         request_id = uuid.uuid4().hex
+        input_stream = _ContainerLogInputStream(
+            request_id=request_id,
+            container_id=container_id,
+            follow=follow,
+        )
+        task: asyncio.Task[None] | None = None
 
         async def cancel():
-            await self.room.send_request(
-                "containers.stop_logs", {"request_id": request_id}
-            )
+            input_stream.close()
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
 
         async def _run():
-            await self.room.send_request(
-                "containers.logs",
-                {"request_id": request_id, "id": container_id, "follow": follow},
-            )
-            return None
+            try:
+                response = await self.room.invoke(
+                    toolkit="containers",
+                    tool="logs",
+                    input=input_stream,
+                )
+                if isinstance(response, Content):
+                    raise self._unexpected_response_error(operation="logs")
+                async for chunk in response:
+                    if isinstance(chunk, ErrorContent):
+                        raise RoomException(chunk.text, code=chunk.code)
+                    if isinstance(chunk, _ControlContent):
+                        if chunk.method == "close":
+                            return None
+                        raise self._unexpected_response_error(operation="logs")
+                    if not isinstance(chunk, BinaryContent):
+                        raise self._unexpected_response_error(operation="logs")
 
-        stream = self._make_stream(
-            cancel_cb=cancel, task=asyncio.create_task(_run()), request_id=request_id
+                    channel_value = chunk.headers.get("channel")
+                    if isinstance(channel_value, bool) or not isinstance(
+                        channel_value, int
+                    ):
+                        raise RoomException(
+                            "containers.logs returned a chunk without a valid channel",
+                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        )
+                    if channel_value != 1:
+                        logger.warning(
+                            "ignoring unexpected containers.logs channel %s",
+                            channel_value,
+                        )
+                        continue
+
+                    try:
+                        text = chunk.data.decode("utf-8")
+                    except UnicodeDecodeError as ex:
+                        raise RoomException(
+                            "containers.logs returned invalid UTF-8 data",
+                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        ) from ex
+                    stream._logs_q.put_nowait(text)
+                return None
+            finally:
+                input_stream.close()
+
+        run_task = asyncio.create_task(_run())
+        stream = _ContainerLogStream(
+            cancel_cb=cancel,
+            task=run_task,
         )
+        task = run_task
         return stream
 
     # ---- Misc ----
 
     async def stop(self, *, container_id: str, force: bool = False) -> None:
-        await self.room.send_request(
-            "containers.stop_container", {"id": container_id, "force": force}
+        await self.room.invoke(
+            toolkit="containers",
+            tool="stop_container",
+            input={"container_id": container_id, "force": force},
         )
 
+    async def wait_for_exit(self, *, container_id: str) -> int:
+        response = await self.room.invoke(
+            toolkit="containers",
+            tool="wait_for_exit",
+            input={"container_id": container_id},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="wait_for_exit")
+        exit_code = response.json.get("exit_code")
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+            raise self._unexpected_response_error(operation="wait_for_exit")
+        return exit_code
+
     async def delete(self, *, container_id: str) -> None:
-        await self.room.send_request(
-            "containers.delete_container", {"id": container_id}
+        await self.room.invoke(
+            toolkit="containers",
+            tool="delete_container",
+            input={"container_id": container_id},
         )
 
     async def list(self, all: Optional[bool] = None) -> List[RoomContainer]:
-        res = await self.room.send_request(
-            "containers.list_containers",
-            ListContainersRequest(all=all).model_dump(mode="json"),
+        res = await self.room.invoke(
+            toolkit="containers",
+            tool="list_containers",
+            input={"all": all},
         )
         if not isinstance(res, JsonContent):
             raise self._unexpected_response_error(operation="list")
@@ -4720,6 +6526,20 @@ class SecretsClient:
         self._pending_authorization_requests = []
         self._pending_secret_requests = []
 
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from secrets.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    async def _invoke(self, *, operation: str, input: dict | Content) -> Content:
+        return await self.room.invoke(
+            toolkit="secrets",
+            tool=operation,
+            input=input,
+        )
+
     async def _handle_client_oauth_token_request(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
@@ -4783,12 +6603,13 @@ class SecretsClient:
         request_id: str,
         code: str,
     ):
-        await self.room.send_request(
-            "secrets.provide_oauth_authorization",
-            {
-                "code": code,
-                "request_id": request_id,
-            },
+        await self._invoke(
+            operation="provide_oauth_authorization",
+            input=_ClientRequestOAuthTokenResponse(
+                request_id=request_id,
+                code=code,
+                error=None,
+            ).model_dump(mode="json"),
         )
 
     async def reject_oauth_authorization(
@@ -4797,12 +6618,13 @@ class SecretsClient:
         request_id: str,
         error: str,
     ):
-        await self.room.send_request(
-            "secrets.provide_oauth_authorization",
-            {
-                "error": error,
-                "request_id": request_id,
-            },
+        await self._invoke(
+            operation="provide_oauth_authorization",
+            input=_ClientRequestOAuthTokenResponse(
+                request_id=request_id,
+                code=None,
+                error=error,
+            ).model_dump(mode="json"),
         )
 
     async def provide_secret(
@@ -4811,12 +6633,12 @@ class SecretsClient:
         request_id: str,
         data: bytes,
     ) -> None:
-        await self.room.send_request(
-            "secrets.provide_secret",
-            {
-                "request_id": request_id,
-            },
-            data=data,
+        await self._invoke(
+            operation="provide_secret",
+            input=BinaryContent(
+                data=data,
+                headers={"request_id": request_id, "error": None},
+            ),
         )
 
     async def reject_secret(
@@ -4825,12 +6647,12 @@ class SecretsClient:
         request_id: str,
         error: str,
     ) -> None:
-        await self.room.send_request(
-            "secrets.provide_secret",
-            {
-                "request_id": request_id,
-                "error": error,
-            },
+        await self._invoke(
+            operation="provide_secret",
+            input=BinaryContent(
+                data=b"",
+                headers={"request_id": request_id, "error": error},
+            ),
         )
 
     # get a saved oauth token
@@ -4848,14 +6670,14 @@ class SecretsClient:
             delegated_by=delegated_by,
             delegated_to=delegated_to,
         )
-        response = await self.room.send_request(
-            "secrets.get_offline_oauth_token", req.model_dump(mode="json")
+        response = await self._invoke(
+            operation="get_offline_oauth_token",
+            input=req.model_dump(mode="json"),
         )
         if isinstance(response, JsonContent):
             resp = _GetOfflineOAuthTokenResponse.model_validate(response.json)
             return resp.access_token
-        else:
-            raise RoomException("Invalid response received, expected JsonContent")
+        raise self._unexpected_response_error(operation="get_offline_oauth_token")
 
     async def request_oauth_token(
         self,
@@ -4875,32 +6697,36 @@ class SecretsClient:
             connector=connector,
             delegate_to=delegate_to,
         )
-        response = await self.room.send_request(
-            "secrets.request_oauth_token", req.model_dump(mode="json")
+        response = await self._invoke(
+            operation="request_oauth_token",
+            input=req.model_dump(mode="json"),
         )
         if isinstance(response, JsonContent):
             resp = _RequestOAuthTokenResponse.model_validate(response.json)
             return resp.access_token
-        else:
-            raise RoomException("Invalid response received, expected JsonContent")
+        raise self._unexpected_response_error(operation="request_oauth_token")
 
     async def list_secrets(self) -> list[SecretInfo]:
-        response = await self.room.send_request(
-            "secrets.list_secrets", _ListUserSecretsRequest().model_dump(mode="json")
+        response = await self._invoke(
+            operation="list_secrets",
+            input=_ListUserSecretsRequest().model_dump(mode="json"),
         )
         if isinstance(response, JsonContent):
             resp = _ListUserSecretsResponse.model_validate(response.json)
             return resp.secrets
-        else:
-            raise RoomException("Invalid response received, expected JsonContent")
+        raise self._unexpected_response_error(operation="list_secrets")
 
     async def delete_secret(self, *, id: str, delegated_to: Optional[str] = None):
-        await self.room.send_request(
-            "secrets.delete_secret",
-            _DeleteUserSecretRequest(id=id, delegated_to=delegated_to).model_dump(
-                mode="json"
-            ),
+        response = await self._invoke(
+            operation="delete_secret",
+            input=_DeleteUserSecretRequest(
+                id=id,
+                delegated_to=delegated_to,
+            ).model_dump(mode="json"),
         )
+        if isinstance(response, (EmptyContent, JsonContent)):
+            return
+        raise self._unexpected_response_error(operation="delete_secret")
 
     async def delete_requested_secret(
         self,
@@ -4909,14 +6735,17 @@ class SecretsClient:
         type: str,
         delegated_to: Optional[str] = None,
     ) -> None:
-        await self.room.send_request(
-            "secrets.delete_requested_secret",
-            _DeleteRequestedSecretRequest(
+        response = await self._invoke(
+            operation="delete_requested_secret",
+            input=_DeleteRequestedSecretRequest(
                 url=url,
                 type=type,
                 delegated_to=delegated_to,
             ).model_dump(mode="json"),
         )
+        if isinstance(response, (EmptyContent, JsonContent)):
+            return
+        raise self._unexpected_response_error(operation="delete_requested_secret")
 
     async def request_secret(
         self,
@@ -4934,12 +6763,13 @@ class SecretsClient:
             timeout=timeout,
             delegate_to=delegate_to,
         )
-        response = await self.room.send_request(
-            "secrets.request_secret", req.model_dump(mode="json")
+        response = await self._invoke(
+            operation="request_secret",
+            input=req.model_dump(mode="json"),
         )
         if isinstance(response, FileContent):
             return response.data
-        raise RoomException("Invalid response received, expected FileContent")
+        raise self._unexpected_response_error(operation="request_secret")
 
     async def set_secret(
         self,
@@ -4961,18 +6791,23 @@ class SecretsClient:
             delegated_to=delegated_to,
             for_identity=for_identity,
         )
+        if data is None:
+            raise RoomException(
+                "secret data is required",
+                code=ErrorCode.INVALID_REQUEST,
+            )
 
-        response = await self.room.send_request(
-            "secrets.set_secret",
-            req.model_dump(mode="json"),
-            data=data,
+        response = await self._invoke(
+            operation="set_secret",
+            input=BinaryContent(
+                data=data,
+                headers={**req.model_dump(mode="json"), "has_data": True},
+            ),
         )
 
         if isinstance(response, (EmptyContent, JsonContent)):
             return
-        raise RoomException(
-            "Invalid response received, expected EmptyContent or JsonContent"
-        )
+        raise self._unexpected_response_error(operation="set_secret")
 
     async def get_secret(
         self,
@@ -4992,9 +6827,9 @@ class SecretsClient:
             delegated_to=delegated_to,
         )
 
-        response = await self.room.send_request(
-            "secrets.get_secret",
-            req.model_dump(mode="json"),
+        response = await self._invoke(
+            operation="get_secret",
+            input=req.model_dump(mode="json"),
         )
 
         if isinstance(response, EmptyContent):
@@ -5003,6 +6838,4 @@ class SecretsClient:
         if isinstance(response, FileContent):
             return response
 
-        raise RoomException(
-            "Invalid response received, expected FileContent or EmptyContent"
-        )
+        raise self._unexpected_response_error(operation="get_secret")

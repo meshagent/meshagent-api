@@ -129,6 +129,45 @@ class FileContent(Content):
 content_types["file"] = FileContent
 
 
+class BinaryContent(Content):
+    def __init__(
+        self,
+        *,
+        data: bytes,
+        headers: dict[str, Any] | None = None,
+    ):
+        self.data = data
+        self.headers = dict(headers or {})
+
+    def to_json(self) -> dict:
+        return {
+            "type": "binary",
+            "headers": self.headers,
+        }
+
+    @staticmethod
+    def unpack(*, header: dict, payload: bytes) -> "BinaryContent":
+        headers = header.get("headers", {})
+        if not isinstance(headers, dict):
+            headers = {}
+        return BinaryContent(
+            data=payload,
+            headers=headers,
+        )
+
+    def get_data(self) -> bytes:
+        return self.data
+
+    def pack(self) -> bytes:
+        return pack_message(header=self.to_json(), data=self.data)
+
+    def __str__(self) -> str:
+        return f"Binary: headers={json.dumps(self.headers)}, length={len(self.data)}"
+
+
+content_types["binary"] = BinaryContent
+
+
 class TextContent(Content):
     def __init__(
         self,

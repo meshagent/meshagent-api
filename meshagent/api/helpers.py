@@ -20,11 +20,11 @@ async def deploy_schema(
     *, room: RoomClient, schema: MeshSchema, name: str, overwrite: bool = True
 ):
     validate_schema_name(name=name)
-    handle = await room.storage.open(path=f".schemas/{name}.json", overwrite=overwrite)
-    await room.storage.write(
-        handle=handle, data=json.dumps(schema.to_json()).encode("utf-8")
+    await room.storage.upload(
+        path=f".schemas/{name}.json",
+        data=json.dumps(schema.to_json()).encode("utf-8"),
+        overwrite=overwrite,
     )
-    await room.storage.close(handle=handle)
 
 
 def meshagent_base_url(base_url: Optional[str] = None):
