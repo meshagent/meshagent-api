@@ -6,6 +6,7 @@ from .room_server_client import (
     Requirement,
     RoomClient,
     RoomMessage,
+    RoomLogEvent,
     RoomException,
     ToolContentType,
     ToolContentSpec,
@@ -30,6 +31,7 @@ from .schema import (
 )
 from .schema_document import Element
 from .messaging import (
+    BinaryContent,
     Content,
     JsonContent,
     TextContent,
@@ -60,6 +62,7 @@ __all__ = [
     Requirement,
     RoomClient,
     RoomMessage,
+    RoomLogEvent,
     RoomException,
     ToolContentType,
     ToolContentSpec,
@@ -82,6 +85,7 @@ __all__ = [
     ValueProperty,
     Element,
     Content,
+    BinaryContent,
     JsonContent,
     TextContent,
     FileContent,

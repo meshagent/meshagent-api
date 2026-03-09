@@ -21,6 +21,10 @@ logger = logging.getLogger("document_runtime")
 #
 
 
+def _sync_payload_summary(base64_payload: str) -> str:
+    return f"{len(base64_payload)} base64 chars"
+
+
 random = secrets.SystemRandom()
 
 try:
@@ -73,13 +77,17 @@ try:
             doc = self.get_doc(document_id)
             if doc.on_document_sync is not None:
                 logger.debug(
-                    "publishing backend changes to document %s: %s", document_id, base64
+                    "publishing backend changes to document %s (%s)",
+                    document_id,
+                    _sync_payload_summary(base64),
                 )
                 doc.on_document_sync(base64)
 
         def apply_backend_changes(self, document_id: str, base64: str):
             logger.debug(
-                "applying backend changes to document %s: %s", document_id, base64
+                "applying backend changes to document %s (%s)",
+                document_id,
+                _sync_payload_summary(base64),
             )
             abc(document_id, base64)
 
@@ -232,13 +240,17 @@ except ImportError:
             doc = self.get_doc(document_id)
             if doc.on_document_sync is not None:
                 logger.debug(
-                    "publishing backend changes to document %s: %s", document_id, base64
+                    "publishing backend changes to document %s (%s)",
+                    document_id,
+                    _sync_payload_summary(base64),
                 )
                 doc.on_document_sync(base64)
 
         def apply_backend_changes(self, document_id: str, base64: str):
             logger.debug(
-                "applying backend changes to document %s: %s", document_id, base64
+                "applying backend changes to document %s (%s)",
+                document_id,
+                _sync_payload_summary(base64),
             )
             self.execute(
                 "meshagent.applyBackendChanges({id},{base64})".format(
@@ -344,7 +356,12 @@ class RuntimeDocument(Document):
             "changes": changes,
         }
         changes_json = json.dumps(changes)
-        logger.debug("applying changes to document %s: %s", self.id, changes_json)
+        logger.debug(
+            "applying changes to document %s (%s changes, %s json chars)",
+            self.id,
+            len(changes["changes"]),
+            len(changes_json),
+        )
 
         runtime.apply_changes(changes)
 

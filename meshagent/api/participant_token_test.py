@@ -167,6 +167,12 @@ def test_containers_grant() -> None:
     assert g.can_run("runtime/app")
     assert not g.can_run("other/app")
 
+    exact = ContainersGrant(pull=["repo/image"], run=["runtime/app"])
+    assert exact.can_pull("repo/image")
+    assert not exact.can_pull("repo/image-extra")
+    assert exact.can_run("runtime/app")
+    assert not exact.can_run("runtime/app-shell")
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # ParticipantToken behaviour
