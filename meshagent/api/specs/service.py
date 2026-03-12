@@ -88,12 +88,21 @@ class FileStorageMountSpec(BaseModel):
     read_only: bool = True
 
 
+class EmptyDirMountSpec(BaseModel):
+    """mounts a writable temporary directory into the container at the specified path"""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    read_only: bool = False
+
+
 class ContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
     project: Optional[list[ProjectStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
+    empty_dirs: Optional[list[EmptyDirMountSpec]] = None
 
 
 class ServiceApiKeySpec(BaseModel):
@@ -313,6 +322,7 @@ class ServiceTemplateContainerMountSpec(BaseModel):
     project: Optional[list[ProjectStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
+    empty_dirs: Optional[list[EmptyDirMountSpec]] = None
 
 
 class ServiceTemplateMetadata(BaseModel):
@@ -442,6 +452,7 @@ class ServiceTemplateSpec(BaseModel):
                     project=self.container.storage.project,
                     images=self.container.storage.images,
                     files=self.container.storage.files,
+                    empty_dirs=self.container.storage.empty_dirs,
                 )
                 if self.container.storage is not None
                 else None,
