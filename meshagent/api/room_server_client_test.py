@@ -93,6 +93,7 @@ class _FakeRoom:
         self.requests: list[tuple[str, dict, bytes | None]] = []
         self._tool_call_streams = {}
         self._close_watcher_task = None
+        self.list_toolkits_response: dict | None = None
 
     def emit(self, event_name: str, **kwargs) -> None:
         self.events.append((event_name, kwargs))
@@ -104,6 +105,8 @@ class _FakeRoom:
         if typ == "room.invoke_tool":
             await asyncio.sleep(0)
             return JsonContent(json={"ok": True})
+        if typ == "room.list_toolkits" and self.list_toolkits_response is not None:
+            return self.list_toolkits_response
 
         return {}
 
@@ -248,6 +251,42 @@ async def test_tool_call_response_chunk_unpacks_json_chunk_payload() -> None:
     assert event["tool_call_id"] == "tc-1"
     assert isinstance(event["chunk"], JsonContent)
     assert event["chunk"].json == {"hello": "world"}
+
+
+@pytest.mark.asyncio
+async def test_list_toolkits_preserves_strict_tool_metadata() -> None:
+    room = _FakeRoom()
+    room.list_toolkits_response = {
+        "tools": {
+            "test": {
+                "title": "Test",
+                "description": "desc",
+                "tools": {
+                    "strict_tool": {
+                        "title": "Strict Tool",
+                        "description": "desc",
+                        "input_spec": {
+                            "types": ["json"],
+                            "stream": False,
+                            "schema": {
+                                "type": "object",
+                                "properties": {},
+                                "required": [],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "strict": False,
+                    }
+                },
+            }
+        }
+    }
+
+    toolkits = await room.list_toolkits()
+
+    assert len(toolkits) == 1
+    assert len(toolkits[0].tools) == 1
+    assert toolkits[0].tools[0].strict is False
 
 
 @pytest.mark.asyncio
