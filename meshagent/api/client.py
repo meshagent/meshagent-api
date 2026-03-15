@@ -1,5 +1,5 @@
 import aiohttp
-from typing import Any, Dict, List, Optional, Literal, cast
+from typing import Any, Dict, List, Optional, Literal, TypeVar, cast
 from pydantic import BaseModel, ValidationError, JsonValue, Field, ConfigDict
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope
@@ -11,6 +11,9 @@ from meshagent.api.specs.service import (
     ServiceTemplateSpec,
 )
 import os
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 # ------------------------------------------------------------------
 #  Secret models
@@ -414,6 +417,19 @@ class Meshagent:
         raise RoomException(
             f"Failed to {action}. Status code: {resp.status}, body: {body}"
         )
+
+    async def _read_model(
+        self,
+        resp: aiohttp.ClientResponse,
+        model_type: type[_ModelT],
+    ) -> _ModelT:
+        payload = await resp.json()
+        try:
+            return model_type.model_validate(payload)
+        except ValidationError as exc:
+            raise RoomException(
+                f"Invalid {model_type.__name__} payload: {exc}"
+            ) from exc
 
     async def upload(self, *, project_id: str, path: str, data: bytes) -> None:
         """Upload a file to project storage.
@@ -1326,7 +1342,7 @@ class Meshagent:
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceTemplateSpec.model_validate_json(await resp.json())
+            return await self._read_model(resp, ServiceTemplateSpec)
 
     async def discover_mcp_spec(
         self,
@@ -1382,7 +1398,7 @@ class Meshagent:
         *,
         project_id: str,
         service: ServiceSpec,
-    ) -> str:
+    ) -> ServiceSpec:
         """
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
@@ -1396,7 +1412,7 @@ class Meshagent:
             "command": "...",
             "ports": {...}
           }
-        Returns: { "id": "<service_id>" }
+        Returns: created service spec
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services"
         async with self._session.post(
@@ -1405,7 +1421,7 @@ class Meshagent:
             json=service.model_dump(mode="json"),
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return await self._read_model(resp, ServiceSpec)
 
     async def update_service(
         self,
@@ -1413,11 +1429,11 @@ class Meshagent:
         project_id: str,
         service_id: str,
         service: ServiceSpec,
-    ) -> None:
+    ) -> ServiceSpec:
         """
         PUT /accounts/projects/{project_id}/services/{service_id}
         Body: same structure as create_service (fields you wish to change).
-        Returns: {} on success.
+        Returns: updated service spec.
         """
 
         if service.id is None:
@@ -1428,11 +1444,11 @@ class Meshagent:
             url, headers=self._get_headers(), json=service.model_dump(mode="json")
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return await self._read_model(resp, ServiceSpec)
 
     async def create_service_from_template(
         self, *, project_id: str, template: str, values: Dict[str, str]
-    ) -> str:
+    ) -> ServiceSpec:
         """
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
@@ -1446,7 +1462,7 @@ class Meshagent:
             "command": "...",
             "ports": {...}
           }
-        Returns: { "id": "<service_id>" }
+        Returns: created service spec
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/services"
         async with self._session.post(
@@ -1458,7 +1474,7 @@ class Meshagent:
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return await self._read_model(resp, ServiceSpec)
 
     async def update_service_from_template(
         self,
@@ -1467,11 +1483,11 @@ class Meshagent:
         service_id: str,
         template: str,
         values: Dict[str, str],
-    ) -> None:
+    ) -> ServiceSpec:
         """
         PUT /accounts/projects/{project_id}/services/{service_id}
         Body: same structure as create_service (fields you wish to change).
-        Returns: {} on success.
+        Returns: updated service spec.
         """
 
         url = f"{self.base_url}/accounts/projects/{project_id}/services/{service_id}"
@@ -1484,7 +1500,7 @@ class Meshagent:
             },
         ) as resp:
             await self._raise_for_status(resp)
-            return ServiceSpec.model_validate_json(await resp.json())
+            return await self._read_model(resp, ServiceSpec)
 
     async def get_service(self, *, project_id: str, service_id: str) -> ServiceSpec:
         """
