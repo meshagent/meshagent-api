@@ -83,9 +83,9 @@ class WebSocketClientProtocol(ClientProtocol):
         if not self._ws.closed:
             await self._ws.close()
         await self._ws_recv_task
+        await self._ws_ctx.__aexit__(exc_type, exc, tb)
         if not self._session_external:
             await self._session.__aexit__(exc_type, exc, tb)
-        await self._ws_ctx.__aexit__(exc_type, exc, tb)
         await super().__aexit__(exc_type, exc, tb)
 
     async def send_packet(self, data: bytes) -> None:

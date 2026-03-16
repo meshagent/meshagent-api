@@ -15,6 +15,7 @@ from pydantic import (
     ConfigDict,
     TypeAdapter,
     ValidationError,
+    field_validator,
 )
 from typing import (
     Optional,
@@ -514,7 +515,6 @@ class RoomClient:
             ],
             return_when=asyncio.FIRST_COMPLETED,
         )
-
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -967,6 +967,7 @@ class RoomClient:
                     "supports_context",
                     tool_json.get("supportsContext", False),
                 )
+                strict = tool_json.get("strict", None)
                 input_spec = ToolContentSpec.from_json(tool_json.get("input_spec"))
                 legacy_input_schema = tool_json.get("input_schema")
                 if legacy_input_schema is not None and input_spec is None:
@@ -1016,6 +1017,7 @@ class RoomClient:
                         defs=tool_json.get("defs", None),
                         pricing=tool_json.get("pricing", None),
                         supports_context=supports_context,
+                        strict=strict if isinstance(strict, bool) else None,
                     )
                 )
 
@@ -1565,6 +1567,7 @@ class ToolDescription:
         defs: Optional[dict] = None,
         pricing: Optional[str] = None,
         supports_context: Optional[bool] = False,
+        strict: Optional[bool] = None,
     ):
         self.name = name
         self.title = title
@@ -1578,6 +1581,7 @@ class ToolDescription:
         if supports_context is None:
             supports_context = False
         self.supports_context = supports_context
+        self.strict = strict
 
     @property
     def input_schema(self) -> dict | None:
@@ -1606,6 +1610,7 @@ class ToolDescription:
             "defs": self.defs,
             "pricing": self.pricing,
             "supports_context": self.supports_context,
+            "strict": self.strict,
         }
 
 
@@ -2687,6 +2692,7 @@ class MessagingClient:
         self._remote_streams: Dict[str, MessageStream] = {}
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task = None
+        self._enabled = False
 
     @staticmethod
     def _message_json(message: dict) -> str:
@@ -2711,6 +2717,10 @@ class MessagingClient:
         get the other participants in the room with messaging enabled.
         """
         return list(self._participants.values())
+
+    @property
+    def is_enabled(self) -> bool:
+        return self._enabled
 
     #
     def on(self, event_name: str, func: Callable):
@@ -2752,9 +2762,11 @@ class MessagingClient:
     ):
         await self._invoke(operation="enable", input={})
         self._on_stream_accept_callback = on_stream_accept
+        self._enabled = True
 
     async def disable(self):
         await self._invoke(operation="disable", input={})
+        self._enabled = False
 
     async def _handle_message_send(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -2796,6 +2808,7 @@ class MessagingClient:
         self._message_queue.close()
         if self._send_task is not None:
             await asyncio.gather(self._send_task)
+        self._enabled = False
 
     async def _send_messages(self):
         async for msg in self._message_queue:
@@ -2911,6 +2924,7 @@ class MessagingClient:
                 self._remote_streams.pop(stream_id)
 
     def _on_messaging_enabled(self, message: RoomMessage):
+        self._enabled = True
         for data in message.message["participants"]:
             participant = RemoteParticipant(id=data["id"], role=data["role"])
 
@@ -3484,6 +3498,13 @@ StructDataType.model_rebuild()
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
 
+def _require_non_empty_database_table_name(*, value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if normalized == "":
+        raise ValueError(f"{field_name} must not be empty")
+    return normalized
+
+
 class _CreateTableRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -3495,6 +3516,14 @@ class _CreateTableRequest(BaseModel):
     mode: CreateMode = "create"
     namespace: Optional[list[str]] = None
     metadata: Optional[dict] = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        return _require_non_empty_database_table_name(
+            value=value,
+            field_name="table name",
+        )
 
 
 class _ListTablesRequest(BaseModel):
@@ -4488,10 +4517,14 @@ class DatabaseClient:
                 data if isinstance(data, list) else [data],
             )
         )
+        normalized_name = _require_non_empty_database_table_name(
+            value=name,
+            field_name="table name",
+        )
         input_stream = _DatabaseWriteInputStream(
             start={
                 "kind": "start",
-                "name": name,
+                "name": normalized_name,
                 "fields": _database_toolkit_schema_entries(schema),
                 "mode": mode,
                 "namespace": namespace,
