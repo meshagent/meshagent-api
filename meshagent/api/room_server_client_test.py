@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import json
 from collections.abc import AsyncIterable, AsyncIterator
 from types import SimpleNamespace
@@ -32,6 +33,8 @@ from meshagent.api.room_server_client import (
     MemoryEntityRecord,
     MessagingClient,
     QueuesClient,
+    RemoteParticipant,
+    RoomMessage,
     RoomClient,
     RoomException,
     SecretsClient,
@@ -121,6 +124,16 @@ class _BadResponseRoom:
     async def invoke(self, **kwargs) -> dict:
         del kwargs
         return {}
+
+
+async def _cancel_close_watcher(room: _FakeRoom) -> None:
+    task = room._close_watcher_task
+    if task is None:
+        return
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 class _BadStorageResponseRoom:
@@ -430,6 +443,7 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
     )
     await client.stop()
     await client.disable()
+    await _cancel_close_watcher(room)
 
     assert [request[0] for request in room.requests] == [
         "room.invoke_tool",
@@ -464,6 +478,171 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
     assert send_input["to_participant_id"] == "remote-participant"
     assert json.loads(send_input["message_json"]) == {"value": 1}
     assert send_input["attachment_base64"] == base64.b64encode(b"\x00\x01").decode()
+
+
+@pytest.mark.asyncio
+async def test_messaging_client_send_message_resolves_online_remote_participant_by_id() -> (
+    None
+):
+    class _FakeMessagingRoom(_FakeRoom):
+        def __init__(self) -> None:
+            super().__init__()
+            self.local_participant = SimpleNamespace(id="local-participant")
+
+        async def send_request(
+            self, typ: str, request: dict, data: bytes | None = None
+        ) -> Content | dict:
+            self.requests.append((typ, request, data))
+            if typ != "room.invoke_tool":
+                return {}
+            return EmptyContent()
+
+    room = _FakeMessagingRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+
+    await client.start()
+    client._on_participant_enabled(
+        RoomMessage(
+            from_participant_id="remote-participant",
+            type="participant.enabled",
+            message={
+                "id": "remote-participant",
+                "role": "user",
+                "attributes": {"name": "Remote User"},
+            },
+        )
+    )
+
+    await client.send_message(
+        to=RemoteParticipant(id="remote-participant"),
+        type="direct",
+        message={"value": 1},
+    )
+    await client.stop()
+    await _cancel_close_watcher(room)
+
+    assert len(room.requests) == 1
+    send_arguments = room.requests[0][1]["arguments"]
+    assert isinstance(send_arguments, dict)
+    send_input = send_arguments["json"]
+    assert isinstance(send_input, dict)
+    assert send_input["to_participant_id"] == "remote-participant"
+    assert json.loads(send_input["message_json"]) == {"value": 1}
+
+
+@pytest.mark.asyncio
+async def test_messaging_client_drops_nowait_messages_for_removed_participant() -> None:
+    class _FakeMessagingRoom(_FakeRoom):
+        def __init__(self) -> None:
+            super().__init__()
+            self.local_participant = SimpleNamespace(id="local-participant")
+
+        async def send_request(
+            self, typ: str, request: dict, data: bytes | None = None
+        ) -> Content | dict:
+            self.requests.append((typ, request, data))
+            if typ != "room.invoke_tool":
+                return {}
+            return EmptyContent()
+
+    room = _FakeMessagingRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+    removed_participants: list[RemoteParticipant] = []
+    client.on(
+        "participant_removed",
+        lambda participant: removed_participants.append(participant),
+    )
+
+    await client.start()
+    client._on_participant_enabled(
+        RoomMessage(
+            from_participant_id="remote-participant",
+            type="participant.enabled",
+            message={
+                "id": "remote-participant",
+                "role": "user",
+                "attributes": {"name": "Remote User"},
+            },
+        )
+    )
+
+    participant = client.get_participant("remote-participant")
+    assert participant is not None
+    assert participant.online is True
+
+    client.send_message_nowait(
+        to=participant,
+        type="direct",
+        message={"value": 1},
+    )
+    client._on_participant_disabled(
+        RoomMessage(
+            from_participant_id="remote-participant",
+            type="participant.disabled",
+            message={"id": "remote-participant"},
+        )
+    )
+    await client.stop()
+
+    assert participant.online is False
+    assert client.get_participant("remote-participant") is None
+    assert removed_participants == [participant]
+    assert room.requests == []
+
+
+@pytest.mark.asyncio
+async def test_messaging_client_marks_participant_offline_when_send_returns_not_found() -> (
+    None
+):
+    class _FailingMessagingRoom(_FakeRoom):
+        def __init__(self) -> None:
+            super().__init__()
+            self.local_participant = SimpleNamespace(id="local-participant")
+
+        async def invoke(
+            self, *, toolkit: str, tool: str, input: dict
+        ) -> Content | AsyncIterator[Content]:
+            del toolkit, tool, input
+            raise RoomException(
+                "the participant was not found", code=ErrorCode.NOT_FOUND
+            )
+
+    room = _FailingMessagingRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+    removed_participants: list[RemoteParticipant] = []
+    client.on(
+        "participant_removed",
+        lambda participant: removed_participants.append(participant),
+    )
+
+    await client.start()
+    client._on_participant_enabled(
+        RoomMessage(
+            from_participant_id="remote-participant",
+            type="participant.enabled",
+            message={
+                "id": "remote-participant",
+                "role": "user",
+                "attributes": {"name": "Remote User"},
+            },
+        )
+    )
+
+    participant = client.get_participant("remote-participant")
+    assert participant is not None
+    assert participant.online is True
+
+    client.send_message_nowait(
+        to=participant,
+        type="direct",
+        message={"value": 1},
+    )
+    await client.stop()
+
+    assert participant.online is False
+    assert client.get_participant("remote-participant") is None
+    assert removed_participants == [participant]
+    assert room.requests == []
 
 
 @pytest.mark.asyncio

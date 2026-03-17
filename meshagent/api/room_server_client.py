@@ -337,7 +337,12 @@ class LocalParticipant(Participant):
 
 class RemoteParticipant(Participant):
     def __init__(
-        self, *, id: str, role: Optional[str] = None, attributes: Optional[dict] = None
+        self,
+        *,
+        id: str,
+        role: Optional[str] = None,
+        attributes: Optional[dict] = None,
+        online: bool | None = None,
     ):
         if attributes is None:
             attributes = {}
@@ -346,6 +351,7 @@ class RemoteParticipant(Participant):
             role = "unknown"
 
         self._role = role
+        self._online = online
 
         super().__init__(id=id, attributes=attributes)
 
@@ -355,6 +361,13 @@ class RemoteParticipant(Participant):
     @property
     def role(self):
         return self._role
+
+    @property
+    def online(self) -> bool | None:
+        return self._online
+
+    def _set_online(self, online: bool) -> None:
+        self._online = online
 
 
 class MeshDocument(RuntimeDocument):
@@ -399,7 +412,8 @@ class _QueuedRoomMessage(RoomMessage):
         type,
         message,
         attachment=None,
-        to: RemoteParticipant,
+        to: Participant | None,
+        drop_if_offline: bool,
     ):
         super().__init__(
             from_participant_id=from_participant_id,
@@ -408,7 +422,10 @@ class _QueuedRoomMessage(RoomMessage):
             attachment=attachment,
         )
         self.to = to
-        self.fut = asyncio.Future()
+        self.drop_if_offline = drop_if_offline
+        self.fut: asyncio.Future[bool] | None = (
+            None if drop_if_offline else asyncio.Future()
+        )
 
 
 class RoomClient:
@@ -2755,6 +2772,66 @@ class MessagingClient:
 
         return None
 
+    def _drop_queued_message(
+        self, *, msg: _QueuedRoomMessage, error: RoomException
+    ) -> None:
+        logger.debug(
+            "Dropping queued message for offline participant",
+            extra={
+                "participant_id": None if msg.to is None else msg.to.id,
+                "type": msg.type,
+            },
+        )
+        if msg.fut is not None and not msg.fut.done():
+            msg.fut.set_exception(error)
+
+    def _remove_participant(self, participant_id: str) -> RemoteParticipant | None:
+        part = self._participants.pop(participant_id, None)
+        if part is None:
+            return None
+
+        part._set_online(False)
+        self.emit("participant_removed", participant=part)
+
+        for stream_id, stream in list(self._remote_streams.items()):
+            if stream.to.id == part.id:
+                stream._close()
+                logger.warning(
+                    "stream %s closing due to disconnect of %s",
+                    stream_id,
+                    stream.to.get_attribute("name"),
+                )
+                self._remote_streams.pop(stream_id)
+
+        return part
+
+    def _mark_participant_offline(self, participant: Participant | None) -> None:
+        if not isinstance(participant, RemoteParticipant):
+            return
+
+        participant._set_online(False)
+        current = self._participants.get(participant.id, None)
+        if current is not None:
+            self._remove_participant(participant.id)
+
+    def _resolve_message_recipient(
+        self, participant: Participant | None
+    ) -> Participant | None:
+        if participant is None:
+            return None
+
+        if not isinstance(participant, RemoteParticipant):
+            return participant
+
+        if participant.online is False:
+            return None
+
+        current = self._participants.get(participant.id, None)
+        if current is None:
+            return None
+
+        return current
+
     async def enable(
         self,
         *,
@@ -2812,24 +2889,47 @@ class MessagingClient:
 
     async def _send_messages(self):
         async for msg in self._message_queue:
+            resolved_to = self._resolve_message_recipient(msg.to)
+            if resolved_to is None:
+                self._drop_queued_message(
+                    msg=msg,
+                    error=RoomException(
+                        "the participant was not found", code=ErrorCode.NOT_FOUND
+                    ),
+                )
+                continue
+
             try:
                 await self._invoke(
                     operation="send",
                     input={
-                        "to_participant_id": msg.to.id,
+                        "to_participant_id": resolved_to.id,
                         "type": msg.type,
                         "message_json": self._message_json(msg.message),
                         "attachment_base64": self._attachment_base64(msg.attachment),
                     },
                 )
-                msg.fut.set_result(True)
+                if msg.fut is not None and not msg.fut.done():
+                    msg.fut.set_result(True)
 
             except asyncio.CancelledError:
                 raise
 
+            except RoomException as ex:
+                if ex.code == ErrorCode.NOT_FOUND:
+                    self._mark_participant_offline(msg.to)
+                    if msg.drop_if_offline:
+                        self._drop_queued_message(msg=msg, error=ex)
+                        continue
+
+                logger.info("Unable to send message to participant", exc_info=ex)
+                if msg.fut is not None and not msg.fut.done():
+                    msg.fut.set_exception(ex)
+
             except Exception as ex:
                 logger.info("Unable to send message to participant", exc_info=ex)
-                msg.fut.set_exception(ex)
+                if msg.fut is not None and not msg.fut.done():
+                    msg.fut.set_exception(ex)
 
     def send_message_nowait(
         self,
@@ -2851,6 +2951,7 @@ class MessagingClient:
                 type=type,
                 message=message,
                 attachment=attachment,
+                drop_if_offline=True,
             )
         )
 
@@ -2873,9 +2974,13 @@ class MessagingClient:
             type=type,
             message=message,
             attachment=attachment,
+            drop_if_offline=False,
         )
 
         self._message_queue.send_nowait(msg)
+
+        if msg.fut is None:
+            raise RoomException("queued messaging future was not created")
 
         await msg.fut
 
@@ -2893,7 +2998,7 @@ class MessagingClient:
 
     def _on_participant_enabled(self, message: RoomMessage):
         data = message.message
-        participant = RemoteParticipant(id=data["id"], role=data["role"])
+        participant = RemoteParticipant(id=data["id"], role=data["role"], online=True)
 
         for k, v in data["attributes"].items():
             participant._attributes[k] = v
@@ -2911,22 +3016,14 @@ class MessagingClient:
             self.emit("participant_attributes_updated", participant=part)
 
     def _on_participant_disabled(self, message: RoomMessage):
-        part = self._participants.pop(message.message["id"], None)
-        if part is not None:
-            self.emit("participant_removed", participant=part)
-
-        for stream_id, stream in list(self._remote_streams.items()):
-            if stream.to.id == part.id:
-                stream._close()
-                logger.warning(
-                    f"stream {stream_id} closing due to disconnect of {stream.to.get_attribute('name')}"
-                )
-                self._remote_streams.pop(stream_id)
+        self._remove_participant(message.message["id"])
 
     def _on_messaging_enabled(self, message: RoomMessage):
         self._enabled = True
         for data in message.message["participants"]:
-            participant = RemoteParticipant(id=data["id"], role=data["role"])
+            participant = RemoteParticipant(
+                id=data["id"], role=data["role"], online=True
+            )
 
             for k, v in data["attributes"].items():
                 participant._attributes[k] = v
