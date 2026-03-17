@@ -2,6 +2,7 @@ import urllib.parse
 from aiohttp import ClientSession, WSMsgType, web, ClientWebSocketResponse
 import asyncio
 import logging
+import os
 import urllib
 from meshagent.api.version import __version__
 from meshagent.api.http import new_client_session
@@ -10,6 +11,28 @@ from typing import Optional
 from meshagent.api.protocol import Protocol, ClientProtocol
 
 logger = logging.getLogger("protocol.websocket")
+
+DEFAULT_WEBSOCKET_HEARTBEAT = 60.0
+WEBSOCKET_HEARTBEAT_ENV = "MESHAGENT_WEBSOCKET_HEARTBEAT"
+
+
+def resolve_websocket_heartbeat(heartbeat: float | None = None) -> float:
+    if heartbeat is None:
+        configured = os.getenv(WEBSOCKET_HEARTBEAT_ENV)
+        if configured is None or configured == "":
+            heartbeat = DEFAULT_WEBSOCKET_HEARTBEAT
+        else:
+            try:
+                heartbeat = float(configured)
+            except ValueError as ex:
+                raise ValueError(
+                    f"{WEBSOCKET_HEARTBEAT_ENV} must be a positive number"
+                ) from ex
+
+    if heartbeat <= 0:
+        raise ValueError("websocket heartbeat must be greater than zero")
+
+    return heartbeat
 
 
 def _log_websocket_close(
@@ -37,12 +60,12 @@ class WebSocketClientProtocol(ClientProtocol):
         *,
         url: str,
         token: str,
-        heartbeat: float = 30,
+        heartbeat: float | None = None,
         session: ClientSession | None = None,
     ):
         super().__init__(token=token)
         self._url = url
-        self._heartbeat = heartbeat
+        self._heartbeat = resolve_websocket_heartbeat(heartbeat)
         self._session = session
         self._session_external = session is not None
 

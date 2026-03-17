@@ -111,3 +111,25 @@ async def test_create_service_from_template_accepts_decoded_json_response():
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_task_allows_partial_update_without_annotations():
+    session = _FakeSession([_FakeResponse(status=200, payload={})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.update_scheduled_task(
+        project_id="proj_123",
+        task_id="task_123",
+        schedule="0 * * * *",
+    )
+
+    assert session.calls == [
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/scheduled-tasks/task_123",
+            {
+                "schedule": "0 * * * *",
+            },
+        )
+    ]

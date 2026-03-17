@@ -331,7 +331,7 @@ class _UpdateScheduledTaskRequest(BaseModel):
     payload: Optional[dict] = None  # dict or json-string
     schedule: Optional[str] = None
     active: Optional[bool] = None
-    annotations: dict[str, str]
+    annotations: Optional[dict[str, str]] = None
 
 
 class _ListScheduledTasksResponse(BaseModel):
@@ -2308,7 +2308,7 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=body
         ) as resp:
-            await self._ensure_success(resp, action="create scheduled task")
+            await self._raise_for_status(resp)
             data = await resp.json()
             return data["task_id"]
 
@@ -2346,7 +2346,7 @@ class Meshagent:
         async with self._session.put(
             url, headers=self._get_headers(), json=body
         ) as resp:
-            await self._ensure_success(resp, action="update scheduled task")
+            await self._raise_for_status(resp)
 
     async def delete_scheduled_task(self, *, project_id: str, task_id: str) -> None:
         """
@@ -2357,7 +2357,7 @@ class Meshagent:
             f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/{task_id}"
         )
         async with self._session.delete(url, headers=self._get_headers()) as resp:
-            await self._ensure_success(resp, action="delete scheduled task")
+            await self._raise_for_status(resp)
             return None
 
     async def list_scheduled_tasks(
@@ -2389,7 +2389,7 @@ class Meshagent:
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
-            await self._ensure_success(resp, action="list scheduled tasks")
+            await self._raise_for_status(resp)
             data = await resp.json()
 
         tasks_raw = data.get("tasks", [])

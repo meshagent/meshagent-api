@@ -8,6 +8,7 @@ import aiohttp
 
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.http import new_client_session
+from meshagent.api.websocket_protocol import resolve_websocket_heartbeat
 
 
 @dataclass
@@ -77,7 +78,7 @@ async def port_forward(
                 tunnel_ws_url,
                 headers={"Authorization": "Bearer " + token},
                 autoping=True,
-                heartbeat=30.0,
+                heartbeat=resolve_websocket_heartbeat(),
                 compress=0,
             )
 

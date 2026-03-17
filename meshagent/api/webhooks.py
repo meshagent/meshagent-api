@@ -12,7 +12,10 @@ import jwt
 
 from meshagent.api.room_server_client import RoomClient
 
-from meshagent.api.websocket_protocol import WebSocketServerProtocol
+from meshagent.api.websocket_protocol import (
+    WebSocketServerProtocol,
+    resolve_websocket_heartbeat,
+)
 
 logger = logging.getLogger("webhooks")
 
@@ -175,7 +178,7 @@ class WebhookServer:
                     raise web.HTTPBadRequest()
 
                 ws = web.WebSocketResponse(
-                    heartbeat=30,
+                    heartbeat=resolve_websocket_heartbeat(),
                 )
                 await ws.prepare(request)
 
