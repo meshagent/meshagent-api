@@ -12,6 +12,25 @@ from meshagent.api.protocol import Protocol, ClientProtocol
 logger = logging.getLogger("protocol.websocket")
 
 
+def _log_websocket_close(
+    *,
+    role: str,
+    url: str | None,
+    close_event: WSMsgType | None,
+    close_code: int | None,
+    exc: BaseException | None,
+) -> None:
+    log = logger.warning if exc is not None else logger.debug
+    log(
+        "%s websocket closed url=%s close_event=%s close_code=%s exception=%r",
+        role,
+        url,
+        None if close_event is None else close_event.name,
+        close_code,
+        exc,
+    )
+
+
 class WebSocketClientProtocol(ClientProtocol):
     def __init__(
         self,
@@ -66,15 +85,28 @@ class WebSocketClientProtocol(ClientProtocol):
         return self
 
     async def _ws_recv(self):
+        close_event: WSMsgType | None = None
         async for msg in self._ws:
             if msg.type == WSMsgType.BINARY:
                 self.receive_packet(msg.data)
             elif msg.type == WSMsgType.CLOSED:
+                close_event = msg.type
                 break
             elif msg.type == WSMsgType.ERROR:
+                close_event = msg.type
                 break
             else:
                 raise (Exception("Unexpected message type"))
+
+        ws_exception = self._ws.exception()
+        if self._ws.closed or close_event is not None or ws_exception is not None:
+            _log_websocket_close(
+                role="client",
+                url=self._url,
+                close_event=close_event,
+                close_code=self._ws.close_code,
+                exc=ws_exception,
+            )
 
         if self._ws.closed:
             super()._shutdown()
@@ -115,17 +147,33 @@ class WebSocketServerProtocol(Protocol):
         return self
 
     async def _ws_recv(self):
+        close_event: WSMsgType | None = None
         try:
             async for msg in self.socket:
                 if msg.type == WSMsgType.BINARY:
                     self.receive_packet(msg.data)
                 elif msg.type == WSMsgType.CLOSED:
+                    close_event = msg.type
                     break
                 elif msg.type == WSMsgType.ERROR:
+                    close_event = msg.type
                     break
                 else:
                     raise (Exception("Unexpected message type"))
         finally:
+            socket_exception = self.socket.exception()
+            if (
+                self.socket.closed
+                or close_event is not None
+                or socket_exception is not None
+            ):
+                _log_websocket_close(
+                    role="server",
+                    url=self._url,
+                    close_event=close_event,
+                    close_code=self.socket.close_code,
+                    exc=socket_exception,
+                )
             self.close()
 
     async def __aexit__(self, exc_type, exc, tb):
