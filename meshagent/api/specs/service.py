@@ -137,6 +137,7 @@ ANNOTATION_REQUEST_VALIDATION_METHOD = "meshagent.request.validation.method"
 ANNOTATION_REQUEST_VALIDATION_SECRET = "meshagent.request.validation.secret"
 ANNOTATION_STORAGE_CLASS = "meshagent.storage.class"
 ANNOTATION_ROOM_MAX_RUNTIME_SECONDS = "meshagent.room.max-runtime-seconds"
+ANNOTATION_ROOM_EMPTY_ROOM_TIMEOUT = "meshagent.room.empty-room-timeout"
 
 agent_type = Literal[
     "ChatBot",
