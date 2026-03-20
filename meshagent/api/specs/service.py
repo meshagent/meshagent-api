@@ -177,8 +177,9 @@ class QueueChannel(ChannelSpec):
     message_schema: Optional[dict] = None
 
 
-class ChatChannel(ChannelSpec):
+class MessagingChannel(ChannelSpec):
     model_config = ConfigDict(extra="forbid")
+    protocol: str = "meshagent.agent-message.v1"
     prompts: Optional[list[PromptTemplate]] = None
 
 
@@ -190,7 +191,7 @@ class ToolkitChannel(ChannelSpec):
 class ChannelsSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: Optional[list[EmailChannel]] = None
-    chat: Optional[list[ChatChannel]] = None
+    messaging: Optional[list[MessagingChannel]] = None
     queue: Optional[list[QueueChannel]] = None
     toolkit: Optional[list[ToolkitChannel]] = None
 

@@ -18,7 +18,7 @@ agents:
           private: false
           annotations:
             label: inbox
-      chat:
+      messaging:
         - prompts:
             - name: welcome
               prompt: Hello there
@@ -44,10 +44,18 @@ container:
     assert restored.agents[0].channels.email is not None
     assert restored.agents[0].channels.email[0].address == "support@example.com"
     assert restored.agents[0].channels.email[0].private is False
-    assert restored.agents[0].channels.chat is not None
-    assert restored.agents[0].channels.chat[0].prompts is not None
-    assert restored.agents[0].channels.chat[0].prompts[0].name == "welcome"
-    assert restored.agents[0].channels.chat[0].prompts[0].description is None
+    assert restored.agents[0].channels.messaging is not None
+    assert (
+        payload["agents"][0]["channels"]["messaging"][0]["protocol"]
+        == "meshagent.agent-message.v1"
+    )
+    assert (
+        restored.agents[0].channels.messaging[0].protocol
+        == "meshagent.agent-message.v1"
+    )
+    assert restored.agents[0].channels.messaging[0].prompts is not None
+    assert restored.agents[0].channels.messaging[0].prompts[0].name == "welcome"
+    assert restored.agents[0].channels.messaging[0].prompts[0].description is None
     assert restored.agents[0].channels.queue is not None
     assert restored.agents[0].channels.queue[0].message_schema == {
         "type": "object",
@@ -66,7 +74,7 @@ metadata:
 agents:
   - name: helper
     channels:
-      chat:
+      messaging:
         - prompts:
             - name: summary
               prompt: Summarize the request
@@ -80,11 +88,15 @@ container:
 
     assert service.agents is not None
     assert service.agents[0].channels is not None
-    assert service.agents[0].channels.chat is not None
-    assert service.agents[0].channels.chat[0].prompts is not None
-    assert service.agents[0].channels.chat[0].prompts[0].description is None
+    assert service.agents[0].channels.messaging is not None
     assert (
-        service.agents[0].channels.chat[0].prompts[0].prompt == "Summarize the request"
+        service.agents[0].channels.messaging[0].protocol == "meshagent.agent-message.v1"
+    )
+    assert service.agents[0].channels.messaging[0].prompts is not None
+    assert service.agents[0].channels.messaging[0].prompts[0].description is None
+    assert (
+        service.agents[0].channels.messaging[0].prompts[0].prompt
+        == "Summarize the request"
     )
     assert service.agents[0].channels.toolkit is not None
     assert service.agents[0].channels.toolkit[0].name == "docs"
