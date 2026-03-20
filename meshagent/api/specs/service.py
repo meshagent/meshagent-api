@@ -139,6 +139,8 @@ ANNOTATION_STORAGE_CLASS = "meshagent.storage.class"
 ANNOTATION_ROOM_MAX_RUNTIME_SECONDS = "meshagent.room.max-runtime-seconds"
 ANNOTATION_ROOM_EMPTY_ROOM_TIMEOUT = "meshagent.room.empty-room-timeout"
 
+ANNOTATION_FILE_PROMPT = "meshagent.prompt.file.matches.regex"
+
 agent_type = Literal[
     "ChatBot",
     "VoiceBot",
@@ -150,10 +152,55 @@ agent_type = Literal[
 ]
 
 
+class PromptTemplate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    description: Optional[str] = None
+    prompt: str
+    annotations: Optional[dict[str, str]] = None
+
+
+class ChannelSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    annotations: Optional[dict[str, str]] = None
+
+
+class EmailChannel(ChannelSpec):
+    model_config = ConfigDict(extra="forbid")
+    address: str
+    private: bool = True
+
+
+class QueueChannel(ChannelSpec):
+    model_config = ConfigDict(extra="forbid")
+    queue: str
+    message_schema: Optional[dict] = None
+
+
+class ChatChannel(ChannelSpec):
+    model_config = ConfigDict(extra="forbid")
+    prompts: Optional[list[PromptTemplate]] = None
+
+
+class ToolkitChannel(ChannelSpec):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+
+
+class ChannelsSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: Optional[list[EmailChannel]] = None
+    chat: Optional[list[ChatChannel]] = None
+    queue: Optional[list[QueueChannel]] = None
+    toolkit: Optional[list[ToolkitChannel]] = None
+
+
 class AgentSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     description: Optional[str] = None
     annotations: Optional[dict[str, str]] = None
+    channels: Optional[ChannelsSpec] = None
 
 
 class ServiceMetadata(BaseModel):
@@ -344,9 +391,11 @@ class TemplateEnvironmentVariable(BaseModel):
 
 
 class AgentTemplateSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     description: Optional[str] = None
     annotations: Optional[dict[str, str]] = None
+    channels: Optional[ChannelsSpec] = None
 
 
 class ContainerTemplateSpec(BaseModel):
@@ -428,6 +477,7 @@ class ServiceTemplateSpec(BaseModel):
                         name=a.name,
                         description=a.description,
                         annotations=a.annotations,
+                        channels=a.channels,
                     )
                     for a in self.agents
                 )
