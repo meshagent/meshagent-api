@@ -24,6 +24,7 @@ agents:
               prompt: Hello there
       queue:
         - queue: jobs
+          threading_mode: default-new
           message_schema:
             type: object
             properties:
@@ -57,6 +58,7 @@ container:
     assert restored.agents[0].channels.messaging[0].prompts[0].name == "welcome"
     assert restored.agents[0].channels.messaging[0].prompts[0].description is None
     assert restored.agents[0].channels.queue is not None
+    assert restored.agents[0].channels.queue[0].threading_mode == "default-new"
     assert restored.agents[0].channels.queue[0].message_schema == {
         "type": "object",
         "properties": {"task": {"type": "string"}},
@@ -78,6 +80,9 @@ agents:
         - prompts:
             - name: summary
               prompt: Summarize the request
+      queue:
+        - queue: jobs
+          threading_mode: default-new
       toolkit:
         - name: docs
 container:
@@ -98,5 +103,8 @@ container:
         service.agents[0].channels.messaging[0].prompts[0].prompt
         == "Summarize the request"
     )
+    assert service.agents[0].channels.queue is not None
+    assert service.agents[0].channels.queue[0].queue == "jobs"
+    assert service.agents[0].channels.queue[0].threading_mode == "default-new"
     assert service.agents[0].channels.toolkit is not None
     assert service.agents[0].channels.toolkit[0].name == "docs"

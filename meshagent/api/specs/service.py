@@ -174,6 +174,7 @@ class EmailChannel(ChannelSpec):
 class QueueChannel(ChannelSpec):
     model_config = ConfigDict(extra="forbid")
     queue: str
+    threading_mode: Optional[Literal["default-new"]] = None
     message_schema: Optional[dict] = None
 
 
