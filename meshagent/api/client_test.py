@@ -37,6 +37,14 @@ class _FakeSession:
         self.calls.append(("put", url, json))
         return self._responses.pop(0)
 
+    def get(self, url: str, *, headers=None, params=None):
+        self.calls.append(("get", url, params))
+        return self._responses.pop(0)
+
+    def delete(self, url: str, *, headers=None, params=None):
+        self.calls.append(("delete", url, params))
+        return self._responses.pop(0)
+
     async def close(self):
         self.closed = True
 
@@ -132,4 +140,160 @@ async def test_update_scheduled_task_allows_partial_update_without_annotations()
                 "schedule": "0 * * * *",
             },
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_project_secret_sends_base64_payload():
+    session = _FakeSession([_FakeResponse(status=200, payload={"id": "secret-1"})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    secret_id = await client.create_project_secret(
+        project_id="proj_123",
+        name="registry",
+        type="docker",
+        data=b'{"server":"registry.example.com"}',
+    )
+
+    assert secret_id == "secret-1"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/secrets",
+            {
+                "name": "registry",
+                "type": "docker",
+                "data_base64": "eyJzZXJ2ZXIiOiJyZWdpc3RyeS5leGFtcGxlLmNvbSJ9",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_secrets_compatibility_wrapper_fetches_secret_payloads():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secrets": [
+                        {
+                            "id": "secret-1",
+                            "name": "registry",
+                            "type": "docker",
+                            "delegated_to": None,
+                        }
+                    ]
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "secret-1",
+                    "name": "registry",
+                    "type": "docker",
+                    "data_base64": "eyJzZXJ2ZXIiOiJyZWdpc3RyeS5leGFtcGxlLmNvbSIsInVzZXJuYW1lIjoiYWxpY2UiLCJwYXNzd29yZCI6InNlY3JldCIsImVtYWlsIjoibm9uZUBleGFtcGxlLmNvbSJ9",
+                },
+            ),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    secrets = await client.list_secrets("proj_123")
+
+    assert len(secrets) == 1
+    assert secrets[0].id == "secret-1"
+    assert secrets[0].name == "registry"
+    assert secrets[0].type == "docker"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/secrets",
+            None,
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/secrets/secret-1",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_room_secret_and_external_oauth_methods_pass_query_parameters():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "secret-1",
+                    "name": "api-key",
+                    "type": "application/octet-stream",
+                    "delegated_to": "agent",
+                    "data_base64": "c2VjcmV0",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "registrations": [
+                        {
+                            "id": "registration-1",
+                            "delegated_to": "agent",
+                            "connector": None,
+                            "oauth": {
+                                "authorization_endpoint": "https://auth.example.com/authorize",
+                                "token_endpoint": "https://auth.example.com/token",
+                                "client_id": "client-id",
+                                "client_secret": None,
+                                "scopes": ["openid"],
+                            },
+                            "client_id": "client-id",
+                            "client_secret": "client-secret",
+                        }
+                    ]
+                },
+            ),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    secret = await client.get_room_secret(
+        project_id="proj_123",
+        room_name="room-a",
+        secret_id="secret-1",
+        delegated_to="agent",
+        for_identity="agent",
+    )
+    registrations = await client.list_room_external_oauth_registrations(
+        project_id="proj_123",
+        room_name="room-a",
+        delegated_to="agent",
+    )
+    await client.delete_room_external_oauth_registration(
+        project_id="proj_123",
+        room_name="room-a",
+        registration_id="registration-1",
+        delegated_to="agent",
+    )
+
+    assert secret.data == b"secret"
+    assert registrations[0].id == "registration-1"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/rooms/room-a/secrets/secret-1",
+            {"delegated_to": "agent", "for_identity": "agent"},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/rooms/room-a/external-oauth",
+            {"delegated_to": "agent"},
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/rooms/room-a/external-oauth/registration-1",
+            {"delegated_to": "agent"},
+        ),
     ]
