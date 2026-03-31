@@ -1413,13 +1413,14 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
             tool = kwargs["tool"]
             if tool in {
                 "run",
-                "build",
                 "push_image",
                 "load_image",
                 "save_image",
                 "run_service",
             }:
                 return JsonContent(json={"container_id": f"{tool}-ctr"})
+            if tool in {"build", "start_build"}:
+                return JsonContent(json={"build_id": f"{tool}-job"})
             if tool == "list_images":
                 return JsonContent(
                     json={
@@ -1442,6 +1443,19 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
                                 "started_by": {"id": "p1", "name": "user"},
                                 "state": "RUNNING",
                                 "private": False,
+                            }
+                        ]
+                    }
+                )
+            if tool == "list_builds":
+                return JsonContent(
+                    json={
+                        "builds": [
+                            {
+                                "id": "build-1",
+                                "tag": "example:latest",
+                                "status": "running",
+                                "exit_code": None,
                             }
                         ]
                     }
@@ -1472,16 +1486,36 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
         ],
         context_path="/workspace",
     )
+    await client.start_build(
+        tag="example:latest",
+        mounts=[
+            ContainerMountSpec(
+                room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
+            )
+        ],
+        context_path="/workspace",
+        context_archive_path="/website",
+        context_archive_ref="room.meshagent.com/website:latest",
+        context_archive_mount_path="/context",
+        context_archive_arch="amd64",
+    )
     await client.run_service(service_id="svc-1", env={"A": "1"})
     await client.list_images()
+    await client.list_builds()
+    await client.cancel_build(build_id="build-1")
+    await client.delete_build(build_id="build-1")
     await client.list()
 
     assert [request["tool"] for request in room.requests] == [
         "pull_image",
         "run",
         "build",
+        "start_build",
         "run_service",
         "list_images",
+        "list_builds",
+        "cancel_build",
+        "delete_build",
         "list_containers",
     ]
 
@@ -1498,7 +1532,20 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert isinstance(run_input["mounts"], dict)
     assert run_input["mounts"]["empty_dirs"] == [{"path": "/cache", "read_only": False}]
 
-    run_service_input = room.requests[3]["input"]
+    build_input = room.requests[2]["input"]
+    assert isinstance(build_input, dict)
+    assert build_input["context_archive_path"] is None
+
+    start_build_input = room.requests[3]["input"]
+    assert isinstance(start_build_input, dict)
+    assert start_build_input["context_archive_path"] == "/website"
+    assert (
+        start_build_input["context_archive_ref"] == "room.meshagent.com/website:latest"
+    )
+    assert start_build_input["context_archive_mount_path"] == "/context"
+    assert start_build_input["context_archive_arch"] == "amd64"
+
+    run_service_input = room.requests[4]["input"]
     assert isinstance(run_service_input, dict)
     assert run_service_input["env"] == [{"key": "A", "value": "1"}]
 
@@ -1509,6 +1556,7 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
         def __init__(self) -> None:
             self.exec_chunks: list[BinaryContent] = []
             self.log_requests: list[dict[str, object]] = []
+            self.build_log_requests: list[dict[str, object]] = []
 
         async def invoke(self, **kwargs) -> Content | AsyncIterator[Content]:
             tool = kwargs["tool"]
@@ -1572,6 +1620,33 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
 
                 return log_stream()
 
+            if tool == "get_build_logs":
+                assert isinstance(input_value, AsyncIterable)
+
+                async def build_log_stream() -> AsyncIterator[Content]:
+                    iterator = input_value.__aiter__()
+                    start_chunk = await iterator.__anext__()
+                    assert isinstance(start_chunk, BinaryContent)
+                    self.build_log_requests.append(dict(start_chunk.headers))
+                    yield BinaryContent(
+                        data=b"build line",
+                        headers={
+                            "request_id": start_chunk.headers["request_id"],
+                            "build_id": start_chunk.headers["build_id"],
+                            "channel": 1,
+                        },
+                    )
+                    yield BinaryContent(
+                        data=b'{"status": 0}',
+                        headers={
+                            "request_id": start_chunk.headers["request_id"],
+                            "build_id": start_chunk.headers["build_id"],
+                            "channel": 3,
+                        },
+                    )
+
+                return build_log_stream()
+
             return EmptyContent()
 
     room = _FakeContainersRoom()
@@ -1598,6 +1673,16 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
     assert room.log_requests[0]["container_id"] == "container-1"
     assert room.log_requests[0]["follow"] is False
     assert room.log_requests[0]["kind"] == "start"
+
+    build_log_stream = client.get_build_logs(build_id="build-1", follow=True)
+    build_logs = [line async for line in build_log_stream.logs()]
+    build_status = await build_log_stream
+    assert build_logs == ["build line"]
+    assert build_status == 0
+    assert len(room.build_log_requests) == 1
+    assert room.build_log_requests[0]["build_id"] == "build-1"
+    assert room.build_log_requests[0]["follow"] is True
+    assert room.build_log_requests[0]["kind"] == "start"
 
 
 @pytest.mark.asyncio
