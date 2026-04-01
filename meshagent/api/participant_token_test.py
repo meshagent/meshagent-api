@@ -39,6 +39,17 @@ def test_agents_grant_defaults() -> None:
     assert g.use_tools
 
 
+def test_api_scope_user_default_includes_secrets_without_admin_or_tunnels() -> None:
+    scope = ApiScope.user_default()
+
+    assert scope.livekit is not None
+    assert scope.memory is not None
+    assert scope.services is not None
+    assert scope.secrets is not None
+    assert scope.admin is None
+    assert scope.tunnels is None
+
+
 @pytest.mark.parametrize(
     "rooms,name,expected",
     [

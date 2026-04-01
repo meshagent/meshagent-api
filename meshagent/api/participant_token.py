@@ -456,6 +456,23 @@ class ApiScope(BaseModel):
         )
 
     @staticmethod
+    def user_default() -> "ApiScope":
+        return ApiScope(
+            livekit=LivekitGrant(),
+            queues=QueuesGrant(),
+            messaging=MessagingGrant(),
+            database=DatabaseGrant(),
+            memory=MemoryGrant(),
+            sync=SyncGrant(),
+            storage=StorageGrant(),
+            containers=ContainersGrant(),
+            developer=DeveloperGrant(),
+            agents=AgentsGrant(),
+            secrets=SecretsGrant(),
+            services=ServicesGrant(),
+        )
+
+    @staticmethod
     def full() -> "ApiScope":
         return ApiScope(
             livekit=LivekitGrant(),
