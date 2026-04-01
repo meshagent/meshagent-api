@@ -95,7 +95,7 @@ def parse_api_key(key: str) -> ApiKey:
 
         return ApiKey(id=kid, project_id=project_id, secret=secret)
 
-    raise ValueError("invalid api key")
+    raise ValueError("invalid api key: " + key[:5] + "...")
 
 
 def encode_api_key(key: ApiKey) -> str:

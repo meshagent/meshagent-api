@@ -11,6 +11,7 @@ from .participant_token import (  # noqa: E402, F401
     AgentsGrant,
     LivekitGrant,
     QueuesGrant,
+    MessagingGrant,
     TableGrant,
     DatabaseGrant,
     MemoryEntryGrant,
@@ -21,6 +22,7 @@ from .participant_token import (  # noqa: E402, F401
     StorageGrant,
     StoragePathGrant,
     ContainersGrant,
+    ServicesGrant,
     ApiScope,
     ParticipantToken,
 )
@@ -73,6 +75,20 @@ def test_queues_grant() -> None:
     assert not restricted.can_send("x")
     assert restricted.can_receive("r1")
     assert not restricted.can_receive("s1")
+
+
+@pytest.mark.parametrize(
+    ("grant_type", "payload"),
+    [
+        (QueuesGrant, {"list": False}),
+        (MessagingGrant, {"list": False}),
+        (MemoryGrant, {"list": False}),
+        (ServicesGrant, {"list": False}),
+    ],
+)
+def test_list_alias_fields_round_trip_for_grants(grant_type, payload) -> None:
+    grant = grant_type.model_validate(payload)
+    assert grant.model_dump()["list"] is False
 
 
 def test_database_grant() -> None:
