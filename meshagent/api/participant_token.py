@@ -3,7 +3,7 @@ import jwt
 from typing import Optional, List, Literal
 from datetime import datetime
 import json
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 import logging
 from .keys import parse_api_key
 from .oauth import OAuthClientConfig, ConnectorRef
@@ -34,11 +34,9 @@ class LivekitGrant(BaseModel):
 
 
 class QueuesGrant(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    send: Optional[list[str]] = None
-    receive: Optional[list[str]] = None
-    list_enabled: bool = Field(default=True, alias="list")
+    send: Optional[List[str]] = None
+    receive: Optional[List[str]] = None
+    list: bool = True
 
     def can_send(self, queue: str):
         return self.send is None or queue in self.send
@@ -48,10 +46,8 @@ class QueuesGrant(BaseModel):
 
 
 class MessagingGrant(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
     broadcast: bool = True
-    list_enabled: bool = Field(default=True, alias="list")
+    list: bool = True
     send: bool = True
 
 
@@ -139,9 +135,7 @@ class MemoryEntryGrant(BaseModel):
 
 
 class MemoryGrant(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    list_enabled: bool = Field(default=True, alias="list")
+    list: bool = True
     memories: Optional[List[MemoryEntryGrant]] = None
 
     def _matching_memories(
@@ -424,9 +418,7 @@ class TunnelsGrant(BaseModel):
 
 
 class ServicesGrant(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
-
-    list_enabled: bool = Field(default=True, alias="list")
+    list: bool = True
 
 
 class ApiScope(BaseModel):

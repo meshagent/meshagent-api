@@ -88,6 +88,7 @@ def test_queues_grant() -> None:
 )
 def test_list_alias_fields_round_trip_for_grants(grant_type, payload) -> None:
     grant = grant_type.model_validate(payload)
+    assert grant.list is False
     assert grant.model_dump()["list"] is False
 
 
