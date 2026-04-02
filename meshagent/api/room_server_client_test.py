@@ -1744,6 +1744,49 @@ async def test_containers_client_push_image_unexpected_response_uses_error_code(
 
 
 @pytest.mark.asyncio
+async def test_containers_client_load_uses_room_invoke_with_strict_payload() -> None:
+    class _FakeContainersRoom:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        async def invoke(self, **kwargs) -> Content | AsyncIterator[Content]:
+            self.requests.append(kwargs)
+            return JsonContent(
+                json={
+                    "resolved_ref": "room.meshagent.com/images/example.tar:latest",
+                    "refs": ["room.meshagent.com/images/example.tar:latest"],
+                }
+            )
+
+    room = _FakeContainersRoom()
+    client = ContainersClient(room=room)  # type: ignore[arg-type]
+
+    loaded = await client.load(archive_path="/images/example.tar")
+
+    assert loaded.resolved_ref == "room.meshagent.com/images/example.tar:latest"
+    assert loaded.refs == ["room.meshagent.com/images/example.tar:latest"]
+    assert room.requests == [
+        {
+            "toolkit": "containers",
+            "tool": "load",
+            "input": {"archive_path": "/images/example.tar"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_containers_client_load_unexpected_response_uses_error_code() -> None:
+    client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.load"
+    ) as ex:
+        await client.load(archive_path="/images/example.tar")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
 async def test_containers_client_load_image_unexpected_response_uses_error_code() -> (
     None
 ):

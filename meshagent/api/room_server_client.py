@@ -5709,6 +5709,10 @@ class ImagePushRequest(BaseModel):
     private: bool = False
 
 
+class ImageImportRequest(BaseModel):
+    archive_path: str
+
+
 class ImageLoadRequest(BaseModel):
     mounts: List[ContainerMountSpec]
     archive_path: str
@@ -5769,6 +5773,11 @@ class ContainerRunResult(BaseModel):
     container_id: str
     status: Optional[int] = None
     logs: List[str] = Field(default_factory=list)
+
+
+class ImportedImage(BaseModel):
+    resolved_ref: str
+    refs: List[str] = Field(default_factory=list)
 
 
 class BuildJob(BaseModel):
@@ -6241,6 +6250,23 @@ class ContainersClient:
             return container_id
 
         raise self._unexpected_response_error(operation="push_image")
+
+    async def load(
+        self,
+        *,
+        archive_path: str,
+    ) -> ImportedImage:
+        resp = await self.room.invoke(
+            toolkit="containers",
+            tool="load",
+            input={
+                "archive_path": archive_path,
+            },
+        )
+        if isinstance(resp, JsonContent):
+            return ImportedImage.model_validate(resp.json)
+
+        raise self._unexpected_response_error(operation="load")
 
     async def load_image(
         self,
