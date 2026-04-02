@@ -2242,7 +2242,12 @@ class StorageClient:
                     raise self._unexpected_response_error(operation="upload")
                 if chunk.headers.get("kind") != "pull":
                     raise self._unexpected_response_error(operation="upload")
-                input_stream.request_next()
+                raw_chunk_size = chunk.headers.get("chunk_size")
+                input_stream.request_next(
+                    raw_chunk_size
+                    if isinstance(raw_chunk_size, int) and raw_chunk_size > 0
+                    else None
+                )
         finally:
             input_stream.close()
 
@@ -2498,7 +2503,7 @@ class _StorageDownloadInputStream:
         if self._closed.is_set():
             return
         self._closed.set()
-        self._pulls.put_nowait(object())
+        self._pulls.put_nowait(None)
 
     def __aiter__(self) -> AsyncIterator[Content]:
         return self._stream()
@@ -2539,47 +2544,62 @@ class _StorageUploadInputStream:
         self._name = name
         self._mime_type = mime_type
         self._closed = asyncio.Event()
-        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+        self._pulls: asyncio.Queue[int | None] = asyncio.Queue()
         self._pending_chunk = b""
         self._pending_offset = 0
         self._source_exhausted = False
 
-    def request_next(self) -> None:
+    def request_next(self, chunk_size: int | None = None) -> None:
         if self._closed.is_set():
             return
-        self._pulls.put_nowait(object())
+        self._pulls.put_nowait(chunk_size)
 
     def close(self) -> None:
         if self._closed.is_set():
             return
         self._closed.set()
-        self._pulls.put_nowait(object())
+        self._pulls.put_nowait(None)
 
     def __aiter__(self) -> AsyncIterator[Content]:
         return self._stream()
 
-    async def _next_data_chunk(self) -> bytes | None:
-        while True:
+    async def _next_data_chunk(self, requested_chunk_size: int) -> bytes | None:
+        parts: list[bytes] = []
+        bytes_buffered = 0
+
+        while bytes_buffered < requested_chunk_size:
             if self._pending_offset < len(self._pending_chunk):
                 start = self._pending_offset
-                end = min(start + self._chunk_size, len(self._pending_chunk))
+                end = min(
+                    start + (requested_chunk_size - bytes_buffered),
+                    len(self._pending_chunk),
+                )
                 self._pending_offset = end
-                return self._pending_chunk[start:end]
+                part = self._pending_chunk[start:end]
+                parts.append(part)
+                bytes_buffered += len(part)
+                continue
 
             if self._source_exhausted:
-                return None
+                break
 
             try:
                 next_chunk = bytes(await self._source.__anext__())
             except StopAsyncIteration:
                 self._source_exhausted = True
-                return None
+                break
 
             if len(next_chunk) == 0:
                 continue
 
             self._pending_chunk = next_chunk
             self._pending_offset = 0
+
+        if bytes_buffered == 0:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return b"".join(parts)
 
     async def _stream(self) -> AsyncIterator[Content]:
         yield BinaryContent(
@@ -2594,11 +2614,15 @@ class _StorageUploadInputStream:
             },
         )
         while True:
-            await self._pulls.get()
+            requested_chunk_size = await self._pulls.get()
             if self._closed.is_set():
                 return
 
-            next_chunk = await self._next_data_chunk()
+            next_chunk = await self._next_data_chunk(
+                requested_chunk_size
+                if isinstance(requested_chunk_size, int) and requested_chunk_size > 0
+                else self._chunk_size
+            )
             if next_chunk is None:
                 return
 

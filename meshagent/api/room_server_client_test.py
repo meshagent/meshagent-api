@@ -152,13 +152,20 @@ class _BadStorageResponseRoom:
 
 
 class _StreamingStorageRoom:
-    def __init__(self) -> None:
+    def __init__(self, *, upload_pull_chunk_size: int | None = 128 * 1024) -> None:
         self.protocol = _FakeProtocol()
         self.requests: list[dict] = []
         self.upload_starts: list[BinaryContent] = []
         self.upload_chunks: list[BinaryContent] = []
         self.download_starts: list[BinaryContent] = []
         self.download_pulls: list[BinaryContent] = []
+        self.upload_pull_chunk_size = upload_pull_chunk_size
+
+    def _upload_pull_headers(self) -> dict[str, object]:
+        headers: dict[str, object] = {"kind": "pull"}
+        if self.upload_pull_chunk_size is not None:
+            headers["chunk_size"] = self.upload_pull_chunk_size
+        return headers
 
     async def invoke(self, **kwargs):
         self.requests.append(kwargs)
@@ -173,11 +180,11 @@ class _StreamingStorageRoom:
                 start_chunk = await iterator.__anext__()
                 assert isinstance(start_chunk, BinaryContent)
                 self.upload_starts.append(start_chunk)
-                yield BinaryContent(data=b"", headers={"kind": "pull"})
+                yield BinaryContent(data=b"", headers=self._upload_pull_headers())
                 async for chunk in iterator:
                     assert isinstance(chunk, BinaryContent)
                     self.upload_chunks.append(chunk)
-                    yield BinaryContent(data=b"", headers={"kind": "pull"})
+                    yield BinaryContent(data=b"", headers=self._upload_pull_headers())
                 yield _ControlContent(method="close")
 
             return stream()
@@ -1142,7 +1149,7 @@ async def test_storage_client_streams_write_and_download() -> None:
         "mime_type": "text/plain",
         "size": len(payload),
     }
-    assert len(room.upload_chunks) == 2
+    assert len(room.upload_chunks) == 1
     assert b"".join(chunk.data for chunk in room.upload_chunks) == payload
     assert all(chunk.headers == {"kind": "data"} for chunk in room.upload_chunks)
 
@@ -1157,6 +1164,18 @@ async def test_storage_client_streams_write_and_download() -> None:
         {"kind": "pull"},
         {"kind": "pull"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_storage_client_upload_stream_falls_back_to_default_chunk_size() -> None:
+    room = _StreamingStorageRoom(upload_pull_chunk_size=None)
+    client = StorageClient(room=room)  # type: ignore[arg-type]
+
+    payload = b"a" * ((64 * 1024) + 17)
+    await client.upload(path="file.txt", data=payload)
+
+    assert len(room.upload_chunks) == 2
+    assert b"".join(chunk.data for chunk in room.upload_chunks) == payload
 
 
 @pytest.mark.asyncio
