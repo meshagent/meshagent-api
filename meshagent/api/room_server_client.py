@@ -2726,11 +2726,7 @@ class MessagingClient:
         self.room = room
         self._participants = dict[str, RemoteParticipant]()
         self._events = {}
-        self._on_stream_accept_callback = None
         room.protocol.register_handler("messaging.send", self._handle_message_send)
-        self._pending_streams: Dict[str, asyncio.Future] = {}
-
-        self._remote_streams: Dict[str, MessageStream] = {}
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task = None
         self._enabled = False
@@ -2817,16 +2813,6 @@ class MessagingClient:
         part._set_online(False)
         self.emit("participant_removed", participant=part)
 
-        for stream_id, stream in list(self._remote_streams.items()):
-            if stream.to.id == part.id:
-                stream._close()
-                logger.warning(
-                    "stream %s closing due to disconnect of %s",
-                    stream_id,
-                    stream.to.get_attribute("name"),
-                )
-                self._remote_streams.pop(stream_id)
-
         return part
 
     def _mark_participant_offline(self, participant: Participant | None) -> None:
@@ -2856,13 +2842,8 @@ class MessagingClient:
 
         return current
 
-    async def enable(
-        self,
-        *,
-        on_stream_accept: Optional[Callable[["MessageStream"], None]] = None,
-    ):
+    async def enable(self):
         await self._invoke(operation="enable", input={})
-        self._on_stream_accept_callback = on_stream_accept
         self._enabled = True
 
     async def disable(self):
@@ -2889,16 +2870,6 @@ class MessagingClient:
             self._on_participant_enabled(message)
         elif message.type == "participant.disabled":
             self._on_participant_disabled(message)
-        elif message.type == "stream.open":
-            self._on_stream_open(message)
-        elif message.type == "stream.accept":
-            self._on_stream_accept(message)
-        elif message.type == "stream.reject":
-            self._on_stream_reject(message)
-        elif message.type == "stream.chunk":
-            self._on_stream_chunk(message)
-        elif message.type == "stream.close":
-            self._on_stream_close(message)
         else:
             self.emit("message", message=message)
 
@@ -3055,239 +3026,6 @@ class MessagingClient:
             self._participants[data["id"]] = participant
 
         self.emit("messaging_enabled")
-
-    async def create_stream(self, *, to: Participant, header: dict) -> "MessageStream":
-        stream_id = str(uuid.uuid4())  # Generate unique ID
-        future = asyncio.Future()
-
-        # Construct the writer
-        stream = MessageStream(stream_id=stream_id, to=to, client=self, header=None)
-        self._remote_streams[stream_id] = stream
-        self._pending_streams[stream_id] = future
-
-        # Send "stream.open"
-        await self.send_message(
-            to=to,
-            type="stream.open",
-            message={"stream_id": stream_id, "header": header},
-        )
-
-        # Wait for remote side to accept or reject
-        await future
-        return stream
-
-    def _on_stream_open(self, message: RoomMessage):
-        logger.info("stream open request recieved")
-        """
-        A remote participant is opening a new stream to us.
-        We'll either accept or reject it, depending on `_on_stream_accept_callback`.
-        """
-        from_participant_id = message.from_participant_id
-        from_participant = self._participants.get(from_participant_id, None)
-
-        def on_send_complete(task: asyncio.Task):
-            try:
-                task.result()
-
-            except Exception as e:
-                logger.warning("unable to send stream response", exc_info=e)
-
-        if not from_participant:
-            # If we don't know who this is, reject
-            send = asyncio.create_task(
-                self.send_message(
-                    to=None,  # no participant needed if we can't identify
-                    type="stream.reject",
-                    message={
-                        "stream_id": message.message["stream_id"],
-                        "error": "unknown participant",
-                    },
-                )
-            )
-            send.add_done_callback(on_send_complete)
-            return
-
-        stream_id = message.message["stream_id"]
-
-        try:
-            if self._on_stream_accept_callback is None:
-                raise Exception("Streams are not allowed by this client")
-
-            stream = MessageStream(
-                stream_id=stream_id,
-                to=from_participant,
-                client=self,
-                header=message.message,
-            )
-
-            self._on_stream_accept_callback(stream)
-            self._remote_streams[stream_id] = stream
-
-            logger.info(f"accepting stream {stream_id}")
-            # Accept
-            send = asyncio.create_task(
-                self.send_message(
-                    to=from_participant,
-                    type="stream.accept",
-                    message={"stream_id": stream_id},
-                )
-            )
-            send.add_done_callback(on_send_complete)
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as e:
-            logger.info(f"rejecting stream {stream_id}")
-            # Reject
-            send = asyncio.create_task(
-                self.send_message(
-                    to=from_participant,
-                    type="stream.reject",
-                    message={"stream_id": stream_id, "error": str(e)},
-                )
-            )
-            send.add_done_callback(on_send_complete)
-            return
-
-    def _on_stream_accept(self, message: RoomMessage):
-        """
-        The remote side accepted our stream request.
-        Complete the Future<MessageStreamWriter>.
-        """
-        stream_id = message.message["stream_id"]
-        future = self._pending_streams.pop(stream_id, None)
-        if future and not future.done():
-            future.set_result(True)
-
-    def _on_stream_reject(self, message: RoomMessage):
-        """
-        The remote side rejected our stream request.
-        Complete the Future with an error.
-        """
-        stream_id = message.message["stream_id"]
-        err = message.message.get(
-            "error", "The stream was rejected by the remote client"
-        )
-
-        future = self._pending_streams.pop(stream_id, None)
-        self._remote_streams.pop(stream_id)
-        if future and not future.done():
-            future.set_exception(Exception(err))
-
-    def _on_stream_chunk(self, message: RoomMessage):
-        """
-        A chunk arrived on an existing stream.
-        """
-        stream_id = message.message["stream_id"]
-        reader = self._remote_streams.get(stream_id, None)
-        if reader:
-            chunk = MessageStreamChunk(
-                header=message.message["header"], data=message.attachment
-            )
-            reader._add_chunk(chunk)
-        else:
-            logger.warning(f"received a chunk for an unregistered stream {stream_id}")
-
-    def _on_stream_close(self, message: RoomMessage):
-        """
-        The remote side closed the stream.
-        """
-        stream_id = message.message["stream_id"]
-        stream = self._remote_streams.pop(stream_id, None)
-        if stream:
-            stream._close()
-
-
-class MessageStreamChunk:
-    def __init__(self, header: dict, data: Optional[bytes] = None):
-        self.header = header
-        self.data = data
-
-
-class MessageStream:
-    def __init__(
-        self,
-        stream_id: str,
-        to: Participant,
-        client: MessagingClient,
-        header: Optional[dict] = None,
-    ):
-        self._stream_id = stream_id
-        self._to = to
-        self._client = client
-        self._header = header
-        self._queue = asyncio.Queue()
-        self.closed = False
-
-    @property
-    def to(self):
-        return self._to
-
-    @property
-    def header(self):
-        return self._header
-
-    async def read_chunks(self):
-        """
-        An async generator that yields `MessageStreamChunk` objects
-        until the remote side closes the stream.
-        """
-        while True:
-            chunk = await self._queue.get()
-            if chunk is None:
-                # Stream was closed
-                break
-            yield chunk
-
-    def _add_chunk(self, chunk: MessageStreamChunk):
-        """
-        Internal: called by the MessagingClient when receiving a new chunk.
-        """
-        self._queue.put_nowait(chunk)
-
-    def _close(self):
-        """
-        Internal: called by the MessagingClient when the remote side closes the stream.
-        """
-        if self.closed:
-            return
-
-        self.closed = True
-
-        self._queue.put_nowait(None)
-
-    async def write(self, chunk: MessageStreamChunk):
-        """
-        Sends a "stream.chunk" message to the remote participant.
-        """
-
-        if self.closed:
-            raise RoomException("stream is closed")
-
-        await self._client.send_message(
-            to=self._to,
-            type="stream.chunk",
-            message={
-                "stream_id": self._stream_id,
-                "header": chunk.header,
-            },
-            attachment=chunk.data,
-        )
-
-    async def close(self):
-        """
-        Sends a "stream.close" message to the remote participant.
-        """
-
-        if self.closed:
-            raise RoomException("stream is closed")
-
-        self._close()
-
-        await self._client.send_message(
-            to=self._to, type="stream.close", message={"stream_id": self._stream_id}
-        )
 
 
 @dataclass

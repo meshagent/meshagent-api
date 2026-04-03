@@ -16,8 +16,6 @@ from .room_server_client import (
     LocalParticipant,
     MeshDocument,
     FileHandle,
-    MessageStream,
-    MessageStreamChunk,
     StorageEntry,
 )
 from .client import Meshagent
@@ -72,8 +70,6 @@ __all__ = [
     LocalParticipant,
     MeshDocument,
     FileHandle,
-    MessageStream,
-    MessageStreamChunk,
     StorageEntry,
     ParticipantToken,
     ParticipantGrant,
