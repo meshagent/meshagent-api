@@ -97,6 +97,19 @@ class EmptyDirMountSpec(BaseModel):
     read_only: bool = False
 
 
+class ConfigMountSpec(BaseModel):
+    """mounts meshagent runtime config files into the specified folder"""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(
+        "/var/run/meshagent",
+        description=(
+            "the folder within the container where meshagent runtime files such as "
+            "spec.json and members.json should be mounted"
+        ),
+    )
+
+
 class ContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
@@ -104,6 +117,7 @@ class ContainerMountSpec(BaseModel):
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
     empty_dirs: Optional[list[EmptyDirMountSpec]] = None
+    configs: Optional[list[ConfigMountSpec]] = None
 
 
 class ServiceApiKeySpec(BaseModel):
@@ -276,7 +290,6 @@ class ContainerSpec(BaseModel):
     storage: Optional[ContainerMountSpec] = Field(
         None, description="storage mounts that should be provided to this container"
     )
-    api_key: Optional[ServiceApiKeySpec] = None
     on_demand: Optional[bool] = Field(None, description="an on demand service")
     writable_root_fs: Optional[bool] = None
     private: bool = True
@@ -419,6 +432,7 @@ class ServiceTemplateContainerMountSpec(BaseModel):
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
     empty_dirs: Optional[list[EmptyDirMountSpec]] = None
+    configs: Optional[list[ConfigMountSpec]] = None
 
 
 class ServiceTemplateMetadata(BaseModel):
@@ -558,6 +572,7 @@ class ServiceTemplateSpec(BaseModel):
                     images=self.container.storage.images,
                     files=self.container.storage.files,
                     empty_dirs=self.container.storage.empty_dirs,
+                    configs=self.container.storage.configs,
                 )
                 if self.container.storage is not None
                 else None,

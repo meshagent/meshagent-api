@@ -45,6 +45,7 @@ from meshagent.api.room_server_client import (
     TextDataType,
 )
 from meshagent.api.specs.service import (
+    ConfigMountSpec,
     ContainerMountSpec,
     EmptyDirMountSpec,
     RoomStorageMountSpec,
@@ -1493,6 +1494,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
         ports={8080: 80},
         mounts=ContainerMountSpec(
             room=[RoomStorageMountSpec(path="/workspace", read_only=False)],
+            configs=[ConfigMountSpec()],
             empty_dirs=[EmptyDirMountSpec(path="/cache")],
         ),
     )
@@ -1549,6 +1551,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert run_input["env"] == [{"key": "KEY", "value": "VALUE"}]
     assert run_input["ports"] == [{"container_port": 8080, "host_port": 80}]
     assert isinstance(run_input["mounts"], dict)
+    assert run_input["mounts"]["configs"] == [{"path": "/var/run/meshagent"}]
     assert run_input["mounts"]["empty_dirs"] == [{"path": "/cache", "read_only": False}]
 
     build_input = room.requests[2]["input"]
