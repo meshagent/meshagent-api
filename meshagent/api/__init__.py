@@ -39,6 +39,12 @@ from .messaging import (
     RawOutputsContent,
     EmptyContent,
 )
+from .agent_content import (
+    AgentContent,
+    AgentFileContent,
+    AgentInputContent,
+    AgentTextContent,
+)
 from .schema_registry import SchemaRegistration, SchemaRegistry
 from .helpers import (
     deploy_schema,
@@ -89,6 +95,10 @@ __all__ = [
     ErrorContent,
     RawOutputsContent,
     EmptyContent,
+    AgentContent,
+    AgentFileContent,
+    AgentInputContent,
+    AgentTextContent,
     SchemaRegistration,
     SchemaRegistry,
     deploy_schema,

@@ -1,7 +1,8 @@
-from pydantic import BaseModel, PositiveInt, ConfigDict, Field
+from pydantic import BaseModel, PositiveInt, ConfigDict, Field, model_validator
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
+from meshagent.api.agent_content import AgentInputContent
 import json
 
 import yaml as YAML
@@ -112,6 +113,12 @@ class ServiceApiKeySpec(BaseModel):
     auto_provision: Optional[bool] = True
 
 
+class ServiceFileSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    text: str
+
+
 ANNOTATION_SERVICE_ID = "meshagent.service.id"
 ANNOTATION_SERVICE_README = "meshagent.service.readme"
 
@@ -119,6 +126,7 @@ ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
 ANNOTATION_AGENT_WIDGET = "meshagent.agent.widget"
 ANNOTATION_AGENT_DATABASE_SCHEMA = "meshagent.agent.database.schema"
 ANNOTATION_AGENT_SCHEDULE = "meshagent.agent.schedule"
+ANNOTATION_AGENT_HEARTBEAT = "meshagent.agent.heartbeat"
 ANNOTATION_AGENT_SHELL_COMMAND = "meshagent.agent.shell.command"
 
 # events, adding this annotation to an agent's annotations will subscribe to the event
@@ -197,12 +205,46 @@ class ChannelsSpec(BaseModel):
     toolkit: Optional[list[ToolkitChannel]] = None
 
 
+class EmailSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str
+    public: bool = False
+
+    @model_validator(mode="after")
+    def validate_address(self) -> "EmailSpec":
+        if self.address.strip() == "":
+            raise ValueError("email.address must not be empty")
+        return self
+
+
+class HeartbeatSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queue: str
+    thread_id: Optional[str] = None
+    prompt: Optional[list[AgentInputContent]] = None
+    minutes: PositiveInt
+
+    @model_validator(mode="after")
+    def validate_prompt_source(self) -> "HeartbeatSpec":
+        if self.queue.strip() == "":
+            raise ValueError("heartbeat.queue must not be empty")
+
+        if self.prompt is None or len(self.prompt) == 0:
+            raise ValueError("heartbeat requires prompt")
+
+        return self
+
+
 class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     description: Optional[str] = None
     annotations: Optional[dict[str, str]] = None
     channels: Optional[ChannelsSpec] = None
+    email: Optional[EmailSpec] = None
+    heartbeat: Optional[HeartbeatSpec] = None
 
 
 class ServiceMetadata(BaseModel):
@@ -257,6 +299,10 @@ class ServiceSpec(BaseModel):
     ports: Optional[list["PortSpec"]] = Field(
         default_factory=list,
         description="a list of ports that are exposed by this service",
+    )
+    files: Optional[list[ServiceFileSpec]] = Field(
+        None,
+        description="files that should be created in room storage if they do not exist",
     )
     container: Optional[ContainerSpec] = Field(
         None,
@@ -398,6 +444,8 @@ class AgentTemplateSpec(BaseModel):
     description: Optional[str] = None
     annotations: Optional[dict[str, str]] = None
     channels: Optional[ChannelsSpec] = None
+    email: Optional[EmailSpec] = None
+    heartbeat: Optional[HeartbeatSpec] = None
 
 
 class ContainerTemplateSpec(BaseModel):
@@ -453,6 +501,7 @@ class ServiceTemplateSpec(BaseModel):
     agents: Optional[list[AgentTemplateSpec]] = None
     variables: Optional[list[ServiceTemplateVariable]] = None
     ports: Optional[list[PortSpec]] = None
+    files: Optional[list[ServiceFileSpec]] = None
     container: Optional[ContainerTemplateSpec] = None
     external: Optional[ExternalServiceTemplateSpec] = None
 
@@ -480,6 +529,8 @@ class ServiceTemplateSpec(BaseModel):
                         description=a.description,
                         annotations=a.annotations,
                         channels=a.channels,
+                        email=a.email,
+                        heartbeat=a.heartbeat,
                     )
                     for a in self.agents
                 )
@@ -495,6 +546,7 @@ class ServiceTemplateSpec(BaseModel):
                     **(self.metadata.annotations or {}),
                 },
             ),
+            files=self.files,
             container=ContainerSpec(
                 command=self.container.command,
                 working_dir=self.container.working_dir,
