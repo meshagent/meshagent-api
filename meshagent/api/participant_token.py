@@ -337,33 +337,111 @@ class StorageGrant(BaseModel):
         return False
 
 
+def _matches_grant_pattern(
+    patterns: Optional[list[str]],
+    value: str,
+    *,
+    allow_if_unset: bool,
+) -> bool:
+    if patterns is None:
+        return allow_if_unset
+
+    for pattern in patterns:
+        if value == pattern or (
+            pattern.endswith("*") and value.startswith(pattern.removesuffix("*"))
+        ):
+            return True
+
+    return False
+
+
+class ContainerRegistryGrant(BaseModel):
+    list: Optional[List[str]] = None
+    pull: Optional[List[str]] = None
+    run: Optional[List[str]] = None
+    write: Optional[List[str]] = None
+
+    def can_list(self, repository: str) -> bool:
+        if self.list is not None:
+            return _matches_grant_pattern(
+                self.list,
+                repository,
+                allow_if_unset=False,
+            )
+
+        if self.pull is None and self.run is None and self.write is None:
+            return True
+
+        return any(
+            _matches_grant_pattern(patterns, repository, allow_if_unset=False)
+            for patterns in (self.pull, self.run, self.write)
+            if patterns is not None
+        )
+
+    def can_pull(self, repository: str) -> bool:
+        return _matches_grant_pattern(
+            self.pull,
+            repository,
+            allow_if_unset=True,
+        )
+
+    def can_run(self, repository: str) -> bool:
+        return _matches_grant_pattern(
+            self.run,
+            repository,
+            allow_if_unset=True,
+        )
+
+    def can_write(self, repository: str) -> bool:
+        return _matches_grant_pattern(
+            self.write,
+            repository,
+            allow_if_unset=True,
+        )
+
+
 class ContainersGrant(BaseModel):
     logs: bool = True
 
     pull: Optional[list[str]] = None
     run: Optional[list[str]] = None
+    registry: Optional[ContainerRegistryGrant] = None
 
     use_containers: bool = True
 
     def can_pull(self, tag: str):
-        if self.pull is None:
-            return True
-
-        for t in self.pull:
-            if tag == t or (t.endswith("*") and tag.startswith(t.removesuffix("*"))):
-                return True
-
-        return False
+        return _matches_grant_pattern(
+            self.pull,
+            tag,
+            allow_if_unset=True,
+        )
 
     def can_run(self, tag: str):
-        if self.run is None:
+        return _matches_grant_pattern(
+            self.run,
+            tag,
+            allow_if_unset=True,
+        )
+
+    def can_registry_list(self, repository: str) -> bool:
+        if self.registry is None:
             return True
+        return self.registry.can_list(repository)
 
-        for t in self.run:
-            if tag == t or (t.endswith("*") and tag.startswith(t.removesuffix("*"))):
-                return True
+    def can_registry_pull(self, repository: str) -> bool:
+        if self.registry is None:
+            return True
+        return self.registry.can_pull(repository)
 
-        return False
+    def can_registry_run(self, repository: str) -> bool:
+        if self.registry is None:
+            return True
+        return self.registry.can_run(repository)
+
+    def can_registry_write(self, repository: str) -> bool:
+        if self.registry is None:
+            return True
+        return self.registry.can_write(repository)
 
 
 class DeveloperGrant(BaseModel):

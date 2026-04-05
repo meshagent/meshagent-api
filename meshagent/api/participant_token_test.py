@@ -9,6 +9,7 @@ from .version import __version__
 # Replace this single import line as needed
 from .participant_token import (  # noqa: E402, F401
     AgentsGrant,
+    ContainerRegistryGrant,
     LivekitGrant,
     QueuesGrant,
     MessagingGrant,
@@ -186,6 +187,10 @@ def test_storage_grant() -> None:
 def test_containers_grant() -> None:
     g = ContainersGrant()
     assert g.can_pull("repo/image") and g.can_run("repo/image")
+    assert g.can_registry_list("team/app")
+    assert g.can_registry_pull("team/app")
+    assert g.can_registry_run("team/app")
+    assert g.can_registry_write("team/app")
 
     g = ContainersGrant(pull=["lib/*"], run=["runtime/*"])
     # Pull follows pull‑list
@@ -200,6 +205,38 @@ def test_containers_grant() -> None:
     assert not exact.can_pull("repo/image-extra")
     assert exact.can_run("runtime/app")
     assert not exact.can_run("runtime/app-shell")
+
+    registry = ContainersGrant(
+        registry=ContainerRegistryGrant(
+            pull=["team/*"],
+            run=["runtime/*"],
+            write=["publish/*"],
+        )
+    )
+    assert registry.can_registry_list("team/app")
+    assert registry.can_registry_list("runtime/app")
+    assert registry.can_registry_list("publish/site")
+    assert not registry.can_registry_list("other/app")
+    assert registry.can_registry_pull("team/app")
+    assert not registry.can_registry_pull("other/app")
+    assert registry.can_registry_run("runtime/app")
+    assert not registry.can_registry_run("team/app")
+    assert registry.can_registry_write("publish/site")
+    assert not registry.can_registry_write("team/app")
+
+    exact_registry = ContainersGrant(
+        registry=ContainerRegistryGrant(
+            list=["catalog/*"],
+            pull=["pull/*"],
+            run=["run/*"],
+            write=[],
+        )
+    )
+    assert exact_registry.can_registry_list("catalog/app")
+    assert not exact_registry.can_registry_list("pull/app")
+    assert exact_registry.can_registry_pull("pull/app")
+    assert exact_registry.can_registry_run("run/app")
+    assert not exact_registry.can_registry_write("run/app")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
