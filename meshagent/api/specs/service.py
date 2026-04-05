@@ -98,7 +98,7 @@ class EmptyDirMountSpec(BaseModel):
 
 
 class ConfigMountSpec(BaseModel):
-    """mounts meshagent runtime config files into the specified folder"""
+    """mounts meshagent runtime config files read-only into the specified folder"""
 
     model_config = ConfigDict(extra="forbid")
     path: str = Field(
