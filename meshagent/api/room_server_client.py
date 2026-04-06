@@ -5516,6 +5516,7 @@ class _BuildRequest(BaseModel):
     mounts: List[ContainerMountSpec]
     context_path: str
     dockerfile_path: Optional[str] = None
+    optimize_image: bool = True
     private: bool = False
     credentials: Optional[List[DockerSecret]] = None
     context_archive_path: Optional[str] = None
@@ -5931,6 +5932,7 @@ class ContainersClient:
         mounts: List[ContainerMountSpec],
         context_path: str,
         dockerfile_path: Optional[str] = None,
+        optimize_image: bool = True,
         private: bool = False,
         credentials: List[DockerSecret] | None = None,
         context_archive_path: Optional[str] = None,
@@ -5945,6 +5947,7 @@ class ContainersClient:
             ],
             "context_path": context_path,
             "dockerfile_path": dockerfile_path,
+            "optimize_image": optimize_image,
             "private": private,
             "credentials": [
                 credential.model_dump(mode="json") for credential in (credentials or [])
@@ -6139,6 +6142,7 @@ class ContainersClient:
         mounts: List[ContainerMountSpec],
         context_path: str,
         dockerfile_path: Optional[str] = None,
+        optimize_image: bool = True,
         private: bool = False,
         credentials: List[DockerSecret] | None = None,
         context_archive_path: Optional[str] = None,
@@ -6154,6 +6158,7 @@ class ContainersClient:
                 mounts=mounts,
                 context_path=context_path,
                 dockerfile_path=dockerfile_path,
+                optimize_image=optimize_image,
                 private=private,
                 credentials=credentials,
                 context_archive_path=context_archive_path,
@@ -6177,6 +6182,7 @@ class ContainersClient:
         mounts: List[ContainerMountSpec],
         context_path: str,
         dockerfile_path: Optional[str] = None,
+        optimize_image: bool = True,
         private: bool = False,
         credentials: List[DockerSecret] | None = None,
         context_archive_path: Optional[str] = None,
@@ -6192,6 +6198,7 @@ class ContainersClient:
                 mounts=mounts,
                 context_path=context_path,
                 dockerfile_path=dockerfile_path,
+                optimize_image=optimize_image,
                 private=private,
                 credentials=credentials,
                 context_archive_path=context_archive_path,

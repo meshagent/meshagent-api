@@ -1506,6 +1506,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
             )
         ],
         context_path="/workspace",
+        optimize_image=False,
     )
     await client.start_build(
         tag="example:latest",
@@ -1557,6 +1558,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     build_input = room.requests[2]["input"]
     assert isinstance(build_input, dict)
     assert build_input["context_archive_path"] is None
+    assert build_input["optimize_image"] is False
 
     start_build_input = room.requests[3]["input"]
     assert isinstance(start_build_input, dict)
@@ -1566,6 +1568,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     )
     assert start_build_input["context_archive_mount_path"] == "/context"
     assert start_build_input["context_archive_arch"] == "amd64"
+    assert start_build_input["optimize_image"] is True
 
     run_service_input = room.requests[4]["input"]
     assert isinstance(run_service_input, dict)
