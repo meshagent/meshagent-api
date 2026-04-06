@@ -1,8 +1,13 @@
+import pytest
+from pydantic import ValidationError
+
 from meshagent.api.agent_content import (
     AgentFileContent,
     AgentTextContent,
 )
+from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.api.specs.service import (
+    PortSpec,
     ServiceFileSpec,
     ServiceSpec,
     ServiceTemplateSpec,
@@ -188,3 +193,8 @@ container:
     assert isinstance(service.files[0], ServiceFileSpec)
     assert service.files[0].path == "/agents/helper/heartbeat.md"
     assert service.files[0].text == "Summarize unresolved room work."
+
+
+def test_port_spec_rejects_reserved_room_infrastructure_port() -> None:
+    with pytest.raises(ValidationError, match=str(ROOM_INTERNAL_API_PORT)):
+        PortSpec(num=ROOM_INTERNAL_API_PORT, type="http")

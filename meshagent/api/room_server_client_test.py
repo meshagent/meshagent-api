@@ -56,6 +56,8 @@ from meshagent.api.schema import ElementType, MeshSchema
 class _FakeProtocol:
     def __init__(self):
         self.handlers: dict[str, object] = {}
+        self.entered = False
+        self.exited = False
 
     def register_handler(self, typ: str, handler: object) -> None:
         self.handlers[typ] = handler
@@ -66,6 +68,14 @@ class _FakeProtocol:
 
     def get_handler(self, typ: str) -> object | None:
         return self.handlers.get(typ)
+
+    async def __aenter__(self):
+        self.entered = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        del exc_type, exc, tb
+        self.exited = True
 
     async def wait_for_close(self) -> None:
         await asyncio.Future()
@@ -248,6 +258,58 @@ class _BadSyncResponseRoom:
     async def invoke(self, **kwargs) -> TextContent:
         del kwargs
         return TextContent(text="unexpected")
+
+
+class _ClosingProtocol(_FakeProtocol):
+    async def wait_for_close(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_raises_if_connection_closes_before_ready() -> None:
+    protocol = _ClosingProtocol()
+    client = RoomClient(protocol=protocol)
+
+    with pytest.raises(
+        RoomException,
+        match="room connection closed before the room became ready",
+    ):
+        await client.__aenter__()
+
+    assert protocol.entered is True
+    assert protocol.exited is True
+
+
+@pytest.mark.asyncio
+async def test_room_client_exit_fails_open_tool_streams_and_cancels_close_watcher() -> (
+    None
+):
+    protocol = _FakeProtocol()
+    client = RoomClient(protocol=protocol)
+    client._ensure_close_watcher()
+
+    started = asyncio.Event()
+
+    async def _pending_request() -> Content:
+        started.set()
+        await asyncio.Future()
+
+    request_task = asyncio.create_task(_pending_request())
+    await started.wait()
+
+    stream = client._make_tool_call_stream(
+        tool_call_id="tc-1",
+        request_task=request_task,
+    )
+
+    await client.__aexit__(None, None, None)
+    await asyncio.gather(request_task, return_exceptions=True)
+
+    assert client._tool_call_streams == {}
+    assert isinstance(stream.error, RoomException)
+    assert str(stream.error) == "room client was closed before tool call completed"
+    assert protocol.exited is True
+    assert client._close_watcher_task is None
 
 
 @pytest.mark.asyncio

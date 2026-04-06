@@ -1,8 +1,16 @@
-from pydantic import BaseModel, PositiveInt, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    PositiveInt,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from typing import Optional, Literal
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
 from meshagent.api.agent_content import AgentInputContent
+from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 import json
 
 import yaml as YAML
@@ -410,6 +418,21 @@ class PortSpec(BaseModel):
         ),
     )
     annotations: Optional[dict[str, str]] = None
+
+    @field_validator("num")
+    @classmethod
+    def _validate_reserved_service_port(
+        cls, value: Literal["*"] | PositiveInt
+    ) -> Literal["*"] | PositiveInt:
+        if isinstance(value, int) and value in RESERVED_ROOM_SERVICE_PORTS:
+            reserved_ports = ", ".join(
+                str(port) for port in sorted(RESERVED_ROOM_SERVICE_PORTS)
+            )
+            raise ValueError(
+                f"service port {value} is reserved for MeshAgent room infrastructure; "
+                f"reserved ports: {reserved_ports}"
+            )
+        return value
 
 
 class ServiceTemplateVariable(BaseModel):

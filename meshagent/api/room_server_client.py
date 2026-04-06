@@ -1,11 +1,12 @@
-from meshagent.api.protocol import Protocol, ClientProtocol
-from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
-import json
 import asyncio
+import contextlib
+import json
 import logging
 import mimetypes
 import os
 import aiohttp
+from meshagent.api.protocol import Protocol, ClientProtocol
+from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
 from pydantic import (
@@ -525,19 +526,56 @@ class RoomClient:
 
         startup_task = asyncio.create_task(startup())
         close_task = asyncio.create_task(closed())
-        _, pending = await asyncio.wait(
-            [
-                startup_task,
-                close_task,
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        return self
+        try:
+            done, _ = await asyncio.wait(
+                [
+                    startup_task,
+                    close_task,
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if startup_task in done:
+                await startup_task
+                close_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await close_task
+                return self
+
+            await close_task
+            startup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await startup_task
+            raise RoomException("room connection closed before the room became ready")
+        except Exception:
+            startup_task.cancel()
+            close_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await startup_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await close_task
+            with contextlib.suppress(Exception):
+                await self.sync.stop()
+            with contextlib.suppress(Exception):
+                await self.messaging.stop()
+            with contextlib.suppress(Exception):
+                await self.protocol.__aexit__(None, None, None)
+            raise
 
     async def __aexit__(self, exc_type, exc, tb):
+        self._fail_tool_call_streams(
+            error=RoomException("room client was closed before tool call completed")
+        )
+        close_watcher = self._close_watcher_task
+        self._close_watcher_task = None
+        if close_watcher is not None:
+            close_watcher.cancel()
         await self.sync.stop()
         await self.messaging.stop()
         await self.protocol.__aexit__(None, None, None)
+        if close_watcher is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await close_watcher
         return
 
     @property

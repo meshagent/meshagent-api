@@ -51,7 +51,7 @@ class Protocol:
         return self
 
     async def wait_for_close(self):
-        await self._done_fut
+        await asyncio.shield(self._done_fut)
 
     @property
     def is_open(self) -> bool:
