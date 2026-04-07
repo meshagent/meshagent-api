@@ -68,14 +68,6 @@ class RoomShare(BaseModel):
     settings: dict[str, JsonValue]
 
 
-class RoomShareConnectionInfo(BaseModel):
-    jwt: str
-    room_name: str
-    project_id: str
-    settings: dict[str, JsonValue]
-    room_url: str
-
-
 class RoomSession(BaseModel):
     id: str
     room_id: Optional[str]
@@ -610,26 +602,6 @@ class Meshagent:
                 return [RoomShare.model_validate(item) for item in data["shares"]]
             except (KeyError, ValidationError) as exc:
                 raise RoomException(f"Invalid shares payload: {exc}") from exc
-
-    async def connect_share(self, share_id: str) -> RoomShareConnectionInfo:
-        """
-        Corresponds to: POST /shares/:share_id/connect
-        Body: {}
-        Returns a JSON dict with { "jwt", "room_url" } on success.
-        """
-        url = f"{self.base_url}/shares/{share_id}/connect"
-
-        async with self._session.post(
-            url,
-            headers=self._get_headers(),
-            json={},
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return RoomShareConnectionInfo.model_validate(data)
-            except ValidationError as exc:
-                raise RoomException(f"Invalid share connection payload: {exc}") from exc
 
     async def create_project(
         self, name: str, settings: Optional[dict] = None
