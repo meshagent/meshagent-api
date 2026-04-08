@@ -751,6 +751,8 @@ async def test_secrets_client_uses_room_invoke_for_commands() -> None:
                         ]
                     }
                 )
+            if tool == "exists":
+                return JsonContent(json={"exists": True})
             if tool == "request_oauth_token":
                 return JsonContent(json={"access_token": "oauth-token"})
             if tool == "get_offline_oauth_token":
@@ -789,6 +791,13 @@ async def test_secrets_client_uses_room_invoke_for_commands() -> None:
     )
     secrets = await client.list_secrets()
     assert len(secrets) == 1
+    assert (
+        await client.exists(
+            secret_id="secret-1",
+            for_identity="service-agent",
+        )
+        is True
+    )
     await client.delete_secret(id="secret-1")
     await client.delete_requested_secret(
         url="https://example.com/secret", type="text/plain"
@@ -806,8 +815,8 @@ async def test_secrets_client_uses_room_invoke_for_commands() -> None:
     assert isinstance(secret, FileContent)
     assert secret.data == b"secret"
 
-    assert [request[0] for request in room.requests] == ["room.invoke_tool"] * 12
-    assert [request[1]["toolkit"] for request in room.requests] == ["secrets"] * 12
+    assert [request[0] for request in room.requests] == ["room.invoke_tool"] * 13
+    assert [request[1]["toolkit"] for request in room.requests] == ["secrets"] * 13
     assert [request[1]["tool"] for request in room.requests] == [
         "provide_oauth_authorization",
         "provide_oauth_authorization",
@@ -816,6 +825,7 @@ async def test_secrets_client_uses_room_invoke_for_commands() -> None:
         "get_offline_oauth_token",
         "request_oauth_token",
         "list_secrets",
+        "exists",
         "delete_secret",
         "delete_requested_secret",
         "request_secret",
@@ -839,7 +849,18 @@ async def test_secrets_client_uses_room_invoke_for_commands() -> None:
     }
     assert room.requests[3][2] == b""
 
-    set_secret_arguments = room.requests[10][1]["arguments"]
+    exists_arguments = room.requests[7][1]["arguments"]
+    assert isinstance(exists_arguments, dict)
+    assert exists_arguments == {
+        "type": "json",
+        "json": {
+            "secret_id": "secret-1",
+            "delegated_to": None,
+            "for_identity": "service-agent",
+        },
+    }
+
+    set_secret_arguments = room.requests[11][1]["arguments"]
     assert isinstance(set_secret_arguments, dict)
     assert set_secret_arguments == {
         "type": "binary",
@@ -852,7 +873,7 @@ async def test_secrets_client_uses_room_invoke_for_commands() -> None:
             "has_data": True,
         },
     }
-    assert room.requests[10][2] == b"payload"
+    assert room.requests[11][2] == b"payload"
 
 
 @pytest.mark.asyncio

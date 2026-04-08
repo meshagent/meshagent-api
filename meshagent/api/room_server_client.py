@@ -6636,6 +6636,16 @@ class _ListUserSecretsResponse(BaseModel):
     secrets: list[SecretInfo]
 
 
+class _SecretExistsRequest(BaseModel):
+    secret_id: str
+    delegated_to: Optional[str] = None
+    for_identity: Optional[str] = None
+
+
+class _SecretExistsResponse(BaseModel):
+    exists: bool
+
+
 class OAuthCredentials(BaseModel):
     access_token: str
     refresh_token: Optional[str] = None
@@ -6912,6 +6922,26 @@ class SecretsClient:
             resp = _ListUserSecretsResponse.model_validate(response.json)
             return resp.secrets
         raise self._unexpected_response_error(operation="list_secrets")
+
+    async def exists(
+        self,
+        *,
+        secret_id: str,
+        delegated_to: Optional[str] = None,
+        for_identity: Optional[str] = None,
+    ) -> bool:
+        response = await self._invoke(
+            operation="exists",
+            input=_SecretExistsRequest(
+                secret_id=secret_id,
+                delegated_to=delegated_to,
+                for_identity=for_identity,
+            ).model_dump(mode="json"),
+        )
+        if isinstance(response, JsonContent):
+            resp = _SecretExistsResponse.model_validate(response.json)
+            return resp.exists
+        raise self._unexpected_response_error(operation="exists")
 
     async def delete_secret(self, *, id: str, delegated_to: Optional[str] = None):
         response = await self._invoke(
