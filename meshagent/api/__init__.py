@@ -53,6 +53,7 @@ from .helpers import (
     websocket_protocol,
     meshagent_base_url,
 )
+from .oauth_scopes import FULL_OAUTH_SCOPE, FULL_OAUTH_SCOPES
 from .webhooks import WebhookServer, RoomStartedEvent, RoomEndedEvent, CallEvent
 from .version import __version__
 from .error_codes import ErrorCode
@@ -106,6 +107,8 @@ __all__ = [
     participant_token,
     websocket_protocol,
     meshagent_base_url,
+    FULL_OAUTH_SCOPE,
+    FULL_OAUTH_SCOPES,
     WebhookServer,
     RoomStartedEvent,
     RoomEndedEvent,
