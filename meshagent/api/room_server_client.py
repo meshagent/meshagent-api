@@ -2121,6 +2121,7 @@ class StorageClient:
         self.room = room
         self._events = {}
         room.protocol.register_handler("storage.file.deleted", self._on_file_deleted)
+        room.protocol.register_handler("storage.file.moved", self._on_file_moved)
         room.protocol.register_handler("storage.file.updated", self._on_file_updated)
 
     @staticmethod
@@ -2158,6 +2159,15 @@ class StorageClient:
         self.emit(
             "file.updated",
             path=payload["path"],
+            participant_id=payload["participant_id"],
+        )
+
+    async def _on_file_moved(self, protocol, message_id, msg_type, data):
+        payload, _ = unpack_message(data)
+        self.emit(
+            "file.moved",
+            source_path=payload["source_path"],
+            destination_path=payload["destination_path"],
             participant_id=payload["participant_id"],
         )
 
@@ -2218,6 +2228,22 @@ class StorageClient:
                 if payload.get("updated_at") is not None
                 else None,
             )
+
+    async def move(
+        self,
+        *,
+        source_path: str,
+        destination_path: str,
+        overwrite: bool = False,
+    ) -> None:
+        await self._invoke(
+            operation="move",
+            input={
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "overwrite": overwrite,
+            },
+        )
 
     @staticmethod
     def _default_upload_name(*, path: str, name: str | None) -> str:

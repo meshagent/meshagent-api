@@ -242,6 +242,9 @@ class _StreamingStorageRoom:
 
             return stream()
 
+        if tool == "move":
+            return EmptyContent()
+
         raise AssertionError(f"unexpected tool: {tool}")
 
 
@@ -1189,6 +1192,13 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
     ("operation", "invoke"),
     [
         ("stat", lambda client: client.stat(path="file.txt")),
+        (
+            "move",
+            lambda client: client.move(
+                source_path="file.txt",
+                destination_path="moved.txt",
+            ),
+        ),
         ("upload", lambda client: client.upload(path="file.txt", data=b"test")),
         ("download", lambda client: client.download(path="file.txt")),
         ("download_url", lambda client: client.download_url(path="file.txt")),
@@ -1247,6 +1257,70 @@ async def test_storage_client_streams_write_and_download() -> None:
     assert [chunk.headers for chunk in room.download_pulls] == [
         {"kind": "pull"},
         {"kind": "pull"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_storage_client_move_uses_room_invoke() -> None:
+    room = _StreamingStorageRoom()
+    client = StorageClient(room=room)  # type: ignore[arg-type]
+
+    await client.move(
+        source_path="folder/source.txt",
+        destination_path="folder/destination.txt",
+        overwrite=True,
+    )
+
+    assert room.requests[0] == {
+        "toolkit": "storage",
+        "tool": "move",
+        "input": {
+            "source_path": "folder/source.txt",
+            "destination_path": "folder/destination.txt",
+            "overwrite": True,
+        },
+        "caller_context": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_storage_client_emits_moved_events() -> None:
+    room = _FakeRoom()
+    client = StorageClient(room=room)  # type: ignore[arg-type]
+    events: list[dict[str, str]] = []
+
+    client.on(
+        "file.moved",
+        lambda source_path, destination_path, participant_id: events.append(
+            {
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "participant_id": participant_id,
+            }
+        ),
+    )
+
+    handler = room.protocol.get_handler("storage.file.moved")
+    assert handler is not None
+    await handler(
+        room.protocol,
+        0,
+        "storage.file.moved",
+        pack_message(
+            {
+                "source_path": "folder/source.txt",
+                "destination_path": "folder/destination.txt",
+                "participant_id": "participant-1",
+            }
+        ),
+    )
+
+    assert events == [
+        {
+            "source_path": "folder/source.txt",
+            "destination_path": "folder/destination.txt",
+            "participant_id": "participant-1",
+        }
     ]
 
 
