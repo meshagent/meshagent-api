@@ -1058,6 +1058,20 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
                         ]
                     }
                 )
+            if tool == "list_branches":
+                return JsonContent(
+                    json={
+                        "branches": [
+                            {
+                                "name": "main",
+                                "parent_branch": None,
+                                "parent_version": None,
+                                "created_at": None,
+                                "manifest_size": None,
+                            }
+                        ]
+                    }
+                )
             return EmptyContent()
 
     room = _StreamingDatabaseRoom()
@@ -1105,6 +1119,9 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
     count = await client.count(table="records", namespace=["team"])
     versions = await client.list_versions(table="records", namespace=["team"])
     indexes = await client.list_indexes(table="records", namespace=["team"])
+    branches = await client.list_branches(namespace=["team"])
+    await client.create_branch(branch="exp", namespace=["team"])
+    await client.delete_branch(branch="exp", namespace=["team"])
 
     assert tables == ["records"]
     assert isinstance(inspected["annotations"], ListDataType)
@@ -1114,6 +1131,7 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
     assert count == 1
     assert versions[0].metadata == {"kind": "demo"}
     assert indexes[0].name == "idx_records_id"
+    assert branches[0].name == "main"
 
     assert [call["tool"] for call in room.calls] == [
         "create_table",
@@ -1127,12 +1145,16 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
         "count",
         "list_versions",
         "list_indexes",
+        "list_branches",
+        "create_branch",
+        "delete_branch",
     ]
     assert all(call["toolkit"] == "database" for call in room.calls)
 
     create_start = room.write_starts["create_table"]
     assert create_start["kind"] == "start"
     assert create_start["namespace"] == ["team"]
+    assert create_start["branch"] is None
     assert create_start["metadata"] == [{"key": "kind", "value": "demo"}]
     assert create_start["fields"][0]["name"] == "annotations"
     assert create_start["fields"][0]["data_type"]["type"] == "list"
@@ -1153,6 +1175,7 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
         "kind": "start",
         "table": "records",
         "namespace": ["team"],
+        "branch": None,
     }
     assert room.write_chunks["insert"] == [_rows_chunk([{"payload": b"inserted"}])]
 
@@ -1161,6 +1184,7 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
         "table": "records",
         "on": "id",
         "namespace": ["team"],
+        "branch": None,
     }
     assert room.write_chunks["merge"] == [
         _rows_chunk([{"id": 1, "payload": b"merged"}])
@@ -1181,6 +1205,8 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
     assert update_arguments["values_sql"] is None
     assert room.read_starts["search"]["kind"] == "start"
     assert room.read_starts["search"]["table"] == "records"
+    assert room.read_starts["search"]["branch"] is None
+    assert room.read_starts["search"]["version"] is None
     assert room.read_pulls["search"] == [{"kind": "pull"}, {"kind": "pull"}]
     assert room.read_starts["sql"]["kind"] == "start"
     assert room.read_starts["sql"]["query"] == "SELECT * FROM records"

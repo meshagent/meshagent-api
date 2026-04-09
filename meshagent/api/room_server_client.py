@@ -3438,6 +3438,7 @@ class _CreateTableRequest(BaseModel):
     )
     mode: CreateMode = "create"
     namespace: Optional[list[str]] = None
+    branch: Optional[str] = None
     metadata: Optional[dict] = None
 
     @field_validator("name")
@@ -3449,20 +3450,28 @@ class _CreateTableRequest(BaseModel):
         )
 
 
-class _ListTablesRequest(BaseModel):
+class _BranchRequest(BaseModel):
+    branch: Optional[str] = None
+
+
+class _ListTablesRequest(_BranchRequest):
     namespace: Optional[list[str]] = None
 
 
-class _TableRequest(BaseModel):
+class _TableRequest(_BranchRequest):
     table: str
     namespace: Optional[list[str]] = None
 
 
-class _InspectTableRequest(_TableRequest):
+class _VersionedTableRequest(_TableRequest):
+    version: Optional[int] = None
+
+
+class _InspectTableRequest(_VersionedTableRequest):
     pass
 
 
-class _DropTableRequest(BaseModel):
+class _DropTableRequest(_BranchRequest):
     name: str
     ignore_missing: bool = False
     namespace: Optional[list[str]] = None
@@ -3503,7 +3512,7 @@ class _MergeRequest(_TableRequest):
     records: Any
 
 
-class _SearchRequest(_TableRequest):
+class _SearchRequest(_VersionedTableRequest):
     text: Optional[str] = None
     vector: Optional[list[float]] = None
     text_columns: Optional[list[str]] = None
@@ -3513,7 +3522,7 @@ class _SearchRequest(_TableRequest):
     select: Optional[List[str]] = None
 
 
-class _CountRequest(_TableRequest):
+class _CountRequest(_VersionedTableRequest):
     text: Optional[str] = None
     vector: Optional[list[float]] = None
     text_columns: Optional[list[str]] = None
@@ -3525,10 +3534,6 @@ class _OptimizeRequest(_TableRequest):
 
 
 class _RestoreRequest(_TableRequest):
-    version: int
-
-
-class _CheckoutRequest(_TableRequest):
     version: int
 
 
@@ -3551,8 +3556,23 @@ class _CreateFullTextSearchIndexRequest(_TableRequest):
     replace: Optional[bool] = None
 
 
-class _ListIndexesRequest(_TableRequest):
+class _ListIndexesRequest(_VersionedTableRequest):
     pass
+
+
+class _CreateBranchRequest(BaseModel):
+    branch: str
+    from_branch: Optional[str] = None
+    namespace: Optional[list[str]] = None
+
+
+class _DeleteBranchRequest(BaseModel):
+    branch: str
+    namespace: Optional[list[str]] = None
+
+
+class _ListBranchesRequest(BaseModel):
+    namespace: Optional[list[str]] = None
 
 
 MemoryIngestStrategy = Literal["heuristic", "llm"]
@@ -3769,6 +3789,8 @@ class SqlTableReference(BaseModel):
     name: str
     namespace: Optional[list[str]] = None
     alias: Optional[str] = None
+    branch: Optional[str] = None
+    version: Optional[int] = None
 
 
 class _SqlRequest(BaseModel):
@@ -4403,21 +4425,36 @@ class DatabaseClient:
         finally:
             input_stream.close()
 
-    async def list_tables(self, *, namespace: Optional[list[str]] = None) -> List[str]:
+    async def list_tables(
+        self,
+        *,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> List[str]:
         response = await self._invoke(
             operation="list_tables",
-            input={"namespace": namespace},
+            input={"namespace": namespace, "branch": branch},
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list_tables")
         return response.json.get("tables", [])
 
     async def inspect(
-        self, *, table: str, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> dict[str, DataType]:
         response = await self._invoke(
             operation="inspect",
-            input={"table": table, "namespace": namespace},
+            input={
+                "table": table,
+                "namespace": namespace,
+                "branch": branch,
+                "version": version,
+            },
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="inspect")
@@ -4431,6 +4468,7 @@ class DatabaseClient:
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
         chunks = (
@@ -4451,6 +4489,7 @@ class DatabaseClient:
                 "fields": _database_toolkit_schema_entries(schema),
                 "mode": mode,
                 "namespace": namespace,
+                "branch": branch,
                 "metadata": _database_metadata_entries(metadata),
             },
             chunks=chunks,
@@ -4468,6 +4507,7 @@ class DatabaseClient:
         data: Optional[List[dict]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
         return await self._create_table(
@@ -4476,6 +4516,7 @@ class DatabaseClient:
             mode=mode,
             data=data,
             namespace=namespace,
+            branch=branch,
             metadata=metadata,
         )
 
@@ -4486,6 +4527,7 @@ class DatabaseClient:
         data: Optional[list[dict]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
         return await self._create_table(
@@ -4493,6 +4535,7 @@ class DatabaseClient:
             data=data,
             mode=mode,
             namespace=namespace,
+            branch=branch,
             metadata=metadata,
         )
 
@@ -4504,6 +4547,7 @@ class DatabaseClient:
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
         input_stream = _DatabaseWriteInputStream(
@@ -4513,6 +4557,7 @@ class DatabaseClient:
                 "fields": _database_toolkit_schema_entries(schema),
                 "mode": mode,
                 "namespace": namespace,
+                "branch": branch,
                 "metadata": _database_metadata_entries(metadata),
             },
             chunks=chunks,
@@ -4528,6 +4573,7 @@ class DatabaseClient:
         name: str,
         ignore_missing: bool = False,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="drop_table",
@@ -4535,11 +4581,17 @@ class DatabaseClient:
                 "name": name,
                 "ignore_missing": ignore_missing,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
     async def drop_index(
-        self, *, table: str, name: str, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        name: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="drop_index",
@@ -4547,6 +4599,7 @@ class DatabaseClient:
                 "table": table,
                 "name": name,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
@@ -4556,6 +4609,7 @@ class DatabaseClient:
         table: str,
         new_columns: Dict[str, str | DataType],
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         columns = []
         for column_name, column_value in new_columns.items():
@@ -4581,6 +4635,7 @@ class DatabaseClient:
                 "table": table,
                 "columns": columns,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
@@ -4591,6 +4646,7 @@ class DatabaseClient:
         table: str,
         columns: Dict[str, DataType],
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="alter_columns",
@@ -4598,11 +4654,17 @@ class DatabaseClient:
                 "table": table,
                 "columns": _database_toolkit_schema_entries(columns),
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
     async def drop_columns(
-        self, *, table: str, columns: List[str], namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        columns: List[str],
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="drop_columns",
@@ -4610,6 +4672,7 @@ class DatabaseClient:
                 "table": table,
                 "columns": columns,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
@@ -4619,11 +4682,13 @@ class DatabaseClient:
         table: str,
         records: List[Dict[str, Any]],
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self.insert_stream(
             table=table,
             chunks=_database_row_chunk_list(records),
             namespace=namespace,
+            branch=branch,
         )
 
     async def insert_stream(
@@ -4632,12 +4697,14 @@ class DatabaseClient:
         table: str,
         chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         input_stream = _DatabaseWriteInputStream(
             start={
                 "kind": "start",
                 "table": table,
                 "namespace": namespace,
+                "branch": branch,
             },
             chunks=chunks,
         )
@@ -4651,6 +4718,7 @@ class DatabaseClient:
         values: Optional[Dict[str, Any]] = None,
         values_sql: Optional[Dict[str, str]] = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="update",
@@ -4677,11 +4745,17 @@ class DatabaseClient:
                     else None
                 ),
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
     async def delete(
-        self, *, table: str, where: str, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        where: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="delete",
@@ -4689,6 +4763,7 @@ class DatabaseClient:
                 "table": table,
                 "where": where,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
@@ -4699,12 +4774,14 @@ class DatabaseClient:
         on: str,
         records: Any,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self.merge_stream(
             table=table,
             on=on,
             chunks=_database_row_chunk_list(records),
             namespace=namespace,
+            branch=branch,
         )
 
     async def merge_stream(
@@ -4714,6 +4791,7 @@ class DatabaseClient:
         on: str,
         chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         input_stream = _DatabaseWriteInputStream(
             start={
@@ -4721,6 +4799,7 @@ class DatabaseClient:
                 "table": table,
                 "on": on,
                 "namespace": namespace,
+                "branch": branch,
             },
             chunks=chunks,
         )
@@ -4779,6 +4858,8 @@ class DatabaseClient:
         limit: Optional[int] = None,
         select: Optional[List[str]] = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> list[Dict[str, Any]]:
         results = list[dict[str, Any]]()
         async for batch in self.search_stream(
@@ -4790,6 +4871,8 @@ class DatabaseClient:
             limit=limit,
             select=select,
             namespace=namespace,
+            branch=branch,
+            version=version,
         ):
             results.extend(batch)
         return results
@@ -4805,6 +4888,8 @@ class DatabaseClient:
         limit: Optional[int] = None,
         select: Optional[List[str]] = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> AsyncIterator[list[Dict[str, Any]]]:
         if isinstance(where, dict):
             where = " AND ".join(
@@ -4823,6 +4908,8 @@ class DatabaseClient:
                 "limit": limit,
                 "select": select,
                 "namespace": namespace,
+                "branch": branch,
+                "version": version,
             },
         ):
             yield batch
@@ -4835,6 +4922,8 @@ class DatabaseClient:
         vector: Optional[list[float]] = None,
         where: Optional[str] | dict = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> list[Dict[str, Any]]:
         if isinstance(where, dict):
             where = " AND ".join(
@@ -4849,6 +4938,8 @@ class DatabaseClient:
                 "text_columns": None,
                 "where": where,
                 "namespace": namespace,
+                "branch": branch,
+                "version": version,
             },
         )
         if not isinstance(response, JsonContent):
@@ -4858,18 +4949,28 @@ class DatabaseClient:
         return response.json["count"]
 
     async def optimize(
-        self, *, table: str, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="optimize",
             input={
                 "table": table,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
     async def restore(
-        self, *, table: str, version: int, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        version: int,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="restore",
@@ -4877,29 +4978,23 @@ class DatabaseClient:
                 "table": table,
                 "version": version,
                 "namespace": namespace,
-            },
-        )
-
-    async def checkout(
-        self, *, table: str, version: int, namespace: Optional[list[str]] = None
-    ) -> None:
-        await self._invoke(
-            operation="checkout",
-            input={
-                "table": table,
-                "version": version,
-                "namespace": namespace,
+                "branch": branch,
             },
         )
 
     async def list_versions(
-        self, *, table: str, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> list["TableVersion"]:
         response = await self._invoke(
             operation="list_versions",
             input={
                 "table": table,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
         if not isinstance(response, JsonContent):
@@ -4938,6 +5033,7 @@ class DatabaseClient:
         column: str,
         replace: Optional[bool] = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="create_vector_index",
@@ -4946,6 +5042,7 @@ class DatabaseClient:
                 "column": column,
                 "replace": replace,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
@@ -4956,6 +5053,7 @@ class DatabaseClient:
         column: str,
         replace: Optional[bool] = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="create_scalar_index",
@@ -4964,6 +5062,7 @@ class DatabaseClient:
                 "column": column,
                 "replace": replace,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
@@ -4974,6 +5073,7 @@ class DatabaseClient:
         column: str,
         replace: Optional[bool] = None,
         namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
             operation="create_full_text_search_index",
@@ -4982,17 +5082,25 @@ class DatabaseClient:
                 "column": column,
                 "replace": replace,
                 "namespace": namespace,
+                "branch": branch,
             },
         )
 
     async def list_indexes(
-        self, *, table: str, namespace: Optional[list[str]] = None
+        self,
+        *,
+        table: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> list["TableIndex"]:
         response = await self._invoke(
             operation="list_indexes",
             input={
                 "table": table,
                 "namespace": namespace,
+                "branch": branch,
+                "version": version,
             },
         )
         if not isinstance(response, JsonContent):
@@ -5001,6 +5109,44 @@ class DatabaseClient:
         if not isinstance(indexes, list):
             raise self._unexpected_response_error(operation="list_indexes")
         return [TableIndex.model_validate(index_data) for index_data in indexes]
+
+    async def list_branches(
+        self, *, namespace: Optional[list[str]] = None
+    ) -> list["TableBranch"]:
+        response = await self._invoke(
+            operation="list_branches",
+            input={"namespace": namespace},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list_branches")
+        branches = response.json.get("branches")
+        if not isinstance(branches, list):
+            raise self._unexpected_response_error(operation="list_branches")
+        return [TableBranch.model_validate(branch) for branch in branches]
+
+    async def create_branch(
+        self,
+        *,
+        branch: str,
+        from_branch: Optional[str] = None,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        await self._invoke(
+            operation="create_branch",
+            input={
+                "branch": branch,
+                "from_branch": from_branch,
+                "namespace": namespace,
+            },
+        )
+
+    async def delete_branch(
+        self, *, branch: str, namespace: Optional[list[str]] = None
+    ) -> None:
+        await self._invoke(
+            operation="delete_branch",
+            input={"branch": branch, "namespace": namespace},
+        )
 
 
 class MemoryClient:
@@ -5452,6 +5598,14 @@ class TableVersion(BaseModel):
     timestamp: datetime
     version: int
     metadata: dict[str, JsonValue]
+
+
+class TableBranch(BaseModel):
+    name: str
+    parent_branch: Optional[str] = None
+    parent_version: Optional[int] = None
+    created_at: Optional[datetime] = None
+    manifest_size: Optional[int] = None
 
 
 class TableIndex(BaseModel):
