@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from meshagent.api import ParticipantGrant, ParticipantToken
+from meshagent.api.participant_token import ApiScope
 from meshagent.api.client import Meshagent
 
 
@@ -296,4 +298,31 @@ async def test_room_secret_and_external_oauth_methods_pass_query_parameters():
             "http://example.test/accounts/projects/proj_123/rooms/room-a/external-oauth/registration-1",
             {"delegated_to": "agent"},
         ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_validate_participant_token_fetches_validated_token():
+    payload = ParticipantToken(
+        name="assistant",
+        project_id="proj_123",
+        grants=[
+            ParticipantGrant(name="room", scope="room-a"),
+            ParticipantGrant(name="api", scope=ApiScope.full()),
+        ],
+    ).to_json()
+    session = _FakeSession([_FakeResponse(status=200, payload=payload)])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    token = await client.validate_participant_token(token="jwt-token")
+
+    assert token.name == "assistant"
+    assert token.project_id == "proj_123"
+    assert token.grant_scope("room") == "room-a"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/api/participant-token/validate",
+            {"token": "jwt-token"},
+        )
     ]

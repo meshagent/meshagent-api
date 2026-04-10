@@ -698,7 +698,14 @@ class ParticipantToken:
         return self.grant_scope("api")
 
     def to_json(self) -> dict:
-        j = {"name": self.name, "grants": [g.to_json() for g in self.grants]}
+        extra_payload = (
+            self.extra_payload.copy() if self.extra_payload is not None else {}
+        )
+        j = {
+            **extra_payload,
+            "name": self.name,
+            "grants": [g.to_json() for g in self.grants],
+        }
 
         if self.project_id is not None:
             j["sub"] = self.project_id
@@ -747,12 +754,12 @@ class ParticipantToken:
             token = parsed.secret
             payload["kid"] = parsed.id
             payload["sub"] = parsed.project_id
+        elif token is None:
+            if "kid" in payload:
+                payload.pop("kid")
 
         if token is None:
             token = os.getenv("MESHAGENT_SECRET")
-            if "kid" in payload:
-                # We are exporting a token using the default secret, so we should remove the key id
-                payload.pop("kid")
 
         return jwt.encode(
             payload={**extra_payload, **payload}, key=token, algorithm="HS256"

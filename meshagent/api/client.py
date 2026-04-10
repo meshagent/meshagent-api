@@ -4,7 +4,7 @@ import json
 from typing import Any, Dict, List, Optional, Literal, TypeVar, cast
 from pydantic import BaseModel, ValidationError, JsonValue, Field, ConfigDict
 from meshagent.api import RoomException
-from meshagent.api.participant_token import ApiScope
+from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.http import new_client_session
 from meshagent.api.oauth import ConnectorRef, OAuthClientConfig
@@ -1932,6 +1932,28 @@ class Meshagent:
                 ).secrets
             except ValidationError as exc:
                 raise RoomException(f"Invalid room secrets payload: {exc}") from exc
+
+    async def validate_participant_token(
+        self,
+        *,
+        token: str,
+    ) -> ParticipantToken:
+        url = f"{self.base_url}/api/participant-token/validate"
+        async with self._session.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            json={"token": token},
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                payload = await resp.json()
+                if not isinstance(payload, dict):
+                    raise RoomException("Invalid participant token payload")
+                return ParticipantToken.from_json(payload)
+            except (ValidationError, TypeError, RoomException) as exc:
+                raise RoomException(
+                    f"Invalid participant token payload: {exc}"
+                ) from exc
 
     async def delete_room_secret(
         self,

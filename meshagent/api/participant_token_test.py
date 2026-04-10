@@ -299,11 +299,13 @@ def test_token_json_round_trip() -> None:
     pt = ParticipantToken(name="charlie")
     pt.add_role_grant("moderator")
     pt.add_room_grant("main")
+    pt.extra_payload = {"meshagent_bootstrap": True, "custom": "value"}
 
     clone = ParticipantToken.from_json(pt.to_json())
     assert clone.name == pt.name
     assert clone.role == "moderator"
     assert clone.grant_scope("room") == "main"
+    assert clone.extra_payload == {"meshagent_bootstrap": True, "custom": "value"}
 
 
 def test_token_jwt_round_trip() -> None:
@@ -321,6 +323,27 @@ def test_token_expiration() -> None:
     token = pt.to_jwt(token=secret, expiration=exp)
     decoded = jwt.decode(token, key=secret, algorithms=["HS256"])
     assert abs(decoded["exp"] - int(exp.timestamp())) < 2  # within clock skew
+
+
+def test_token_explicit_secret_preserves_kid() -> None:
+    secret = "explicit-secret"
+    pt = ParticipantToken(name="eve", project_id="project-1", api_key_id="key-1")
+    token = pt.to_jwt(token=secret)
+    decoded = jwt.decode(token, key=secret, algorithms=["HS256"])
+    assert decoded["kid"] == "key-1"
+    assert decoded["sub"] == "project-1"
+
+
+def test_token_default_secret_strips_kid_without_api_key(monkeypatch) -> None:
+    secret = "default-secret"
+    monkeypatch.setenv("MESHAGENT_SECRET", secret)
+
+    pt = ParticipantToken(name="eve", project_id="project-1", api_key_id="key-1")
+    token = pt.to_jwt()
+    decoded = jwt.decode(token, key=secret, algorithms=["HS256"])
+
+    assert "kid" not in decoded
+    assert decoded["sub"] == "project-1"
 
 
 def test_unversioned_token_uses_current_version_and_no_implicit_api_scope():
