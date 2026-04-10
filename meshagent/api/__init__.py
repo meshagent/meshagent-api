@@ -28,7 +28,7 @@ from .room_server_client import (
     StorageEntry,
 )
 from .client import Meshagent
-from .participant_token import ParticipantToken, ParticipantGrant, ApiScope
+from .participant_token import ParticipantToken, ParticipantGrant, ApiScope, LLMGrant
 from .participant import Participant
 from .schema import (
     MeshSchema,
@@ -99,6 +99,7 @@ __all__ = [
     ParticipantToken,
     ParticipantGrant,
     ApiScope,
+    LLMGrant,
     Participant,
     MeshSchema,
     ElementType,

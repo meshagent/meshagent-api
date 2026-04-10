@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
+from pydantic import ValidationError
 
 from .version import __version__
 
@@ -23,9 +24,11 @@ from .participant_token import (  # noqa: E402, F401
     StorageGrant,
     StoragePathGrant,
     ContainersGrant,
+    LLMGrant,
     ServicesGrant,
     ApiScope,
     ParticipantToken,
+    ParticipantTokenSpec,
 )
 
 
@@ -46,11 +49,35 @@ def test_api_scope_user_default_includes_secrets_without_admin_or_tunnels() -> N
     scope = ApiScope.user_default()
 
     assert scope.livekit is not None
+    assert scope.llm is not None
     assert scope.memory is not None
     assert scope.services is not None
     assert scope.secrets is not None
     assert scope.admin is None
     assert scope.tunnels is None
+
+
+def test_llm_grant_model_and_provider_restrictions() -> None:
+    grant = LLMGrant(models=["openai/gpt-4o*", "anthropic/claude-sonnet-4-5"])
+
+    assert grant.can_use_provider("openai")
+    assert grant.can_use_provider("anthropic")
+    assert not grant.can_use_provider("google")
+    assert grant.can_use_model(provider="openai", model="gpt-4o-mini")
+    assert not grant.can_use_model(provider="openai", model="gpt-4.1")
+    assert grant.can_use_model(provider="anthropic", model="claude-sonnet-4-5")
+
+
+def test_participant_token_spec_requires_llm_grant() -> None:
+    with pytest.raises(ValidationError, match="llm grant"):
+        ParticipantTokenSpec.model_validate(
+            {
+                "version": "v1",
+                "kind": "ParticipantToken",
+                "identity": "cli-agent",
+                "api": {"storage": {}},
+            }
+        )
 
 
 @pytest.mark.parametrize(

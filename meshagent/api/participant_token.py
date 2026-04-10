@@ -3,7 +3,7 @@ import jwt
 from typing import Optional, List, Literal
 from datetime import datetime
 import json
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import logging
 from .keys import parse_api_key
 from .oauth import OAuthClientConfig, ConnectorRef
@@ -499,6 +499,37 @@ class ServicesGrant(BaseModel):
     list: bool = True
 
 
+class LLMGrant(BaseModel):
+    models: Optional[list[str]] = None
+
+    def can_use_provider(self, provider: str) -> bool:
+        normalized_provider = provider.strip()
+        if normalized_provider == "":
+            return False
+        if self.models is None:
+            return True
+
+        prefix = normalized_provider + "/"
+        for pattern in self.models:
+            normalized_pattern = pattern.strip()
+            if normalized_pattern.startswith(prefix):
+                return True
+
+        return False
+
+    def can_use_model(self, *, provider: str, model: str) -> bool:
+        normalized_provider = provider.strip()
+        normalized_model = model.strip()
+        if normalized_provider == "" or normalized_model == "":
+            return False
+
+        return _matches_grant_pattern(
+            self.models,
+            f"{normalized_provider}/{normalized_model}",
+            allow_if_unset=True,
+        )
+
+
 class ApiScope(BaseModel):
     livekit: Optional[LivekitGrant] = None
     queues: Optional[QueuesGrant] = None
@@ -510,6 +541,7 @@ class ApiScope(BaseModel):
     containers: Optional[ContainersGrant] = None
     developer: Optional[DeveloperGrant] = None
     agents: Optional[AgentsGrant] = None
+    llm: Optional[LLMGrant] = None
     admin: Optional[AdminGrant] = None
     secrets: Optional[SecretsGrant] = None
     tunnels: Optional[TunnelsGrant] = None
@@ -529,6 +561,7 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            llm=LLMGrant(),
             services=ServicesGrant(),
             tunnels=TunnelsGrant() if tunnels else None,
         )
@@ -546,6 +579,7 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            llm=LLMGrant(),
             secrets=SecretsGrant(),
             services=ServicesGrant(),
         )
@@ -563,6 +597,7 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
+            llm=LLMGrant(),
             admin=AdminGrant(),
             secrets=SecretsGrant(),
             tunnels=TunnelsGrant(),
@@ -778,3 +813,9 @@ class ParticipantTokenSpec(BaseModel):
     identity: str
     role: Optional[Literal["user", "agent", "tool"]] = None
     api: ApiScope
+
+    @model_validator(mode="after")
+    def _ensure_llm_grant(self) -> "ParticipantTokenSpec":
+        if self.api.llm is None:
+            raise ValueError("Participant token api scope must include an llm grant.")
+        return self
