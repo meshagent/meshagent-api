@@ -746,7 +746,7 @@ class ParticipantToken:
             extra_payload["exp"] = expiration
 
         payload = self.to_json()
-        if api_key is None and token is None:
+        if api_key is None:
             api_key = os.getenv("MESHAGENT_API_KEY")
 
         if api_key is not None:

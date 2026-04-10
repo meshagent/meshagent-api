@@ -30,7 +30,6 @@ from .participant_token import (  # noqa: E402, F401
     ParticipantToken,
     ParticipantTokenSpec,
 )
-from .keys import ApiKey, encode_api_key
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -326,18 +325,8 @@ def test_token_expiration() -> None:
     assert abs(decoded["exp"] - int(exp.timestamp())) < 2  # within clock skew
 
 
-def test_token_explicit_secret_preserves_kid(monkeypatch) -> None:
+def test_token_explicit_secret_preserves_kid() -> None:
     secret = "explicit-secret"
-    monkeypatch.setenv(
-        "MESHAGENT_API_KEY",
-        encode_api_key(
-            ApiKey(
-                id="72c17196-3f2d-4444-a55b-39825e35cbb7",
-                project_id="44bb91aa-2555-4487-8173-580027a87558",
-                secret="env-api-key-secret",
-            )
-        ),
-    )
     pt = ParticipantToken(name="eve", project_id="project-1", api_key_id="key-1")
     token = pt.to_jwt(token=secret)
     decoded = jwt.decode(token, key=secret, algorithms=["HS256"])
@@ -348,7 +337,6 @@ def test_token_explicit_secret_preserves_kid(monkeypatch) -> None:
 def test_token_default_secret_strips_kid_without_api_key(monkeypatch) -> None:
     secret = "default-secret"
     monkeypatch.setenv("MESHAGENT_SECRET", secret)
-    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
 
     pt = ParticipantToken(name="eve", project_id="project-1", api_key_id="key-1")
     token = pt.to_jwt()
