@@ -1,5 +1,14 @@
 from .websocket_protocol import WebSocketClientProtocol
 from .room_server_client import (
+    DatabaseJson,
+    DatabaseRecord,
+    DatabaseRowChunks,
+    DatabaseRows,
+    DatabaseStruct,
+    DatabaseValue,
+    DatabaseValueEncoder,
+    DatabaseExpression,
+    JsonDataType,
     RequiredToolkit,
     RequiredSchema,
     RequiredTable,
@@ -60,6 +69,15 @@ from .error_codes import ErrorCode
 
 __all__ = [
     Meshagent,
+    DatabaseJson,
+    DatabaseRecord,
+    DatabaseRowChunks,
+    DatabaseRows,
+    DatabaseStruct,
+    DatabaseValue,
+    DatabaseValueEncoder,
+    DatabaseExpression,
+    JsonDataType,
     WebSocketClientProtocol,
     RequiredToolkit,
     RequiredSchema,

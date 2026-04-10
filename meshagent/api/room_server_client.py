@@ -72,67 +72,211 @@ from dataclasses import dataclass
 from meshagent.api.urls import websocket_room_url
 
 
-def _decode_record_value(value: Any) -> Any:
+class DatabaseValueEncoder(ABC):
+    @abstractmethod
+    def encode_database_value(self) -> Any:
+        raise NotImplementedError
+
+
+type DatabaseJsonScalarValue = None | bool | int | float | str
+type DatabaseJsonValue = (
+    DatabaseJsonScalarValue | list["DatabaseJsonValue"] | dict[str, "DatabaseJsonValue"]
+)
+
+
+def _normalize_database_json_value(
+    value: Any,
+    *,
+    path: str = "json",
+) -> DatabaseJsonValue:
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
     if isinstance(value, list):
-        return [_decode_record_value(item) for item in value]
-
+        return [
+            _normalize_database_json_value(item, path=f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, dict):
-        if (
-            "encoding" in value
-            and "data" in value
-            and len(value) == 2
-            and value["encoding"] == "base64"
-        ):
-            return base64.b64decode(value["data"].encode())
+        normalized = dict[str, DatabaseJsonValue]()
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} object keys must be strings")
+            normalized[key] = _normalize_database_json_value(
+                item,
+                path=f"{path}.{key}",
+            )
+        return normalized
+    raise TypeError(f"{path} must contain only JSON-compatible values")
 
-        return {k: _decode_record_value(v) for k, v in value.items()}
+
+@dataclass(frozen=True, slots=True)
+class DatabaseExpression(DatabaseValueEncoder):
+    expression: str
+
+    def __post_init__(self) -> None:
+        normalized = self.expression.strip()
+        if normalized == "":
+            raise ValueError("database expression must not be empty")
+        object.__setattr__(self, "expression", normalized)
+
+    def encode_database_value(self) -> dict[str, str]:
+        return {"expression": self.expression}
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseStruct(DatabaseValueEncoder):
+    fields: dict[str, "DatabaseValue"]
+
+    def __post_init__(self) -> None:
+        normalized = dict[str, DatabaseValue]()
+        for key, value in self.fields.items():
+            if not isinstance(key, str):
+                raise TypeError("database struct keys must be strings")
+            normalized[key] = value
+        object.__setattr__(self, "fields", normalized)
+
+    def to_json(self) -> dict[str, Any]:
+        return {key: _encode_record_value(value) for key, value in self.fields.items()}
+
+    def encode_database_value(self) -> dict[str, dict[str, Any]]:
+        return {"struct": self.to_json()}
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseJson(DatabaseValueEncoder):
+    value: DatabaseJsonValue
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "value",
+            _normalize_database_json_value(self.value),
+        )
+
+    def to_json(self) -> DatabaseJsonValue:
+        return self.value
+
+    def encode_database_value(self) -> dict[str, DatabaseJsonValue]:
+        return {"json": self.value}
+
+
+type DatabaseScalarValue = (
+    None | bool | int | float | str | bytes | uuid.UUID | date | datetime
+)
+type DatabaseValue = DatabaseScalarValue | list["DatabaseValue"] | DatabaseValueEncoder
+type DatabaseRecord = dict[str, DatabaseValue]
+type DatabaseRows = list[DatabaseRecord]
+type DatabaseRowChunks = AsyncIterable[DatabaseRows] | list[DatabaseRows]
+
+
+def _parse_database_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("database date value is not valid") from exc
+
+
+def _parse_database_timestamp(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("database timestamp value is not valid") from exc
+
+
+def _decode_record_value(value: Any) -> DatabaseValue:
+    if isinstance(value, dict):
+        if len(value) != 1:
+            raise ValueError(
+                "database object values must use a single-key type wrapper"
+            )
+        wrapper, payload = next(iter(value.items()))
+        if wrapper == "binary":
+            if not isinstance(payload, str):
+                raise ValueError("database binary values must be base64 strings")
+            return base64.b64decode(payload.encode())
+        if wrapper == "uuid":
+            if not isinstance(payload, str):
+                raise ValueError("database uuid values must be strings")
+            return uuid.UUID(payload)
+        if wrapper == "expression":
+            if not isinstance(payload, str):
+                raise ValueError("database expression values must be strings")
+            return DatabaseExpression(payload)
+        if wrapper == "date":
+            if not isinstance(payload, str):
+                raise ValueError("database date values must be strings")
+            return _parse_database_date(payload)
+        if wrapper == "timestamp":
+            if not isinstance(payload, str):
+                raise ValueError("database timestamp values must be strings")
+            return _parse_database_timestamp(payload)
+        if wrapper == "list":
+            if not isinstance(payload, list):
+                raise ValueError("database list values must be arrays")
+            return [_decode_record_value(item) for item in payload]
+        if wrapper == "struct":
+            if not isinstance(payload, dict):
+                raise ValueError("database struct values must be objects")
+            return DatabaseStruct(
+                {key: _decode_record_value(item) for key, item in payload.items()}
+            )
+        if wrapper == "json":
+            return DatabaseJson(payload)
+        raise ValueError(f"unsupported database value wrapper '{wrapper}'")
+
+    if isinstance(value, list):
+        raise ValueError("database list values must use a {'list': [...]} wrapper")
 
     return value
 
 
-def decode_records(records: list[dict]):
-    for r in records:
-        if isinstance(r, dict):
-            for k in r.keys():
-                r[k] = _decode_record_value(r[k])
+def decode_records(records: list[dict[str, Any]]) -> DatabaseRows:
+    decoded_records = list[dict[str, DatabaseValue]]()
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("database records must be objects")
+        decoded_records.append(
+            {str(key): _decode_record_value(value) for key, value in record.items()}
+        )
+    return decoded_records
 
-    return records
 
+def _encode_record_value(value: DatabaseValue | Any) -> Any:
+    if isinstance(value, DatabaseValueEncoder):
+        return value.encode_database_value()
 
-def _encode_record_value(value: Any) -> Any:
     if isinstance(value, bytes):
-        return {
-            "encoding": "base64",
-            "data": base64.b64encode(value).decode(),
-        }
+        return {"binary": base64.b64encode(value).decode()}
+
+    if isinstance(value, uuid.UUID):
+        return {"uuid": str(value)}
 
     if isinstance(value, datetime):
         if value.tzinfo is not None:
             value = value.astimezone(timezone.utc)
-        return value.isoformat().replace("+00:00", "Z")
+        return {"timestamp": value.isoformat().replace("+00:00", "Z")}
 
     if isinstance(value, date):
-        return value.isoformat()
+        return {"date": value.isoformat()}
 
     if isinstance(value, list):
-        return [_encode_record_value(item) for item in value]
+        return {"list": [_encode_record_value(item) for item in value]}
 
     if isinstance(value, dict):
-        return {k: _encode_record_value(v) for k, v in value.items()}
+        raise TypeError(
+            "database object values must use DatabaseStruct or DatabaseJson"
+        )
 
     return value
 
 
-def encode_records(records: list[dict]):
-    transformed_records = []
-
-    for r in records:
-        c = {}
-        for k in r.keys():
-            c[k] = _encode_record_value(r[k])
-
-        transformed_records.append(c)
-
+def encode_records(records: DatabaseRows):
+    transformed_records = list[dict[str, Any]]()
+    for record in records:
+        transformed_records.append(
+            {str(key): _encode_record_value(value) for key, value in record.items()}
+        )
     return transformed_records
 
 
@@ -3387,6 +3531,35 @@ class TextDataType(DataType):
         }
 
 
+class JsonDataType(DataType):
+    type: Literal["json"] = "json"
+
+    def to_json_schema(self):
+        value_schema: dict[str, Any] = {
+            "anyOf": [
+                {"type": "object"},
+                {"type": "array"},
+                {"type": "string"},
+                {"type": "number"},
+                {"type": "boolean"},
+                {"type": "null"},
+            ]
+        }
+        if self.nullable:
+            return {"anyOf": [value_schema, {"type": "null"}]}
+        return value_schema
+
+
+class UuidDataType(DataType):
+    type: Literal["uuid"] = "uuid"
+
+    def to_json_schema(self):
+        return {
+            "type": self._maybe_nullable_schema("string"),
+            "description": "a UUID string",
+        }
+
+
 class BinaryDataType(DataType):
     type: Literal["binary"] = "binary"
 
@@ -3409,6 +3582,8 @@ DataTypeUnion = Annotated[
         ListDataType,
         StructDataType,
         TextDataType,
+        JsonDataType,
+        UuidDataType,
         BinaryDataType,
     ],
     Field(discriminator="type"),
@@ -3982,6 +4157,8 @@ def _database_records_json(records: object) -> str:
 def _database_data_json(data: object | None) -> str | None:
     if data is None:
         return None
+    if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+        return json.dumps(encode_records(data))
     return json.dumps(_encode_record_value(data))
 
 
@@ -3990,77 +4167,63 @@ def _database_results_from_json(
     payload: dict[str, Any],
     operation: str,
 ) -> list[dict[str, Any]]:
-    results_json = payload.get("results_json")
-    if not isinstance(results_json, str):
+    results = payload.get("results")
+    if not isinstance(results, list):
         raise RoomException(
             f"unexpected return type from database.{operation}",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
-
-    try:
-        parsed = json.loads(results_json)
-    except json.JSONDecodeError as exc:
-        raise RoomException(
-            f"unexpected return type from database.{operation}",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        ) from exc
-
-    if not isinstance(parsed, list):
-        raise RoomException(
-            f"unexpected return type from database.{operation}",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-    return decode_records(parsed)
+    return decode_records(results)
 
 
 def _database_value_json(value: Any) -> str:
     return json.dumps(_encode_record_value(value))
 
 
-def _database_stream_encode_value(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {"type": "null"}
+def _database_sql_literal(value: Any) -> str:
     if isinstance(value, bool):
-        return {"type": "bool", "value": value}
-    if isinstance(value, int):
-        return {"type": "int", "value": value}
-    if isinstance(value, float):
-        return {"type": "float", "value": value}
+        return str(value).upper()
     if isinstance(value, str):
-        return {"type": "text", "value": value}
+        return "'" + value.replace("'", "''") + "'"
+    if isinstance(value, uuid.UUID):
+        return f"X'{value.bytes.hex()}'"
     if isinstance(value, bytes):
-        return {
-            "type": "binary",
-            "data": base64.b64encode(value).decode("utf-8"),
-        }
+        return f"X'{value.hex()}'"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(value)
+    if value is None:
+        return "NULL"
     if isinstance(value, datetime):
-        normalized = value.astimezone(timezone.utc) if value.tzinfo else value
-        return {
-            "type": "timestamp",
-            "value": normalized.isoformat().replace("+00:00", "Z"),
-        }
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return f"'{value.isoformat().replace('+00:00', 'Z')}'"
     if isinstance(value, date):
-        return {"type": "date", "value": value.isoformat()}
+        return f"'{value.isoformat()}'"
+    if isinstance(value, DatabaseJson):
+        return "'" + json.dumps(value.to_json()).replace("'", "''") + "'"
+    if isinstance(value, DatabaseStruct):
+        fields = ", ".join(
+            f"'{key}', {_database_sql_literal(inner)}"
+            for key, inner in value.fields.items()
+        )
+        return f"named_struct({fields})"
     if isinstance(value, list):
-        return {
-            "type": "list",
-            "items": [_database_stream_encode_value(item) for item in value],
-        }
+        return "[" + ", ".join(_database_sql_literal(item) for item in value) + "]"
     if isinstance(value, dict):
-        return {
-            "type": "struct",
-            "fields": [
-                {
-                    "name": str(key),
-                    "value": _database_stream_encode_value(item),
-                }
-                for key, item in value.items()
-            ],
-        }
+        raise RoomException(
+            "database object values must use DatabaseStruct or DatabaseJson",
+            code=ErrorCode.INVALID_REQUEST,
+        )
     raise RoomException(
-        f"database stream does not support value type {type(value).__name__}",
+        f"unsupported database value type {type(value).__name__}",
         code=ErrorCode.INVALID_REQUEST,
     )
+
+
+def _database_stream_encode_value(value: Any) -> Any:
+    return _encode_record_value(value)
 
 
 def _database_stream_decode_value(
@@ -4068,75 +4231,13 @@ def _database_stream_decode_value(
     *,
     operation: str,
 ) -> Any:
-    if not isinstance(value, dict):
+    try:
+        return _decode_record_value(value)
+    except Exception as exc:
         raise RoomException(
             f"unexpected return type from database.{operation}",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-    type_name = value.get("type")
-    if not isinstance(type_name, str):
-        raise RoomException(
-            f"unexpected return type from database.{operation}",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-
-    if type_name == "null":
-        return None
-    if type_name in ("bool", "int", "float", "text", "date", "timestamp"):
-        return value.get("value")
-    if type_name == "binary":
-        data = value.get("data")
-        if not isinstance(data, str):
-            raise RoomException(
-                f"unexpected return type from database.{operation}",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-        try:
-            return base64.b64decode(data.encode("utf-8"))
-        except Exception as exc:
-            raise RoomException(
-                f"unexpected return type from database.{operation}",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            ) from exc
-    if type_name == "list":
-        items = value.get("items")
-        if not isinstance(items, list):
-            raise RoomException(
-                f"unexpected return type from database.{operation}",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-        return [
-            _database_stream_decode_value(item, operation=operation) for item in items
-        ]
-    if type_name == "struct":
-        fields = value.get("fields")
-        if not isinstance(fields, list):
-            raise RoomException(
-                f"unexpected return type from database.{operation}",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-        result = dict[str, Any]()
-        for field in fields:
-            if not isinstance(field, dict):
-                raise RoomException(
-                    f"unexpected return type from database.{operation}",
-                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-                )
-            name = field.get("name")
-            if not isinstance(name, str):
-                raise RoomException(
-                    f"unexpected return type from database.{operation}",
-                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-                )
-            result[name] = _database_stream_decode_value(
-                field.get("value"),
-                operation=operation,
-            )
-        return result
-    raise RoomException(
-        f"unexpected return type from database.{operation}",
-        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-    )
+        ) from exc
 
 
 def _database_stream_rows_chunk(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4221,10 +4322,10 @@ def _database_stream_records_from_chunk(
 
 
 def _database_row_chunk_list(
-    records: list[dict[str, Any]],
+    records: DatabaseRows,
     *,
     rows_per_chunk: int = 128,
-) -> list[list[dict[str, Any]]]:
+) -> list[DatabaseRows]:
     if not isinstance(records, list):
         raise RoomException(
             "database stream records must be a list of objects",
@@ -4242,8 +4343,8 @@ def _database_row_chunk_list(
 
 
 async def _database_async_row_chunks(
-    chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
-) -> AsyncIterator[list[dict[str, Any]]]:
+    chunks: DatabaseRowChunks,
+) -> AsyncIterator[DatabaseRows]:
     if isinstance(chunks, AsyncIterable):
         async for chunk in chunks:
             yield chunk
@@ -4257,7 +4358,7 @@ class _DatabaseWriteInputStream:
         self,
         *,
         start: dict[str, Any],
-        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        chunks: DatabaseRowChunks,
     ) -> None:
         self._start = start
         self._source = _database_async_row_chunks(chunks).__aiter__()
@@ -4464,7 +4565,7 @@ class DatabaseClient:
         self,
         *,
         name: str,
-        data: Optional[Any] = None,
+        data: Optional[DatabaseRecord | DatabaseRows] = None,
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
@@ -4504,7 +4605,7 @@ class DatabaseClient:
         *,
         name: str,
         schema: Optional[Dict[str, DataType]] = None,
-        data: Optional[List[dict]] = None,
+        data: Optional[DatabaseRows] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
@@ -4524,7 +4625,7 @@ class DatabaseClient:
         self,
         *,
         name: str,
-        data: Optional[list[dict]] = None,
+        data: Optional[DatabaseRows] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
@@ -4543,7 +4644,7 @@ class DatabaseClient:
         self,
         *,
         name: str,
-        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        chunks: DatabaseRowChunks,
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
@@ -4680,7 +4781,7 @@ class DatabaseClient:
         self,
         *,
         table: str,
-        records: List[Dict[str, Any]],
+        records: DatabaseRows,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
@@ -4695,7 +4796,7 @@ class DatabaseClient:
         self,
         *,
         table: str,
-        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        chunks: DatabaseRowChunks,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
@@ -4715,8 +4816,7 @@ class DatabaseClient:
         *,
         table: str,
         where: str,
-        values: Optional[Dict[str, Any]] = None,
-        values_sql: Optional[Dict[str, str]] = None,
+        values: DatabaseRecord,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
@@ -4725,25 +4825,13 @@ class DatabaseClient:
             input={
                 "table": table,
                 "where": where,
-                "values": (
-                    [
-                        {
-                            "column": column,
-                            "value_json": _database_value_json(value),
-                        }
-                        for column, value in values.items()
-                    ]
-                    if values is not None
-                    else None
-                ),
-                "values_sql": (
-                    [
-                        {"column": column, "expression": expression}
-                        for column, expression in values_sql.items()
-                    ]
-                    if values_sql is not None
-                    else None
-                ),
+                "values": [
+                    {
+                        "column": column,
+                        "value_json": _database_value_json(value),
+                    }
+                    for column, value in values.items()
+                ],
                 "namespace": namespace,
                 "branch": branch,
             },
@@ -4772,7 +4860,7 @@ class DatabaseClient:
         *,
         table: str,
         on: str,
-        records: Any,
+        records: DatabaseRows,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
@@ -4789,7 +4877,7 @@ class DatabaseClient:
         *,
         table: str,
         on: str,
-        chunks: AsyncIterable[list[dict[str, Any]]] | list[list[dict[str, Any]]],
+        chunks: DatabaseRowChunks,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
@@ -4839,7 +4927,7 @@ class DatabaseClient:
                 "query": query,
                 "tables": [table.model_dump() for table in table_refs],
                 "params_json": (
-                    json.dumps(_encode_record_value(params))
+                    json.dumps(encode_records([params])[0])
                     if params is not None
                     else None
                 ),
@@ -4893,7 +4981,8 @@ class DatabaseClient:
     ) -> AsyncIterator[list[Dict[str, Any]]]:
         if isinstance(where, dict):
             where = " AND ".join(
-                map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
+                f"{column} = {_database_sql_literal(value)}"
+                for column, value in where.items()
             )
         async for batch in self._stream_rows(
             operation="search",
@@ -4927,7 +5016,8 @@ class DatabaseClient:
     ) -> list[Dict[str, Any]]:
         if isinstance(where, dict):
             where = " AND ".join(
-                map(lambda x: f"{x} = {json.dumps(where[x])}", where.keys())
+                f"{column} = {_database_sql_literal(value)}"
+                for column, value in where.items()
             )
         response = await self._invoke(
             operation="count",
@@ -5262,7 +5352,7 @@ class MemoryClient:
         *,
         name: str,
         table: str,
-        records: List[Dict[str, Any]],
+        records: DatabaseRows,
         merge: bool = True,
         namespace: Optional[List[str]] = None,
     ) -> None:

@@ -2,11 +2,14 @@ import asyncio
 import base64
 import contextlib
 import json
+import uuid
 from collections.abc import AsyncIterable, AsyncIterator
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
+import meshagent.api.room_server_client as room_server_client
 from meshagent.api.messaging import (
     BinaryContent,
     Content,
@@ -25,8 +28,11 @@ from meshagent.api.room_server_client import (
     AgentsClient,
     ContainersClient,
     DatabaseClient,
+    DatabaseJson,
     DeveloperClient,
     DockerSecret,
+    DatabaseExpression,
+    DatabaseStruct,
     ListDataType,
     LivekitClient,
     MemoryClient,
@@ -43,6 +49,9 @@ from meshagent.api.room_server_client import (
     StructDataType,
     SyncClient,
     TextDataType,
+    UuidDataType,
+    decode_records,
+    encode_records,
 )
 from meshagent.api.specs.service import (
     ConfigMountSpec,
@@ -89,6 +98,127 @@ def test_room_exception_defaults_to_invalid_request_code() -> None:
 def test_room_exception_explicit_none_code_is_preserved() -> None:
     ex = RoomException("boom", code=None)
     assert ex.code is None
+
+
+def test_encode_decode_records_uuid_roundtrip() -> None:
+    value = uuid.uuid4()
+
+    encoded = encode_records([{"id": value}])
+
+    assert encoded == [{"id": {"uuid": str(value)}}]
+
+    decoded = decode_records(encoded)
+
+    assert decoded == [{"id": value}]
+
+
+def test_encode_decode_records_expression_roundtrip() -> None:
+    encoded = encode_records([{"id": DatabaseExpression("uuid()")}])
+
+    assert encoded == [{"id": {"expression": "uuid()"}}]
+
+    decoded = decode_records(encoded)
+
+    assert decoded == [{"id": DatabaseExpression("uuid()")}]
+
+
+def test_encode_decode_records_struct_and_json_roundtrip() -> None:
+    payload = {"kind": "demo", "count": 3, "tags": ["x", "y"]}
+
+    encoded = encode_records(
+        [
+            {
+                "meta": DatabaseStruct(
+                    {
+                        "source": "studio",
+                        "labels": ["a", "b"],
+                        "payload": DatabaseJson(payload),
+                    }
+                ),
+                "payload": DatabaseJson(payload),
+            }
+        ]
+    )
+
+    assert encoded == [
+        {
+            "meta": {
+                "struct": {
+                    "source": "studio",
+                    "labels": {"list": ["a", "b"]},
+                    "payload": {"json": payload},
+                }
+            },
+            "payload": {"json": payload},
+        }
+    ]
+
+    decoded = decode_records(encoded)
+
+    assert decoded == [
+        {
+            "meta": DatabaseStruct(
+                {
+                    "source": "studio",
+                    "labels": ["a", "b"],
+                    "payload": DatabaseJson(payload),
+                }
+            ),
+            "payload": DatabaseJson(payload),
+        }
+    ]
+
+
+def test_decode_records_rejects_non_string_expression_payload() -> None:
+    with pytest.raises(ValueError, match="database expression values must be strings"):
+        decode_records([{"id": {"expression": {"name": "uuid()"}}}])
+
+
+def test_decode_records_rejects_unwrapped_object_payload() -> None:
+    with pytest.raises(
+        ValueError,
+        match="database object values must use a single-key type wrapper",
+    ):
+        decode_records([{"meta": {"kind": "demo", "count": 3}}])
+
+
+def test_encode_decode_records_date_and_timestamp_roundtrip() -> None:
+    day = date(2026, 4, 9)
+    moment = datetime(2026, 4, 9, 12, 30, 45, tzinfo=timezone.utc)
+
+    encoded = encode_records([{"day": day, "moment": moment}])
+
+    assert encoded == [
+        {
+            "day": {"date": "2026-04-09"},
+            "moment": {"timestamp": "2026-04-09T12:30:45Z"},
+        }
+    ]
+
+    decoded = decode_records(encoded)
+
+    assert decoded == [{"day": day, "moment": moment}]
+
+
+def test_database_stream_decode_value_returns_typed_date_and_timestamp() -> None:
+    day = room_server_client._database_stream_decode_value(
+        {"date": "2026-04-09"},
+        operation="search",
+    )
+    moment = room_server_client._database_stream_decode_value(
+        {"timestamp": "2026-04-09T12:30:45Z"},
+        operation="search",
+    )
+
+    assert day == date(2026, 4, 9)
+    assert moment == datetime(2026, 4, 9, 12, 30, 45, tzinfo=timezone.utc)
+
+
+def test_uuid_data_type_json_schema() -> None:
+    assert UuidDataType().to_json_schema() == {
+        "type": "string",
+        "description": "a UUID string",
+    }
 
 
 class _FakeRoom:
@@ -472,7 +602,7 @@ async def test_memory_client_uses_room_invoke_for_commands() -> None:
     assert isinstance(upsert_table_input["records_json"], str)
     encoded_records = json.loads(upsert_table_input["records_json"])
     assert encoded_records == [
-        {"payload": {"encoding": "base64", "data": base64.b64encode(b"hello").decode()}}
+        {"payload": {"binary": base64.b64encode(b"hello").decode()}}
     ]
 
     ingest_image_arguments = room.requests[4][1]["arguments"]
@@ -906,22 +1036,21 @@ async def test_database_client_unexpected_response_uses_error_code() -> None:
 @pytest.mark.asyncio
 async def test_database_client_uses_room_invoke_for_commands() -> None:
     def _rows_chunk(payload: list[dict[str, object]]) -> dict[str, object]:
-        rows = []
-        for row in payload:
-            columns = []
-            for key, value in row.items():
-                if isinstance(value, bytes):
-                    encoded_value = {
-                        "type": "binary",
-                        "data": base64.b64encode(value).decode(),
-                    }
-                elif isinstance(value, int):
-                    encoded_value = {"type": "int", "value": value}
-                else:
-                    encoded_value = {"type": "text", "value": value}
-                columns.append({"name": key, "value": encoded_value})
-            rows.append({"columns": columns})
-        return {"kind": "rows", "rows": rows}
+        return {
+            "kind": "rows",
+            "rows": [
+                {
+                    "columns": [
+                        {
+                            "name": key,
+                            "value": encode_records([{key: value}])[0][key],
+                        }
+                        for key, value in row.items()
+                    ]
+                }
+                for row in payload
+            ],
+        }
 
     class _StreamingDatabaseRoom:
         def __init__(self) -> None:
@@ -1196,13 +1325,12 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
             "column": "payload",
             "value_json": json.dumps(
                 {
-                    "encoding": "base64",
-                    "data": base64.b64encode(b"hello").decode(),
+                    "binary": base64.b64encode(b"hello").decode(),
                 }
             ),
         }
     ]
-    assert update_arguments["values_sql"] is None
+    assert "values_sql" not in update_arguments
     assert room.read_starts["search"]["kind"] == "start"
     assert room.read_starts["search"]["table"] == "records"
     assert room.read_starts["search"]["branch"] is None

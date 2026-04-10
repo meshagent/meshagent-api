@@ -10,10 +10,12 @@ from meshagent.api.room_server_client import (
     DateDataType,
     FloatDataType,
     IntDataType,
+    JsonDataType,
     ListDataType,
     StructDataType,
     TextDataType,
     TimestampDataType,
+    UuidDataType,
     VectorDataType,
 )
 
@@ -21,7 +23,7 @@ TABLE_SCHEMA_GRAMMAR = """
 TABLE_SCHEMA  := COLUMN_DEF ("," COLUMN_DEF)*
 COLUMN_DEF    := IDENTIFIER TYPE_SPEC NULLABILITY?
 TYPE_SPEC     := SIMPLE_TYPE | VECTOR_TYPE | LIST_TYPE | STRUCT_TYPE
-SIMPLE_TYPE   := "int" | "bool" | "date" | "timestamp" | "float" | "text" | "binary"
+SIMPLE_TYPE   := "int" | "bool" | "date" | "timestamp" | "float" | "text" | "json" | "uuid" | "binary"
 VECTOR_TYPE   := "vector" "(" INT ("," TYPE_SPEC)? ")"
 LIST_TYPE     := "list" "(" TYPE_SPEC ")"
 STRUCT_TYPE   := "struct" "(" STRUCT_FIELD ("," STRUCT_FIELD)* ")"
@@ -38,6 +40,8 @@ ALLOWED_DATA_TYPES = (
     "timestamp",
     "float",
     "text",
+    "json",
+    "uuid",
     "binary",
     "vector",
     "list",
@@ -249,6 +253,10 @@ def _simple_type(type_name: str) -> DataTypeUnion:
         return FloatDataType()
     if type_name == "text":
         return TextDataType()
+    if type_name == "json":
+        return JsonDataType()
+    if type_name == "uuid":
+        return UuidDataType()
     if type_name == "binary":
         return BinaryDataType()
     raise SchemaParseError(

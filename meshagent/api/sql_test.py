@@ -3,9 +3,11 @@ import pytest
 from meshagent.api.room_server_client import (
     FloatDataType,
     IntDataType,
+    JsonDataType,
     ListDataType,
     StructDataType,
     TextDataType,
+    UuidDataType,
     VectorDataType,
 )
 from meshagent.api.sql import SchemaParseError, parse_table_schema
@@ -33,6 +35,22 @@ def test_parse_schema_vector_element_type_case_insensitive():
     assert isinstance(column, VectorDataType)
     assert column.size == 3
     assert isinstance(column.element_type, FloatDataType)
+
+
+def test_parse_schema_uuid_type():
+    schema = parse_table_schema("id uuid not null")
+
+    assert isinstance(schema["id"], UuidDataType)
+    assert schema["id"].nullable is False
+
+
+def test_parse_schema_json_type():
+    schema = parse_table_schema("payload json not null, history list(json)")
+
+    assert isinstance(schema["payload"], JsonDataType)
+    assert schema["payload"].nullable is False
+    assert isinstance(schema["history"], ListDataType)
+    assert isinstance(schema["history"].element_type, JsonDataType)
 
 
 def test_parse_schema_duplicate_columns():
