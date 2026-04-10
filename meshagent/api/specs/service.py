@@ -28,13 +28,20 @@ class TokenValue(BaseModel):
         None,
         description=(
             "the api permissions that should be granted to this token, set to null "
-            "or omit to use default permissions"
+            "or omit to use the default permissions implied by role"
         ),
     )
-    role: Optional[str] = Field(
+    role: Optional[Literal["user", "agent", "tool"]] = Field(
         None,
         description="a role to use in the participant token, such as user, agent, or tool",
     )
+
+    def resolved_api_scope(self) -> ApiScope:
+        if self.api is not None:
+            return self.api
+        if self.role == "user":
+            return ApiScope.user_default()
+        return ApiScope.agent_default()
 
 
 class EnvironmentVariable(BaseModel):

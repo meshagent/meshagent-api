@@ -547,7 +547,7 @@ class ApiScope(BaseModel):
     tunnels: Optional[TunnelsGrant] = None
     services: Optional[ServicesGrant] = None
 
-    # no secrets access, no admin access by default for agents
+    # no admin access by default for agents
     @staticmethod
     def agent_default(*, tunnels: bool = False) -> "ApiScope":
         return ApiScope(
@@ -562,6 +562,7 @@ class ApiScope(BaseModel):
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
             llm=LLMGrant(),
+            secrets=SecretsGrant(),
             services=ServicesGrant(),
             tunnels=TunnelsGrant() if tunnels else None,
         )
@@ -579,7 +580,6 @@ class ApiScope(BaseModel):
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
-            llm=LLMGrant(),
             secrets=SecretsGrant(),
             services=ServicesGrant(),
         )
