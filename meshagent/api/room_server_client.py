@@ -1162,10 +1162,6 @@ class RoomClient:
             tools = []
             raw_tools = tk_json.get("tools", {})
             for tool_name, tool_json in raw_tools.items():
-                supports_context = tool_json.get(
-                    "supports_context",
-                    tool_json.get("supportsContext", False),
-                )
                 strict = tool_json.get("strict", None)
                 input_spec = ToolContentSpec.from_json(tool_json.get("input_spec"))
                 legacy_input_schema = tool_json.get("input_schema")
@@ -1215,7 +1211,6 @@ class RoomClient:
                         thumbnail_url=tool_json.get("thumbnail_url", None),
                         defs=tool_json.get("defs", None),
                         pricing=tool_json.get("pricing", None),
-                        supports_context=supports_context,
                         strict=strict if isinstance(strict, bool) else None,
                     )
                 )
@@ -1765,7 +1760,6 @@ class ToolDescription:
         thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
         pricing: Optional[str] = None,
-        supports_context: Optional[bool] = False,
         strict: Optional[bool] = None,
     ):
         self.name = name
@@ -1777,9 +1771,6 @@ class ToolDescription:
         self.thumbnail_url = thumbnail_url
         self.defs = defs
         self.pricing = pricing
-        if supports_context is None:
-            supports_context = False
-        self.supports_context = supports_context
         self.strict = strict
 
     @property
@@ -1808,7 +1799,6 @@ class ToolDescription:
             else self.output_spec.to_json(),
             "defs": self.defs,
             "pricing": self.pricing,
-            "supports_context": self.supports_context,
             "strict": self.strict,
         }
 
