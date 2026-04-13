@@ -5979,6 +5979,49 @@ class _BuildLogInputStream:
         await self._closed.wait()
 
 
+class _BuildContextInputStream:
+    def __init__(
+        self,
+        *,
+        tag: str,
+        mount_path: str,
+        context_path: str,
+        dockerfile_path: str | None,
+        optimize_image: bool,
+        private: bool,
+        credentials: list[DockerSecret],
+        builder_name: str | None,
+        chunks: AsyncIterable[bytes],
+        size: int | None,
+    ) -> None:
+        self._start_chunk = BinaryContent(
+            data=b"",
+            headers={
+                "kind": "start",
+                "tag": tag,
+                "mount_path": mount_path,
+                "context_path": context_path,
+                "dockerfile_path": dockerfile_path,
+                "optimize_image": optimize_image,
+                "private": private,
+                "credentials": [
+                    credential.model_dump(mode="json") for credential in credentials
+                ],
+                "builder_name": builder_name,
+                "size": size,
+            },
+        )
+        self._chunks = chunks
+
+    async def __aiter__(self) -> AsyncIterator[Content]:
+        yield self._start_chunk
+        async for chunk in self._chunks:
+            yield BinaryContent(
+                data=bytes(chunk),
+                headers={"kind": "data"},
+            )
+
+
 class _ContainerLogStream(LogStream[T]):
     async def logs(self) -> AsyncIterator[str]:
         try:
@@ -6513,6 +6556,44 @@ class ContainersClient:
 
         raise self._unexpected_response_error(operation="build")
 
+    async def build_context(
+        self,
+        *,
+        tag: str,
+        mount_path: str,
+        context_path: str,
+        chunks: AsyncIterable[bytes],
+        dockerfile_path: str | None = None,
+        optimize_image: bool = True,
+        private: bool = False,
+        credentials: List[DockerSecret] | None = None,
+        builder_name: str | None = None,
+        size: int | None = None,
+    ) -> str:
+        response = await self.room.invoke(
+            toolkit="containers",
+            tool="build_context",
+            input=_BuildContextInputStream(
+                tag=tag,
+                mount_path=mount_path,
+                context_path=context_path,
+                dockerfile_path=dockerfile_path,
+                optimize_image=optimize_image,
+                private=private,
+                credentials=credentials or [],
+                builder_name=builder_name,
+                chunks=chunks,
+                size=size,
+            ),
+        )
+        if isinstance(response, JsonContent):
+            build_id = response.json.get("build_id")
+            if not isinstance(build_id, str):
+                raise self._unexpected_response_error(operation="build_context")
+            return build_id
+
+        raise self._unexpected_response_error(operation="build_context")
+
     async def list_builds(self) -> List[BuildJob]:
         response = await self.room.invoke(
             toolkit="containers",
@@ -6754,7 +6835,7 @@ class ContainersClient:
                             "containers.get_build_logs returned a chunk without a valid channel",
                             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
                         )
-                    if channel_value == 1:
+                    if channel_value in (1, 2):
                         try:
                             text = chunk.data.decode("utf-8")
                         except UnicodeDecodeError as ex:

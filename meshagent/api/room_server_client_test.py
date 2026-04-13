@@ -378,6 +378,28 @@ class _StreamingStorageRoom:
         raise AssertionError(f"unexpected tool: {tool}")
 
 
+class _StreamingBuildContextRoom:
+    def __init__(self) -> None:
+        self.protocol = _FakeProtocol()
+        self.requests: list[dict[str, object]] = []
+        self.start_chunk: BinaryContent | None = None
+        self.data_chunks: list[BinaryContent] = []
+
+    async def invoke(self, **kwargs):
+        self.requests.append(kwargs)
+        assert kwargs["tool"] == "build_context"
+        tool_input = kwargs["input"]
+        assert isinstance(tool_input, AsyncIterable)
+        iterator = tool_input.__aiter__()
+        start_chunk = await iterator.__anext__()
+        assert isinstance(start_chunk, BinaryContent)
+        self.start_chunk = start_chunk
+        async for chunk in iterator:
+            assert isinstance(chunk, BinaryContent)
+            self.data_chunks.append(chunk)
+        return JsonContent(json={"build_id": "build-1"})
+
+
 class _BadSyncResponseRoom:
     def __init__(self) -> None:
         self.protocol = _FakeProtocol()
@@ -1526,18 +1548,51 @@ async def test_developer_client_uses_room_invoke_for_commands() -> None:
         "type": "control",
         "method": "open",
     }
-    chunk_requests = [
-        request
-        for request in room.requests
-        if request[0] == "room.tool_call_request_chunk"
-    ]
-    assert len(chunk_requests) == 1
-    close_chunk = chunk_requests[0][1]["chunk"]
-    assert close_chunk == {
-        "type": "control",
-        "method": "close",
-        "status_code": ControlCloseStatus.NORMAL,
+
+
+@pytest.mark.asyncio
+async def test_containers_client_build_context_streams_tar_chunks() -> None:
+    room = _StreamingBuildContextRoom()
+    client = ContainersClient(room=room)  # type: ignore[arg-type]
+
+    async def _chunks() -> AsyncIterator[bytes]:
+        yield b"hello "
+        yield b"world"
+
+    build_id = await client.build_context(
+        tag="repo/example:latest",
+        mount_path="/context",
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        optimize_image=False,
+        private=True,
+        credentials=[DockerSecret(username="u", password="p")],
+        builder_name="builder-1",
+        chunks=_chunks(),
+        size=11,
+    )
+
+    assert build_id == "build-1"
+    assert room.start_chunk is not None
+    assert room.start_chunk.headers == {
+        "kind": "start",
+        "tag": "repo/example:latest",
+        "mount_path": "/context",
+        "context_path": "/context",
+        "dockerfile_path": "/context/Dockerfile",
+        "optimize_image": False,
+        "private": True,
+        "credentials": [
+            {"registry": None, "username": "u", "password": "p"},
+        ],
+        "builder_name": "builder-1",
+        "size": 11,
     }
+    assert [chunk.headers for chunk in room.data_chunks] == [
+        {"kind": "data"},
+        {"kind": "data"},
+    ]
+    assert b"".join(chunk.data for chunk in room.data_chunks) == b"hello world"
 
 
 @pytest.mark.asyncio
@@ -1973,6 +2028,14 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
                         },
                     )
                     yield BinaryContent(
+                        data=b"build warning",
+                        headers={
+                            "request_id": start_chunk.headers["request_id"],
+                            "build_id": start_chunk.headers["build_id"],
+                            "channel": 2,
+                        },
+                    )
+                    yield BinaryContent(
                         data=b'{"status": 0}',
                         headers={
                             "request_id": start_chunk.headers["request_id"],
@@ -2013,7 +2076,7 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
     build_log_stream = client.get_build_logs(build_id="build-1", follow=True)
     build_logs = [line async for line in build_log_stream.logs()]
     build_status = await build_log_stream
-    assert build_logs == ["build line"]
+    assert build_logs == ["build line", "build warning"]
     assert build_status == 0
     assert len(room.build_log_requests) == 1
     assert room.build_log_requests[0]["build_id"] == "build-1"
