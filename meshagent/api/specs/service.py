@@ -13,8 +13,12 @@ from meshagent.api.agent_content import AgentInputContent
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 import json
 
-import yaml as YAML
-from yaml.loader import SafeLoader
+
+def _yaml_support():
+    import yaml as YAML
+    from yaml.loader import SafeLoader
+
+    return YAML, SafeLoader
 
 
 class SecretValue(BaseModel):
@@ -347,6 +351,7 @@ class ServiceSpec(BaseModel):
 
     @staticmethod
     def from_yaml(yaml: str) -> "ServiceSpec":
+        YAML, _ = _yaml_support()
         return ServiceSpec.model_validate(YAML.safe_load(yaml))
 
 
@@ -623,6 +628,8 @@ class ServiceTemplateSpec(BaseModel):
     @staticmethod
     def from_yaml(yaml: str, values: dict[str, str] = {}) -> "ServiceTemplateSpec":
         from jinja2 import Template
+
+        YAML, SafeLoader = _yaml_support()
 
         class _ApplyTagLoader(SafeLoader):
             pass
