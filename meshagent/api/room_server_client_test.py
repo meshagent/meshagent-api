@@ -226,8 +226,11 @@ def test_uuid_data_type_json_schema() -> None:
 
 class _FakeRoom:
     _ensure_close_watcher = RoomClient._ensure_close_watcher
+    _close_tool_call_streams = RoomClient._close_tool_call_streams
     _fail_tool_call_streams = RoomClient._fail_tool_call_streams
+    _fail_tool_call_streams_and_wait = RoomClient._fail_tool_call_streams_and_wait
     _handle_tool_call_response_chunk = RoomClient._handle_tool_call_response_chunk
+    _remove_tool_call_stream = RoomClient._remove_tool_call_stream
     _make_tool_call_stream = RoomClient._make_tool_call_stream
     _send_tool_call_request_chunk = RoomClient._send_tool_call_request_chunk
     _stream_tool_call_request_chunks = RoomClient._stream_tool_call_request_chunks
@@ -519,19 +522,36 @@ async def test_room_client_exit_fails_open_tool_streams_and_cancels_close_watche
     request_task = asyncio.create_task(_pending_request())
     await started.wait()
 
+    request_stream_cancelled = asyncio.Event()
+    request_stream_started = asyncio.Event()
+
+    async def _pending_request_stream() -> None:
+        try:
+            request_stream_started.set()
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            request_stream_cancelled.set()
+            raise
+
+    request_stream_task = asyncio.create_task(_pending_request_stream())
+    await request_stream_started.wait()
+
     stream = client._make_tool_call_stream(
         tool_call_id="tc-1",
         request_task=request_task,
     )
+    stream.attach_request_stream_task(request_stream_task)
 
     await client.__aexit__(None, None, None)
     await asyncio.gather(request_task, return_exceptions=True)
+    await asyncio.wait_for(request_stream_cancelled.wait(), timeout=1)
 
     assert client._tool_call_streams == {}
     assert isinstance(stream.error, RoomException)
     assert str(stream.error) == "room client was closed before tool call completed"
     assert protocol.exited is True
     assert client._close_watcher_task is None
+    assert request_stream_task.done()
 
 
 @pytest.mark.asyncio
@@ -2435,6 +2455,7 @@ async def test_invoke_tool_does_not_send_stream_flag() -> None:
     assert response.json == {"ok": True}
     assert room.requests[0][0] == "room.invoke_tool"
     assert "stream" not in room.requests[0][1]
+    assert room._close_watcher_task is None
 
 
 @pytest.mark.asyncio
@@ -2576,6 +2597,7 @@ async def test_invoke_tool_returns_stream_when_response_is_open_control_chunk() 
     assert not isinstance(response, Content)
     assert isinstance(response, AsyncIterator)
     client._fail_tool_call_streams(error=RoomException("test cleanup"))
+    await _cancel_close_watcher(room)
 
 
 @pytest.mark.asyncio
@@ -2593,6 +2615,7 @@ async def test_invoke_tool_returns_stream_for_content_input_when_response_is_ope
     assert not isinstance(response, Content)
     assert isinstance(response, AsyncIterator)
     client._fail_tool_call_streams(error=RoomException("test cleanup"))
+    await _cancel_close_watcher(room)
 
 
 @pytest.mark.asyncio

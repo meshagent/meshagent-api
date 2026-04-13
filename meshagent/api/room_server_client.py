@@ -716,7 +716,7 @@ class RoomClient:
         return RoomException(message)
 
     async def __aexit__(self, exc_type, exc, tb):
-        self._fail_tool_call_streams(
+        await self._fail_tool_call_streams_and_wait(
             error=RoomException("room client was closed before tool call completed")
         )
         close_watcher = self._close_watcher_task
@@ -891,17 +891,30 @@ class RoomClient:
 
         async def watch_for_close() -> None:
             await self.protocol.wait_for_close()
-            self._fail_tool_call_streams(
+            await self._fail_tool_call_streams_and_wait(
                 error=RoomException("room client was closed before tool call completed")
             )
 
         self._close_watcher_task = asyncio.create_task(watch_for_close())
 
-    def _fail_tool_call_streams(self, *, error: BaseException) -> None:
+    def _close_tool_call_streams(
+        self, *, error: BaseException
+    ) -> list[asyncio.Task[Any]]:
         open_streams = list(self._tool_call_streams.values())
         self._tool_call_streams.clear()
+        pending_tasks: list[asyncio.Task[Any]] = []
         for stream in open_streams:
             stream.close_with_error(error)
+            pending_tasks.extend(stream.pending_shutdown_tasks())
+        return pending_tasks
+
+    def _fail_tool_call_streams(self, *, error: BaseException) -> None:
+        self._close_tool_call_streams(error=error)
+
+    async def _fail_tool_call_streams_and_wait(self, *, error: BaseException) -> None:
+        pending_tasks = self._close_tool_call_streams(error=error)
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
     async def _handle_tool_call_response_chunk(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
@@ -955,13 +968,21 @@ class RoomClient:
             },
         )
 
+    def _remove_tool_call_stream(self, *, tool_call_id: str) -> None:
+        self._tool_call_streams.pop(tool_call_id, None)
+        close_watcher = self._close_watcher_task
+        if close_watcher is None or self._tool_call_streams:
+            return
+        self._close_watcher_task = None
+        close_watcher.cancel()
+
     def _make_tool_call_stream(
         self, *, tool_call_id: str, request_task: asyncio.Task[Content]
     ) -> "_ToolCallChunkStream":
         call_stream = _ToolCallChunkStream(
             tool_call_id=tool_call_id,
             task=request_task,
-            on_close=lambda: self._tool_call_streams.pop(tool_call_id, None),
+            on_close=lambda: self._remove_tool_call_stream(tool_call_id=tool_call_id),
         )
         self._tool_call_streams[tool_call_id] = call_stream
         return call_stream
@@ -1960,6 +1981,7 @@ class _ToolCallChunkStream:
         self._closed = False
         self._opened = False
         self._request_stream_task: Optional[asyncio.Task[None]] = None
+        self._request_stream_drain_task: Optional[asyncio.Task[None]] = None
         task.add_done_callback(self._on_task_done)
 
     @property
@@ -1983,6 +2005,22 @@ class _ToolCallChunkStream:
     async def _drain_request_stream_task(self, task: asyncio.Task[None]) -> None:
         await asyncio.gather(task, return_exceptions=True)
 
+    def pending_shutdown_tasks(self) -> list[asyncio.Task[Any]]:
+        tasks: list[asyncio.Task[Any]] = []
+        if (
+            self._request_stream_drain_task is not None
+            and not self._request_stream_drain_task.done()
+        ):
+            tasks.append(self._request_stream_drain_task)
+        elif (
+            self._request_stream_task is not None
+            and not self._request_stream_task.done()
+        ):
+            tasks.append(self._request_stream_task)
+        if not self._task.done():
+            tasks.append(self._task)
+        return tasks
+
     def _close(
         self,
         *,
@@ -2005,9 +2043,13 @@ class _ToolCallChunkStream:
             and not self._request_stream_task.done()
         ):
             self._request_stream_task.cancel()
-            asyncio.create_task(
-                self._drain_request_stream_task(self._request_stream_task)
-            )
+            if (
+                self._request_stream_drain_task is None
+                or self._request_stream_drain_task.done()
+            ):
+                self._request_stream_drain_task = asyncio.create_task(
+                    self._drain_request_stream_task(self._request_stream_task)
+                )
         try:
             self._on_close()
         except Exception as ex:
