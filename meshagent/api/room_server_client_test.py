@@ -89,6 +89,9 @@ class _FakeProtocol:
     async def wait_for_close(self) -> None:
         await asyncio.Future()
 
+    def close_reason(self) -> str | None:
+        return None
+
 
 def test_room_exception_defaults_to_invalid_request_code() -> None:
     ex = RoomException("boom")
@@ -378,7 +381,7 @@ class _StreamingStorageRoom:
         raise AssertionError(f"unexpected tool: {tool}")
 
 
-class _StreamingBuildContextRoom:
+class _StreamingBuildRoom:
     def __init__(self) -> None:
         self.protocol = _FakeProtocol()
         self.requests: list[dict[str, object]] = []
@@ -387,7 +390,7 @@ class _StreamingBuildContextRoom:
 
     async def invoke(self, **kwargs):
         self.requests.append(kwargs)
-        assert kwargs["tool"] == "build_context"
+        assert kwargs["tool"] == "build"
         tool_input = kwargs["input"]
         assert isinstance(tool_input, AsyncIterable)
         iterator = tool_input.__aiter__()
@@ -398,6 +401,11 @@ class _StreamingBuildContextRoom:
             assert isinstance(chunk, BinaryContent)
             self.data_chunks.append(chunk)
         return JsonContent(json={"build_id": "build-1"})
+
+
+async def _bytes_chunks(chunks: list[bytes]) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
 
 
 class _BadSyncResponseRoom:
@@ -420,6 +428,31 @@ class _ClosingProtocol(_FakeProtocol):
         return None
 
 
+class _ClosingProtocolWithReason(_FakeProtocol):
+    async def wait_for_close(self) -> None:
+        return None
+
+    def close_reason(self) -> str | None:
+        return "websocket closed with code 1008"
+
+
+class _StatusClosingProtocol(_FakeProtocol):
+    async def wait_for_close(self) -> None:
+        handler = self.handlers["room.status"]
+        result = handler(
+            self,
+            1,
+            "room.status",
+            pack_message({"status": "error", "message": "room is starting"}, b""),
+        )
+        if asyncio.iscoroutine(result):
+            await result
+        return None
+
+    def close_reason(self) -> str | None:
+        return "websocket closed with code 1013"
+
+
 @pytest.mark.asyncio
 async def test_room_client_enter_raises_if_connection_closes_before_ready() -> None:
     protocol = _ClosingProtocol()
@@ -433,6 +466,40 @@ async def test_room_client_enter_raises_if_connection_closes_before_ready() -> N
 
     assert protocol.entered is True
     assert protocol.exited is True
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_includes_close_reason_when_connection_closes_early() -> (
+    None
+):
+    protocol = _ClosingProtocolWithReason()
+    client = RoomClient(protocol=protocol)
+
+    with pytest.raises(
+        RoomException,
+        match=(
+            "room connection closed before the room became ready: "
+            "websocket closed with code 1008"
+        ),
+    ):
+        await client.__aenter__()
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_does_not_include_last_room_status_when_connection_closes_early() -> (
+    None
+):
+    protocol = _StatusClosingProtocol()
+    client = RoomClient(protocol=protocol)
+
+    with pytest.raises(
+        RoomException,
+        match=(
+            "room connection closed before the room became ready: "
+            "websocket closed with code 1013"
+        ),
+    ):
+        await client.__aenter__()
 
 
 @pytest.mark.asyncio
@@ -1551,15 +1618,15 @@ async def test_developer_client_uses_room_invoke_for_commands() -> None:
 
 
 @pytest.mark.asyncio
-async def test_containers_client_build_context_streams_tar_chunks() -> None:
-    room = _StreamingBuildContextRoom()
+async def test_containers_client_build_streams_tar_chunks() -> None:
+    room = _StreamingBuildRoom()
     client = ContainersClient(room=room)  # type: ignore[arg-type]
 
     async def _chunks() -> AsyncIterator[bytes]:
         yield b"hello "
         yield b"world"
 
-    build_id = await client.build_context(
+    build_id = await client.build(
         tag="repo/example:latest",
         mount_path="/context",
         context_path="/context",
@@ -1793,6 +1860,8 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     class _FakeContainersRoom:
         def __init__(self) -> None:
             self.requests: list[dict[str, object]] = []
+            self.build_start_chunk: BinaryContent | None = None
+            self.build_data_chunks: list[BinaryContent] = []
 
         async def invoke(self, **kwargs) -> Content | AsyncIterator[Content]:
             self.requests.append(kwargs)
@@ -1805,8 +1874,17 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
                 "run_service",
             }:
                 return JsonContent(json={"container_id": f"{tool}-ctr"})
-            if tool in {"build", "start_build"}:
-                return JsonContent(json={"build_id": f"{tool}-job"})
+            if tool == "build":
+                tool_input = kwargs["input"]
+                assert isinstance(tool_input, AsyncIterable)
+                iterator = tool_input.__aiter__()
+                start_chunk = await iterator.__anext__()
+                assert isinstance(start_chunk, BinaryContent)
+                self.build_start_chunk = start_chunk
+                async for chunk in iterator:
+                    assert isinstance(chunk, BinaryContent)
+                    self.build_data_chunks.append(chunk)
+                return JsonContent(json={"build_id": "build-job"})
             if tool == "list_images":
                 return JsonContent(
                     json={
@@ -1866,26 +1944,15 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     )
     await client.build(
         tag="example:latest",
-        mounts=[
-            ContainerMountSpec(
-                room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
-            )
-        ],
+        mount_path="/context",
         context_path="/workspace",
+        chunks=_bytes_chunks([b"hello ", b"world"]),
+        dockerfile_path="/workspace/Dockerfile",
         optimize_image=False,
-    )
-    await client.start_build(
-        tag="example:latest",
-        mounts=[
-            ContainerMountSpec(
-                room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
-            )
-        ],
-        context_path="/workspace",
-        context_archive_path="/website",
-        context_archive_ref="room.meshagent.com/website:latest",
-        context_archive_mount_path="/context",
-        context_archive_arch="amd64",
+        private=True,
+        credentials=[DockerSecret(username="u2", password="p2")],
+        builder_name="builder-1",
+        size=11,
     )
     await client.run_service(service_id="svc-1", env={"A": "1"})
     await client.list_images()
@@ -1898,7 +1965,6 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
         "pull_image",
         "run",
         "build",
-        "start_build",
         "run_service",
         "list_images",
         "list_builds",
@@ -1922,21 +1988,28 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert run_input["mounts"]["empty_dirs"] == [{"path": "/cache", "read_only": False}]
 
     build_input = room.requests[2]["input"]
-    assert isinstance(build_input, dict)
-    assert build_input["context_archive_path"] is None
-    assert build_input["optimize_image"] is False
+    assert isinstance(build_input, AsyncIterable)
+    assert room.build_start_chunk is not None
+    assert room.build_start_chunk.headers == {
+        "kind": "start",
+        "tag": "example:latest",
+        "mount_path": "/context",
+        "context_path": "/workspace",
+        "dockerfile_path": "/workspace/Dockerfile",
+        "optimize_image": False,
+        "private": True,
+        "credentials": [
+            {"registry": None, "username": "u2", "password": "p2"},
+        ],
+        "builder_name": "builder-1",
+        "size": 11,
+    }
+    assert [chunk.headers for chunk in room.build_data_chunks] == [
+        {"kind": "data"},
+        {"kind": "data"},
+    ]
 
-    start_build_input = room.requests[3]["input"]
-    assert isinstance(start_build_input, dict)
-    assert start_build_input["context_archive_path"] == "/website"
-    assert (
-        start_build_input["context_archive_ref"] == "room.meshagent.com/website:latest"
-    )
-    assert start_build_input["context_archive_mount_path"] == "/context"
-    assert start_build_input["context_archive_arch"] == "amd64"
-    assert start_build_input["optimize_image"] is True
-
-    run_service_input = room.requests[4]["input"]
+    run_service_input = room.requests[3]["input"]
     assert isinstance(run_service_input, dict)
     assert run_service_input["env"] == [{"key": "A", "value": "1"}]
 
@@ -2117,12 +2190,9 @@ async def test_containers_client_build_unexpected_response_uses_error_code() -> 
     ) as ex:
         await client.build(
             tag="example:latest",
-            mounts=[
-                ContainerMountSpec(
-                    room=[RoomStorageMountSpec(path="/workspace", read_only=False)]
-                )
-            ],
+            mount_path="/context",
             context_path="/workspace",
+            chunks=_bytes_chunks([b"hello"]),
         )
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE

@@ -54,6 +54,30 @@ def _log_websocket_close(
     )
 
 
+def _format_websocket_close_reason(
+    *,
+    close_event: WSMsgType | None,
+    close_code: int | None,
+    exc: BaseException | None,
+) -> str | None:
+    exc_message = None
+    if exc is not None:
+        exc_message = str(exc).strip() or repr(exc)
+
+    if close_code is not None:
+        if exc_message is not None:
+            return f"websocket closed with code {close_code}: {exc_message}"
+        return f"websocket closed with code {close_code}"
+
+    if exc_message is not None:
+        return f"websocket error: {exc_message}"
+
+    if close_event is not None:
+        return f"websocket closed with event {close_event.name}"
+
+    return None
+
+
 class WebSocketClientProtocol(ClientProtocol):
     def __init__(
         self,
@@ -123,6 +147,11 @@ class WebSocketClientProtocol(ClientProtocol):
 
         ws_exception = self._ws.exception()
         if self._ws.closed or close_event is not None or ws_exception is not None:
+            self._close_reason = _format_websocket_close_reason(
+                close_event=close_event,
+                close_code=self._ws.close_code,
+                exc=ws_exception,
+            )
             _log_websocket_close(
                 role="client",
                 url=self._url,
@@ -190,6 +219,11 @@ class WebSocketServerProtocol(Protocol):
                 or close_event is not None
                 or socket_exception is not None
             ):
+                self._close_reason = _format_websocket_close_reason(
+                    close_event=close_event,
+                    close_code=self.socket.close_code,
+                    exc=socket_exception,
+                )
                 _log_websocket_close(
                     role="server",
                     url=self._url,

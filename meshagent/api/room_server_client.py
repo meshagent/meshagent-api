@@ -690,7 +690,7 @@ class RoomClient:
             startup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_task
-            raise RoomException("room connection closed before the room became ready")
+            raise self._startup_close_exception()
         except Exception:
             startup_task.cancel()
             close_task.cancel()
@@ -705,6 +705,15 @@ class RoomClient:
             with contextlib.suppress(Exception):
                 await self.protocol.__aexit__(None, None, None)
             raise
+
+    def _startup_close_exception(self) -> RoomException:
+        message = "room connection closed before the room became ready"
+
+        close_reason = self.protocol.close_reason()
+        if close_reason is not None:
+            message = f"{message}: {close_reason}"
+
+        return RoomException(message)
 
     async def __aexit__(self, exc_type, exc, tb):
         self._fail_tool_call_streams(
@@ -787,7 +796,6 @@ class RoomClient:
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
         init, _ = unpack_message(data)
-
         self.emit("room.status", **init)
 
     async def _handle_ready(
@@ -5809,20 +5817,6 @@ class _RunRequest(BaseModel):
     private: Optional[bool] = None
 
 
-class _BuildRequest(BaseModel):
-    tag: str
-    mounts: List[ContainerMountSpec]
-    context_path: str
-    dockerfile_path: Optional[str] = None
-    optimize_image: bool = True
-    private: bool = False
-    credentials: Optional[List[DockerSecret]] = None
-    context_archive_path: Optional[str] = None
-    context_archive_ref: Optional[str] = None
-    context_archive_mount_path: Optional[str] = None
-    context_archive_arch: Optional[str] = None
-
-
 class _ExecRequest(BaseModel):
     request_id: Optional[str] = None
     container_id: str
@@ -6266,39 +6260,6 @@ class ContainersClient:
             payload["labels"] = normalized_labels
         return payload
 
-    @staticmethod
-    def _build_request_payload(
-        *,
-        tag: str,
-        mounts: List[ContainerMountSpec],
-        context_path: str,
-        dockerfile_path: Optional[str] = None,
-        optimize_image: bool = True,
-        private: bool = False,
-        credentials: List[DockerSecret] | None = None,
-        context_archive_path: Optional[str] = None,
-        context_archive_ref: Optional[str] = None,
-        context_archive_mount_path: Optional[str] = None,
-        context_archive_arch: Optional[str] = None,
-    ) -> dict[str, Any]:
-        return {
-            "tag": tag,
-            "mounts": [
-                mount.model_dump(mode="json", exclude_none=True) for mount in mounts
-            ],
-            "context_path": context_path,
-            "dockerfile_path": dockerfile_path,
-            "optimize_image": optimize_image,
-            "private": private,
-            "credentials": [
-                credential.model_dump(mode="json") for credential in (credentials or [])
-            ],
-            "context_archive_path": context_archive_path,
-            "context_archive_ref": context_archive_ref,
-            "context_archive_mount_path": context_archive_mount_path,
-            "context_archive_arch": context_archive_arch,
-        }
-
     async def list_images(self) -> List[Image]:
         res = await self.room.invoke(
             toolkit="containers",
@@ -6476,94 +6437,14 @@ class ContainersClient:
 
         raise self._unexpected_response_error(operation="run")
 
-    async def start_build(
-        self,
-        *,
-        tag: str,
-        mounts: List[ContainerMountSpec],
-        context_path: str,
-        dockerfile_path: Optional[str] = None,
-        optimize_image: bool = True,
-        private: bool = False,
-        credentials: List[DockerSecret] | None = None,
-        context_archive_path: Optional[str] = None,
-        context_archive_ref: Optional[str] = None,
-        context_archive_mount_path: Optional[str] = None,
-        context_archive_arch: Optional[str] = None,
-    ) -> str:
-        resp = await self.room.invoke(
-            toolkit="containers",
-            tool="start_build",
-            input=self._build_request_payload(
-                tag=tag,
-                mounts=mounts,
-                context_path=context_path,
-                dockerfile_path=dockerfile_path,
-                optimize_image=optimize_image,
-                private=private,
-                credentials=credentials,
-                context_archive_path=context_archive_path,
-                context_archive_ref=context_archive_ref,
-                context_archive_mount_path=context_archive_mount_path,
-                context_archive_arch=context_archive_arch,
-            ),
-        )
-        if isinstance(resp, JsonContent):
-            build_id = resp.json.get("build_id")
-            if not isinstance(build_id, str):
-                raise self._unexpected_response_error(operation="start_build")
-            return build_id
-
-        raise self._unexpected_response_error(operation="start_build")
-
     async def build(
-        self,
-        *,
-        tag: str,
-        mounts: List[ContainerMountSpec],
-        context_path: str,
-        dockerfile_path: Optional[str] = None,
-        optimize_image: bool = True,
-        private: bool = False,
-        credentials: List[DockerSecret] | None = None,
-        context_archive_path: Optional[str] = None,
-        context_archive_ref: Optional[str] = None,
-        context_archive_mount_path: Optional[str] = None,
-        context_archive_arch: Optional[str] = None,
-    ) -> str:
-        resp = await self.room.invoke(
-            toolkit="containers",
-            tool="build",
-            input=self._build_request_payload(
-                tag=tag,
-                mounts=mounts,
-                context_path=context_path,
-                dockerfile_path=dockerfile_path,
-                optimize_image=optimize_image,
-                private=private,
-                credentials=credentials,
-                context_archive_path=context_archive_path,
-                context_archive_ref=context_archive_ref,
-                context_archive_mount_path=context_archive_mount_path,
-                context_archive_arch=context_archive_arch,
-            ),
-        )
-        if isinstance(resp, JsonContent):
-            build_id = resp.json.get("build_id")
-            if not isinstance(build_id, str):
-                raise self._unexpected_response_error(operation="build")
-            return build_id
-
-        raise self._unexpected_response_error(operation="build")
-
-    async def build_context(
         self,
         *,
         tag: str,
         mount_path: str,
         context_path: str,
         chunks: AsyncIterable[bytes],
-        dockerfile_path: str | None = None,
+        dockerfile_path: Optional[str] = None,
         optimize_image: bool = True,
         private: bool = False,
         credentials: List[DockerSecret] | None = None,
@@ -6572,7 +6453,7 @@ class ContainersClient:
     ) -> str:
         response = await self.room.invoke(
             toolkit="containers",
-            tool="build_context",
+            tool="build",
             input=_BuildContextInputStream(
                 tag=tag,
                 mount_path=mount_path,
@@ -6589,10 +6470,10 @@ class ContainersClient:
         if isinstance(response, JsonContent):
             build_id = response.json.get("build_id")
             if not isinstance(build_id, str):
-                raise self._unexpected_response_error(operation="build_context")
+                raise self._unexpected_response_error(operation="build")
             return build_id
 
-        raise self._unexpected_response_error(operation="build_context")
+        raise self._unexpected_response_error(operation="build")
 
     async def list_builds(self) -> List[BuildJob]:
         response = await self.room.invoke(

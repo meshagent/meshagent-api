@@ -27,6 +27,7 @@ class Protocol:
         self._send_ch = Chan[Message]()
         self._recv_ch = Chan[Message]()
         self._done_fut = asyncio.Future[bool]()
+        self._close_reason: str | None = None
 
         self._handlers = dict[str, Callable]()
         self._main_task: None | asyncio.Task = None
@@ -52,6 +53,9 @@ class Protocol:
 
     async def wait_for_close(self):
         await asyncio.shield(self._done_fut)
+
+    def close_reason(self) -> str | None:
+        return self._close_reason
 
     @property
     def is_open(self) -> bool:
