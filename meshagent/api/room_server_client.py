@@ -466,6 +466,18 @@ class _PendingRequest:
         self.fut = asyncio.Future[dict]()
 
 
+@dataclass(frozen=True, slots=True)
+class _RoomClientTerminalState:
+    request_message: str
+    tool_call_message: str
+
+    def request_error(self) -> "RoomException":
+        return RoomException(self.request_message, code=None)
+
+    def tool_call_error(self) -> "RoomException":
+        return RoomException(self.tool_call_message, code=None)
+
+
 class LocalParticipant(Participant):
     def __init__(self, *, id: str, attributes: dict, protocol: ClientProtocol):
         super().__init__(id=id, attributes=attributes)
@@ -622,6 +634,7 @@ class RoomClient:
         self._events = {}
         self._tool_call_streams = dict[str, _ToolCallChunkStream]()
         self._close_watcher_task: Optional[asyncio.Task[None]] = None
+        self._terminal_state: _RoomClientTerminalState | None = None
 
         self.agents = AgentsClient(room=self)
         self.storage = StorageClient(room=self)
@@ -706,29 +719,75 @@ class RoomClient:
                 await self.protocol.__aexit__(None, None, None)
             raise
 
-    def _startup_close_exception(self) -> RoomException:
-        message = "room connection closed before the room became ready"
-
+    def _protocol_close_detail(self) -> str | None:
         close_reason = self.protocol.close_reason()
-        if close_reason is not None:
-            message = f"{message}: {close_reason}"
+        if close_reason is None:
+            return None
 
-        return RoomException(message)
+        normalized = close_reason.strip()
+        if normalized == "":
+            return None
+        return normalized
+
+    def _format_closed_message(self, *, base_message: str) -> str:
+        close_detail = self._protocol_close_detail()
+        if close_detail is None:
+            return base_message
+        return f"{base_message}: {close_detail}"
+
+    def _protocol_terminal_state(self) -> _RoomClientTerminalState:
+        return _RoomClientTerminalState(
+            request_message=self._format_closed_message(
+                base_message="room connection closed before request completed"
+            ),
+            tool_call_message=self._format_closed_message(
+                base_message="room connection closed before tool call completed"
+            ),
+        )
+
+    @staticmethod
+    def _client_closed_terminal_state() -> _RoomClientTerminalState:
+        return _RoomClientTerminalState(
+            request_message="room client was closed before request completed",
+            tool_call_message="room client was closed before tool call completed",
+        )
+
+    def _set_terminal_state(
+        self, *, state: _RoomClientTerminalState
+    ) -> _RoomClientTerminalState:
+        if self._terminal_state is None:
+            self._terminal_state = state
+        return self._terminal_state
+
+    def _raise_if_terminal(self) -> None:
+        state = self._terminal_state
+        if state is not None:
+            raise state.request_error()
+
+    def _startup_close_exception(self) -> RoomException:
+        return RoomException(
+            self._format_closed_message(
+                base_message="room connection closed before the room became ready"
+            ),
+            code=None,
+        )
 
     async def __aexit__(self, exc_type, exc, tb):
-        await self._fail_tool_call_streams_and_wait(
-            error=RoomException("room client was closed before tool call completed")
-        )
+        closing_state = self._client_closed_terminal_state()
+        await self._fail_pending_work(state=closing_state)
         close_watcher = self._close_watcher_task
         self._close_watcher_task = None
         if close_watcher is not None:
             close_watcher.cancel()
-        await self.sync.stop()
-        await self.messaging.stop()
-        await self.protocol.__aexit__(None, None, None)
-        if close_watcher is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await close_watcher
+        try:
+            await self.sync.stop()
+            await self.messaging.stop()
+            await self.protocol.__aexit__(None, None, None)
+        finally:
+            self._set_terminal_state(state=closing_state)
+            if close_watcher is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await close_watcher
         return
 
     @property
@@ -756,6 +815,7 @@ class RoomClient:
     async def send_request(
         self, type: str, request: dict, data: bytes | None = None
     ) -> FileContent | None | dict | str:
+        self._raise_if_terminal()
         request_id = self.protocol.next_message_id()
         logger.debug("sending request %s %s", request_id, type)
 
@@ -769,6 +829,7 @@ class RoomClient:
             creation_trace=creation_trace,
         )
         self._pending_requests[request_id] = pr
+        self._ensure_close_watcher()
 
         message = pack_message(header=request, data=data)
 
@@ -788,9 +849,16 @@ class RoomClient:
                     )
                 pending.fut.cancel()
             raise
+        except ChanClosed as ex:
+            self._pending_requests.pop(request_id, None)
+            state = self._set_terminal_state(state=self._protocol_terminal_state())
+            await self._fail_pending_work(state=state)
+            raise state.request_error() from ex
         except Exception:
             self._pending_requests.pop(request_id, None)
             raise
+        finally:
+            self._maybe_cancel_close_watcher()
 
     async def _handle_status(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -807,7 +875,8 @@ class RoomClient:
         self._room_url = init["room_url"]
         self._session_id = init["session_id"]
 
-        self._ready.set_result(True)
+        if not self._ready.done():
+            self._ready.set_result(True)
 
     async def _handle_response(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -831,6 +900,7 @@ class RoomClient:
                         request_id,
                         pr.creation_trace,
                     )
+                self._maybe_cancel_close_watcher()
                 return
 
             if isinstance(response, ErrorContent):
@@ -863,6 +933,7 @@ class RoomClient:
                     id=request_id
                 )
             )
+        self._maybe_cancel_close_watcher()
         return
 
     @property
@@ -873,7 +944,8 @@ class RoomClient:
         self._local_participant = LocalParticipant(
             id=participant_id, attributes=attributes, protocol=self.protocol
         )
-        self._local_participant_ready.set_result(True)
+        if not self._local_participant_ready.done():
+            self._local_participant_ready.set_result(True)
 
     async def _handle_participant(self, protocol, message_id, msg_type, data):
         # Decode and parse the message
@@ -886,16 +958,52 @@ class RoomClient:
             self._on_participant_init(participant_id, attributes)
 
     def _ensure_close_watcher(self) -> None:
-        if self._close_watcher_task is not None:
+        if self._close_watcher_task is not None or self._terminal_state is not None:
             return
 
-        async def watch_for_close() -> None:
-            await self.protocol.wait_for_close()
-            await self._fail_tool_call_streams_and_wait(
-                error=RoomException("room client was closed before tool call completed")
-            )
+        watcher_task: asyncio.Task[None] | None = None
 
-        self._close_watcher_task = asyncio.create_task(watch_for_close())
+        async def watch_for_close() -> None:
+            try:
+                await self.protocol.wait_for_close()
+                state = self._set_terminal_state(state=self._protocol_terminal_state())
+                await self._fail_pending_work(state=state)
+            finally:
+                if (
+                    watcher_task is not None
+                    and self._close_watcher_task is watcher_task
+                ):
+                    self._close_watcher_task = None
+
+        watcher_task = asyncio.create_task(watch_for_close())
+        self._close_watcher_task = watcher_task
+
+    def _copy_exception(self, error: BaseException) -> BaseException:
+        if isinstance(error, RoomException):
+            return RoomException(
+                str(error),
+                status_code=error.status_code,
+                code=error.code,
+            )
+        return error
+
+    def _fail_pending_requests(self, *, error: BaseException) -> None:
+        open_requests = list(self._pending_requests.values())
+        self._pending_requests.clear()
+        for request in open_requests:
+            if request.fut.done():
+                continue
+            request.fut.set_exception(self._copy_exception(error))
+
+    def _maybe_cancel_close_watcher(self) -> None:
+        close_watcher = self._close_watcher_task
+        if close_watcher is None or self._terminal_state is not None:
+            return
+        if self._pending_requests or self._tool_call_streams:
+            return
+
+        self._close_watcher_task = None
+        close_watcher.cancel()
 
     def _close_tool_call_streams(
         self, *, error: BaseException
@@ -904,7 +1012,7 @@ class RoomClient:
         self._tool_call_streams.clear()
         pending_tasks: list[asyncio.Task[Any]] = []
         for stream in open_streams:
-            stream.close_with_error(error)
+            stream.close_with_error(self._copy_exception(error))
             pending_tasks.extend(stream.pending_shutdown_tasks())
         return pending_tasks
 
@@ -915,6 +1023,10 @@ class RoomClient:
         pending_tasks = self._close_tool_call_streams(error=error)
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+    async def _fail_pending_work(self, *, state: _RoomClientTerminalState) -> None:
+        self._fail_pending_requests(error=state.request_error())
+        await self._fail_tool_call_streams_and_wait(error=state.tool_call_error())
 
     async def _handle_tool_call_response_chunk(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
@@ -970,11 +1082,7 @@ class RoomClient:
 
     def _remove_tool_call_stream(self, *, tool_call_id: str) -> None:
         self._tool_call_streams.pop(tool_call_id, None)
-        close_watcher = self._close_watcher_task
-        if close_watcher is None or self._tool_call_streams:
-            return
-        self._close_watcher_task = None
-        close_watcher.cancel()
+        self._maybe_cancel_close_watcher()
 
     def _make_tool_call_stream(
         self, *, tool_call_id: str, request_task: asyncio.Task[Content]

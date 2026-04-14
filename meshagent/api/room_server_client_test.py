@@ -67,6 +67,9 @@ class _FakeProtocol:
         self.handlers: dict[str, object] = {}
         self.entered = False
         self.exited = False
+        self.sent_messages: list[tuple[str, bytes | str, int | None]] = []
+        self.send_started = asyncio.Event()
+        self._next_message_id = 0
 
     def register_handler(self, typ: str, handler: object) -> None:
         self.handlers[typ] = handler
@@ -86,11 +89,41 @@ class _FakeProtocol:
         del exc_type, exc, tb
         self.exited = True
 
+    def next_message_id(self) -> int:
+        self._next_message_id += 1
+        return self._next_message_id
+
+    async def send(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        self.sent_messages.append((type, data, message_id))
+        self.send_started.set()
+        return -1 if message_id is None else message_id
+
     async def wait_for_close(self) -> None:
         await asyncio.Future()
 
     def close_reason(self) -> str | None:
         return None
+
+
+class _CloseableProtocol(_FakeProtocol):
+    def __init__(self, *, close_reason: str | None = None):
+        super().__init__()
+        self._close_event = asyncio.Event()
+        self._close_reason = close_reason
+
+    def close(self) -> None:
+        self._close_event.set()
+
+    async def wait_for_close(self) -> None:
+        await self._close_event.wait()
+
+    def close_reason(self) -> str | None:
+        return self._close_reason
 
 
 def test_room_exception_defaults_to_invalid_request_code() -> None:
@@ -225,14 +258,23 @@ def test_uuid_data_type_json_schema() -> None:
 
 
 class _FakeRoom:
+    _copy_exception = RoomClient._copy_exception
     _ensure_close_watcher = RoomClient._ensure_close_watcher
     _close_tool_call_streams = RoomClient._close_tool_call_streams
+    _client_closed_terminal_state = RoomClient._client_closed_terminal_state
+    _fail_pending_requests = RoomClient._fail_pending_requests
+    _fail_pending_work = RoomClient._fail_pending_work
     _fail_tool_call_streams = RoomClient._fail_tool_call_streams
     _fail_tool_call_streams_and_wait = RoomClient._fail_tool_call_streams_and_wait
     _handle_tool_call_response_chunk = RoomClient._handle_tool_call_response_chunk
+    _format_closed_message = RoomClient._format_closed_message
+    _maybe_cancel_close_watcher = RoomClient._maybe_cancel_close_watcher
+    _protocol_close_detail = RoomClient._protocol_close_detail
+    _protocol_terminal_state = RoomClient._protocol_terminal_state
     _remove_tool_call_stream = RoomClient._remove_tool_call_stream
     _make_tool_call_stream = RoomClient._make_tool_call_stream
     _send_tool_call_request_chunk = RoomClient._send_tool_call_request_chunk
+    _set_terminal_state = RoomClient._set_terminal_state
     _stream_tool_call_request_chunks = RoomClient._stream_tool_call_request_chunks
     invoke = RoomClient.invoke
     list_toolkits = RoomClient.list_toolkits
@@ -241,8 +283,10 @@ class _FakeRoom:
         self.protocol = _FakeProtocol()
         self.events: list[tuple[str, dict]] = []
         self.requests: list[tuple[str, dict, bytes | None]] = []
+        self._pending_requests = {}
         self._tool_call_streams = {}
         self._close_watcher_task = None
+        self._terminal_state = None
         self.list_toolkits_response: dict | None = None
 
     def emit(self, event_name: str, **kwargs) -> None:
@@ -552,6 +596,60 @@ async def test_room_client_exit_fails_open_tool_streams_and_cancels_close_watche
     assert protocol.exited is True
     assert client._close_watcher_task is None
     assert request_stream_task.done()
+
+
+@pytest.mark.asyncio
+async def test_send_request_fails_when_connection_closes_before_response() -> None:
+    protocol = _CloseableProtocol(close_reason="websocket closed with code 1013")
+    client = RoomClient(protocol=protocol)
+
+    request_task = asyncio.create_task(
+        client.send_request("room.ping", {"hello": "world"})
+    )
+    await asyncio.wait_for(protocol.send_started.wait(), timeout=1)
+
+    protocol.close()
+
+    with pytest.raises(
+        RoomException,
+        match=(
+            "room connection closed before request completed: "
+            "websocket closed with code 1013"
+        ),
+    ):
+        await request_task
+
+    close_watcher = client._close_watcher_task
+    if close_watcher is not None:
+        await asyncio.gather(close_watcher, return_exceptions=True)
+
+    assert client._pending_requests == {}
+    assert client._close_watcher_task is None
+
+
+@pytest.mark.asyncio
+async def test_room_client_exit_fails_pending_requests_and_cancels_close_watcher() -> (
+    None
+):
+    protocol = _CloseableProtocol()
+    client = RoomClient(protocol=protocol)
+
+    request_task = asyncio.create_task(
+        client.send_request("room.ping", {"hello": "world"})
+    )
+    await asyncio.wait_for(protocol.send_started.wait(), timeout=1)
+
+    await client.__aexit__(None, None, None)
+
+    with pytest.raises(
+        RoomException,
+        match="room client was closed before request completed",
+    ):
+        await request_task
+
+    assert client._pending_requests == {}
+    assert protocol.exited is True
+    assert client._close_watcher_task is None
 
 
 @pytest.mark.asyncio
