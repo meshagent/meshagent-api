@@ -841,7 +841,9 @@ class RoomClient:
                     close_kind=ex.kind,
                 )
                 if not retried:
-                    raise self._startup_close_exception(protocol=self._protocol_instance)
+                    raise self._startup_close_exception(
+                        protocol=self._protocol_instance
+                    )
             await self.sync.start()
             await self.messaging.start()
             self._entered = True
