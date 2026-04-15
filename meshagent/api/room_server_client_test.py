@@ -8,6 +8,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 
 import meshagent.api.room_server_client as room_server_client
@@ -634,6 +635,22 @@ class _StartupExceptionProtocol(_FakeProtocol):
     async def __aenter__(self):
         self.entered = True
         raise RuntimeError(self._message)
+
+
+class _HandshakeStatusProtocol(_FakeProtocol):
+    def __init__(self, *, status: int, message: str) -> None:
+        super().__init__()
+        self._status = status
+        self._message = message
+
+    async def __aenter__(self):
+        self.entered = True
+        raise aiohttp.ClientResponseError(
+            request_info=None,
+            history=(),
+            status=self._status,
+            message=self._message,
+        )
 
 
 class _ErrorClosingProtocol(_FakeProtocol):
@@ -1730,6 +1747,50 @@ async def test_room_client_enter_retries_transient_startup_exception() -> None:
             await room.__aexit__(None, None, None)
 
 
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (403, "Forbidden"),
+        (404, "Not Found"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_room_client_enter_does_not_retry_non_retryable_handshake_response(
+    status: int, message: str
+) -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory():
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls == 1:
+            return _HandshakeStatusProtocol(status=status, message=message)
+        return controller.protocol_factory()
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=5,
+    )
+
+    with pytest.raises(RoomException) as ex_info:
+        await room.__aenter__()
+
+    assert str(ex_info.value) == (
+        "room connection unexpectedly closed before the room became ready: "
+        f"websocket connect failed with status {status}: {message}"
+    )
+    assert protocol_factory_calls == 1
+    assert controller.protocols == []
+    assert room.is_closed is True
+    assert room.close_kind() == ProtocolCloseKind.ERROR
+    assert (
+        room.close_reason()
+        == f"websocket connect failed with status {status}: {message}"
+    )
+    await asyncio.wait_for(room.wait_for_close(), timeout=1)
+
+
 @pytest.mark.asyncio
 async def test_room_client_enter_reconnect_timeout_closes_room_after_startup_failures() -> (
     None
@@ -1768,6 +1829,57 @@ async def test_room_client_enter_reconnect_timeout_closes_room_after_startup_fai
         "room connection unexpectedly closed before request completed: "
         "room reconnect timed out after 0.1s (transient startup error)"
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        (403, "Forbidden"),
+        (404, "Not Found"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_room_client_reconnect_does_not_retry_non_retryable_handshake_response(
+    status: int, message: str
+) -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory():
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls == 1:
+            return controller.protocol_factory()
+        return _HandshakeStatusProtocol(status=status, message=message)
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=5,
+    )
+    await room.__aenter__()
+
+    try:
+        controller.protocols[0].close_unexpected(reason="transient transport error")
+
+        await asyncio.wait_for(room.wait_for_close(), timeout=1)
+
+        assert protocol_factory_calls == 2
+        assert room.is_closed is True
+        assert room.close_kind() == ProtocolCloseKind.ERROR
+        assert (
+            room.close_reason()
+            == f"websocket connect failed with status {status}: {message}"
+        )
+
+        with pytest.raises(RoomException) as ex_info:
+            await room.send_request("room.ping", {"hello": "world"})
+        assert str(ex_info.value) == (
+            "room connection unexpectedly closed before request completed: "
+            f"websocket connect failed with status {status}: {message}"
+        )
+    finally:
+        if room._entered:
+            await room.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio

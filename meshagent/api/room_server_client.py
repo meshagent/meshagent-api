@@ -871,6 +871,11 @@ class RoomClient:
                         retry_result=retry_result
                     )
             except Exception as ex:
+                non_retryable_failure = self._non_retryable_connect_failure(ex=ex)
+                if non_retryable_failure is not None:
+                    self._finalize_initial_startup_retry_failure(
+                        retry_result=non_retryable_failure
+                    )
                 if self._reconnect_timeout == 0:
                     self._close_after_unexpected_disconnect(close_reason=str(ex))
                     raise self._startup_exception(
@@ -1091,6 +1096,20 @@ class RoomClient:
             self.messaging._on_room_disconnect(reason=protocol.close_reason())
             raise
 
+    def _non_retryable_connect_failure(
+        self, *, ex: Exception
+    ) -> _ProtocolRetryResult | None:
+        if isinstance(ex, aiohttp.ClientResponseError) and ex.status in (403, 404):
+            close_reason = f"websocket connect failed with status {ex.status}"
+            if ex.message != "":
+                close_reason = f"{close_reason}: {ex.message}"
+            return _ProtocolRetryResult(
+                connected=False,
+                close_kind=ProtocolCloseKind.ERROR,
+                close_reason=close_reason,
+            )
+        return None
+
     async def _retry_protocol_connection(
         self,
         *,
@@ -1168,6 +1187,10 @@ class RoomClient:
                         close_reason=ex.reason,
                     )
             except Exception as ex:
+                non_retryable_failure = self._non_retryable_connect_failure(ex=ex)
+                if non_retryable_failure is not None:
+                    await self._close_protocol(next_protocol)
+                    return non_retryable_failure
                 record_failure_reason(str(ex))
                 logger.debug(attempt_failure_log_message, exc_info=ex)
                 await self._close_protocol(next_protocol)
