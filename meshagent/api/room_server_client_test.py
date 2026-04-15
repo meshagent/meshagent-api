@@ -614,6 +614,29 @@ class _StatusClosingProtocol(_FakeProtocol):
         return "websocket closed with code 1013"
 
 
+class _ErrorClosingProtocol(_FakeProtocol):
+    def __init__(self, *, close_reason: str) -> None:
+        super().__init__()
+        self._close_event = asyncio.Event()
+        self._close_reason = close_reason
+        self._close_kind = ProtocolCloseKind.ERROR
+
+    async def __aenter__(self):
+        await super().__aenter__()
+        asyncio.get_running_loop().call_soon(self._close_event.set)
+        self._is_open = False
+        return self
+
+    async def wait_for_close(self) -> None:
+        await self._close_event.wait()
+
+    def close_kind(self) -> ProtocolCloseKind | None:
+        return self._close_kind
+
+    def close_reason(self) -> str | None:
+        return self._close_reason
+
+
 async def _wait_until(
     predicate: Callable[[], bool], *, timeout: float = 1.0, interval: float = 0.01
 ) -> None:
@@ -1622,6 +1645,37 @@ async def test_room_client_enter_does_not_include_last_room_status_when_connecti
         ),
     ):
         await client.__aenter__()
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_retries_transient_error_close_before_ready() -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory():
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls == 1:
+            return _ErrorClosingProtocol(
+                close_reason=(
+                    "websocket closed with code 1006: Cannot write to closing transport"
+                )
+            )
+        return controller.protocol_factory()
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=0.1,
+    )
+
+    try:
+        await room.__aenter__()
+        assert protocol_factory_calls == 2
+        assert len(controller.protocols) == 1
+        assert room.is_connected is True
+    finally:
+        if room._entered:
+            await room.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio

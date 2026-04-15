@@ -834,7 +834,16 @@ class RoomClient:
 
     async def __aenter__(self):
         try:
-            await self._open_protocol(initial=True)
+            try:
+                await self._open_protocol(initial=True)
+            except _ProtocolStartupFailure as ex:
+                retried = await self._retry_initial_protocol_startup(
+                    close_kind=ex.kind,
+                )
+                if not retried:
+                    raise self._startup_close_exception(
+                        protocol=self._protocol_instance
+                    )
             await self.sync.start()
             await self.messaging.start()
             self._entered = True
@@ -964,8 +973,6 @@ class RoomClient:
             await cancel_startup_tasks()
             raise
 
-        if initial:
-            raise self._startup_close_exception(protocol=protocol)
         raise _ProtocolStartupFailure(
             kind=protocol.close_kind() or ProtocolCloseKind.ERROR,
             reason=protocol.close_reason(),
@@ -985,6 +992,80 @@ class RoomClient:
             self._mark_connected()
         finally:
             self._allow_disconnected_requests = False
+
+    async def _retry_initial_protocol_startup(
+        self,
+        *,
+        close_kind: ProtocolCloseKind,
+    ) -> bool:
+        if close_kind != ProtocolCloseKind.ERROR or self._reconnect_timeout == 0:
+            return False
+
+        deadline = None
+        if self._reconnect_timeout is not None:
+            deadline = time.monotonic() + self._reconnect_timeout
+
+        await self._close_protocol(self._protocol_instance)
+
+        first_attempt = True
+        while not self._closing:
+            if first_attempt:
+                first_attempt = False
+                if self._reconnect_timeout is None:
+                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
+            else:
+                remaining = self._remaining_reconnect_timeout(deadline=deadline)
+                if remaining is not None and remaining <= 0:
+                    return False
+
+                if remaining is None:
+                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
+                else:
+                    await asyncio.sleep(
+                        min(self._reconnect_retry_interval_seconds, remaining)
+                    )
+
+            remaining = self._remaining_reconnect_timeout(deadline=deadline)
+            if remaining is not None and remaining <= 0:
+                return False
+
+            try:
+                next_protocol = self._protocol_factory()
+            except ProtocolReconnectUnsupportedError:
+                return False
+            except Exception as ex:
+                logger.debug(
+                    "unable to create replacement room protocol during initial startup",
+                    exc_info=ex,
+                )
+                continue
+
+            current_protocol = self._protocol_instance
+            self.protocol._unbind(current_protocol)
+            self._protocol_instance = next_protocol
+            self.protocol._bind(next_protocol)
+            try:
+                if remaining is None:
+                    await self._open_protocol(initial=False)
+                else:
+                    await asyncio.wait_for(
+                        self._open_protocol(initial=False),
+                        timeout=remaining,
+                    )
+            except asyncio.TimeoutError:
+                await self._close_protocol(next_protocol)
+                return False
+            except _ProtocolStartupFailure as ex:
+                await self._close_protocol(next_protocol)
+                if ex.kind != ProtocolCloseKind.ERROR:
+                    return False
+            except Exception:
+                await self._close_protocol(next_protocol)
+                raise
+            else:
+                return True
+
+        return False
 
     def _remaining_reconnect_timeout(self, *, deadline: float | None) -> float | None:
         if deadline is None:
