@@ -194,7 +194,10 @@ class ServiceHost:
                 async def run():
                     logger.debug("service host runner started")
                     async with RoomClient(
-                        protocol=WebSocketClientProtocol(url=room_url, token=token)
+                        protocol_factory=WebSocketClientProtocol(
+                            url=room_url,
+                            token=token,
+                        ).create_factory()
                     ) as room:
                         task = asyncio.create_task(self.on_call_answered(room=room))
 

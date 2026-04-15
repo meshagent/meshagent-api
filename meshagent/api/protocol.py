@@ -1,6 +1,7 @@
 import math
 import logging
 import asyncio
+from enum import Enum
 from typing import Callable
 import inspect
 from meshagent.api.chan import Chan
@@ -12,6 +13,16 @@ def compute_packets(data: bytes) -> int:
 
 logger = logging.getLogger("protocol")
 logger.setLevel(logging.WARN)
+
+
+class ProtocolCloseKind(str, Enum):
+    CLIENT = "client"
+    SERVER = "server"
+    ERROR = "error"
+
+
+class ProtocolReconnectUnsupportedError(RuntimeError):
+    pass
 
 
 class Message:
@@ -28,6 +39,8 @@ class Protocol:
         self._recv_ch = Chan[Message]()
         self._done_fut = asyncio.Future[bool]()
         self._close_reason: str | None = None
+        self._close_kind: ProtocolCloseKind | None = None
+        self._open = False
 
         self._handlers = dict[str, Callable]()
         self._main_task: None | asyncio.Task = None
@@ -57,11 +70,52 @@ class Protocol:
     def close_reason(self) -> str | None:
         return self._close_reason
 
+    def close_kind(self) -> ProtocolCloseKind | None:
+        return self._close_kind
+
     @property
     def is_open(self) -> bool:
         return self._open
 
+    @property
+    def token(self) -> str | None:
+        return None
+
+    @property
+    def url(self) -> str | None:
+        return None
+
+    def create_factory(self):
+        protocol = self
+        used = False
+
+        def factory() -> "Protocol":
+            nonlocal used
+            if used:
+                raise ProtocolReconnectUnsupportedError(
+                    "protocol_factory was not configured for reconnecting this protocol"
+                )
+            used = True
+            return protocol
+
+        return factory
+
+    def _set_close_state(
+        self,
+        *,
+        kind: ProtocolCloseKind,
+        reason: str | None = None,
+    ) -> None:
+        if self._close_kind is None:
+            self._close_kind = kind
+        if reason is not None and self._close_reason is None:
+            self._close_reason = reason
+
     def close(self):
+        self._set_close_state(kind=ProtocolCloseKind.CLIENT)
+        self._shutdown()
+
+    def _shutdown(self):
         self._open = False
 
         if not self._send_ch.closed:
@@ -72,7 +126,7 @@ class Protocol:
 
     async def __aexit__(self, exc_type, exc, tb):
         self.close()
-        if not self._main_task.cancelled():
+        if self._main_task is not None and not self._main_task.cancelled():
             await self._main_task
 
     def unregister_handler(self, type: str, fn: Callable) -> None:
@@ -247,15 +301,11 @@ class Protocol:
 
         logger.debug("recv channel task ended")
 
-    def _shutdown(self):
-        self._send_ch.close()
-        self._recv_ch.close()
-
     def next_message_id(self):
         self._message_id += 1
         return self._message_id
 
-    async def send(
+    def send_nowait(
         self, type: str, data: bytes | str, message_id: int | None = None
     ) -> int:
         if message_id is None:
@@ -266,6 +316,11 @@ class Protocol:
             data = bytes(data, "utf-8")
         self._send_ch.send_nowait(Message(id=message_id, type=type, data=data))
         return message_id
+
+    async def send(
+        self, type: str, data: bytes | str, message_id: int | None = None
+    ) -> int:
+        return self.send_nowait(type=type, data=data, message_id=message_id)
 
     async def _main(self) -> None:
         if not self._read and not self._write:
@@ -280,9 +335,8 @@ class Protocol:
                 tasks.append(asyncio.create_task(self._send_task()))
 
             await asyncio.gather(*tasks)
-
         finally:
-            if not self._done_fut.cancelled():
+            if not self._done_fut.cancelled() and not self._done_fut.done():
                 self._done_fut.set_result(True)
 
 
@@ -324,6 +378,16 @@ class MemoryClientProtocol(ClientProtocol):
         super().__init__(token=token)
         self.input = input
         self.output = output
+
+    def create_factory(self):
+        def factory() -> ClientProtocol:
+            return MemoryClientProtocol(
+                input=self.input,
+                output=self.output,
+                token=self.token,
+            )
+
+        return factory
 
     async def send_packet(self, data: bytes):
         self.output.send_nowait(data)

@@ -5,7 +5,12 @@ import logging
 import mimetypes
 import os
 import aiohttp
-from meshagent.api.protocol import Protocol, ClientProtocol
+from meshagent.api.protocol import (
+    ClientProtocol,
+    Protocol,
+    ProtocolCloseKind,
+    ProtocolReconnectUnsupportedError,
+)
 from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
@@ -167,6 +172,12 @@ type DatabaseValue = DatabaseScalarValue | list["DatabaseValue"] | DatabaseValue
 type DatabaseRecord = dict[str, DatabaseValue]
 type DatabaseRows = list[DatabaseRecord]
 type DatabaseRowChunks = AsyncIterable[DatabaseRows] | list[DatabaseRows]
+
+
+def _completed_future() -> asyncio.Future[None]:
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(None)
+    return fut
 
 
 def _parse_database_date(value: str) -> date:
@@ -470,6 +481,7 @@ class _PendingRequest:
 class _RoomClientTerminalState:
     request_message: str
     tool_call_message: str
+    message_send_message: str
 
     def request_error(self) -> "RoomException":
         return RoomException(self.request_message, code=None)
@@ -477,19 +489,27 @@ class _RoomClientTerminalState:
     def tool_call_error(self) -> "RoomException":
         return RoomException(self.tool_call_message, code=None)
 
+    def message_send_error(self) -> "RoomException":
+        return RoomException(self.message_send_message, code=None)
+
 
 class LocalParticipant(Participant):
-    def __init__(self, *, id: str, attributes: dict, protocol: ClientProtocol):
+    def __init__(self, *, id: str, attributes: dict, room: "RoomClient"):
         super().__init__(id=id, attributes=attributes)
-        self._protocol = protocol
+        self._room = room
 
     @property
-    def protocol(self):
-        return self._protocol
+    def room(self) -> "RoomClient":
+        return self._room
 
-    async def set_attribute(self, name: str, value):
+    def _replace_identity(self, *, participant_id: str, attributes: dict) -> None:
+        self._id = participant_id
+        self._attributes = attributes.copy()
+
+    def set_attribute(self, name: str, value) -> asyncio.Future[None]:
         self._attributes[name] = value
-        await self.protocol.send("set_attributes", pack_message({name: value}))
+        self._room._send_local_attributes_nowait({name: value})
+        return _completed_future()
 
 
 class RemoteParticipant(Participant):
@@ -585,33 +605,160 @@ class _QueuedRoomMessage(RoomMessage):
         )
 
 
+class _ProtocolStartupFailure(Exception):
+    def __init__(
+        self,
+        *,
+        kind: ProtocolCloseKind,
+        reason: str | None,
+    ) -> None:
+        self.kind = kind
+        self.reason = reason
+        super().__init__(reason or kind.value)
+
+
+class _RoomProtocolProxy:
+    def __init__(self, *, room: "RoomClient") -> None:
+        self._room = room
+        self._handlers = dict[str, Callable]()
+
+    def _bind(self, protocol: Protocol) -> None:
+        for typ, handler in self._handlers.items():
+            if protocol.get_handler(typ) == handler:
+                continue
+            protocol.register_handler(typ, handler)
+
+    def _unbind(self, protocol: Protocol) -> None:
+        for typ, handler in self._handlers.items():
+            current_handler = protocol.get_handler(typ)
+            if current_handler == handler:
+                protocol.unregister_handler(typ, current_handler)
+
+    def register_handler(self, typ: str, handler: Callable) -> None:
+        if typ in self._handlers:
+            raise Exception("already registered handler for " + typ)
+        self._handlers[typ] = handler
+        self._bind(self._room._protocol_instance)
+
+    def unregister_handler(self, typ: str, handler: Callable) -> None:
+        registered_handler = self._handlers[typ]
+        assert registered_handler == handler
+        self._handlers.pop(typ)
+        current_handler = self._room._protocol_instance.get_handler(typ)
+        if current_handler == registered_handler:
+            self._room._protocol_instance.unregister_handler(typ, current_handler)
+
+    def get_handler(self, typ: str) -> Callable | None:
+        return self._handlers.get(typ)
+
+    async def send(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        protocol = self._room._protocol_instance
+        if (
+            self._room._entered
+            and not self._room.is_connected
+            and not self._room._allow_disconnected_requests
+        ):
+            raise self._room._disconnected_error(
+                base_message="room connection is disconnected"
+            )
+        return await protocol.send(type=type, data=data, message_id=message_id)
+
+    def send_nowait(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        protocol = self._room._protocol_instance
+        if (
+            self._room._entered
+            and not self._room.is_connected
+            and not self._room._allow_disconnected_requests
+        ):
+            raise self._room._disconnected_error(
+                base_message="room connection is disconnected"
+            )
+        return protocol.send_nowait(type=type, data=data, message_id=message_id)
+
+    def next_message_id(self) -> int:
+        if (
+            self._room._entered
+            and not self._room.is_connected
+            and not self._room._allow_disconnected_requests
+        ):
+            raise self._room._disconnected_error(
+                base_message="room connection is disconnected"
+            )
+        return self._room._protocol_instance.next_message_id()
+
+    async def wait_for_close(self) -> None:
+        await self._room.wait_for_close()
+
+    def close_reason(self) -> str | None:
+        return self._room.close_reason()
+
+    def close_kind(self) -> ProtocolCloseKind | None:
+        return self._room.close_kind()
+
+    @property
+    def is_open(self) -> bool:
+        return self._room._protocol_instance.is_open
+
+    @property
+    def is_closed(self) -> bool:
+        return self._room.is_closed
+
+    @property
+    def token(self) -> str | None:
+        return self._room._protocol_instance.token
+
+    @property
+    def url(self) -> str | None:
+        return self._room._protocol_instance.url
+
+
 class RoomClient:
     def __init__(
         self,
         *,
-        protocol: Optional[ClientProtocol] = None,
+        protocol_factory: Callable[[], Protocol] | None = None,
+        reconnect_timeout: float | None = None,
         session: aiohttp.ClientSession | None = None,
         oauth_token_request_handler: Optional[
             Callable[["OAuthTokenRequest"], Awaitable]
         ] = None,
     ):
-        if protocol is None:
+        if reconnect_timeout is not None and reconnect_timeout < 0:
+            raise ValueError("reconnect_timeout must be None or a non-negative number")
+
+        if protocol_factory is None:
             room_name = os.getenv("MESHAGENT_ROOM")
             token = os.getenv("MESHAGENT_TOKEN")
 
             if room_name is not None and token is not None:
-                protocol = WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room_name),
-                    token=token,
-                    session=session,
-                )
 
-        if protocol is None:
+                def protocol_factory() -> Protocol:
+                    return WebSocketClientProtocol(
+                        url=websocket_room_url(room_name=room_name),
+                        token=token,
+                        session=session,
+                    )
+
+        if protocol_factory is None:
             raise RoomException(
-                "protocol or environment variables must be configured to create a room client"
+                "protocol_factory or environment variables must be configured to create a room client"
             )
 
-        self.protocol = protocol
+        self._protocol_factory = protocol_factory
+        self._reconnect_timeout = reconnect_timeout
+        self._reconnect_retry_interval_seconds = 0.25
+        self._protocol_instance = self._protocol_factory()
+        self.protocol = _RoomProtocolProxy(room=self)
         self.protocol.register_handler("room_ready", self._handle_ready)
         self.protocol.register_handler("room.status", self._handle_status)
         self.protocol.register_handler("connected", self._handle_participant)
@@ -622,6 +769,7 @@ class RoomClient:
         )
 
         self._pending_requests = dict[int, _PendingRequest]()
+        self._ignored_response_labels = dict[int, str]()
         self._debug_pending_requests = os.getenv(
             "MESHAGENT_DEBUG_PENDING_REQUESTS", ""
         ).strip().lower() in ("1", "true", "yes", "on")
@@ -630,11 +778,20 @@ class RoomClient:
         ).strip().lower() in ("1", "true", "yes", "on")
         self._local_participant = None
         self._ready = asyncio.Future()
-        self._local_participant_ready = asyncio.Future()
+        self._connection_ready = asyncio.Future[bool]()
+        self._local_participant_ready = asyncio.Future[bool]()
         self._events = {}
         self._tool_call_streams = dict[str, _ToolCallChunkStream]()
         self._close_watcher_task: Optional[asyncio.Task[None]] = None
+        self._lifecycle_task: asyncio.Task[None] | None = None
         self._terminal_state: _RoomClientTerminalState | None = None
+        self._room_closed = asyncio.Future[None]()
+        self._entered = False
+        self._closing = False
+        self._connected = False
+        self._allow_disconnected_requests = False
+        self._close_kind: ProtocolCloseKind | None = None
+        self._close_reason: str | None = None
 
         self.agents = AgentsClient(room=self)
         self.storage = StorageClient(room=self)
@@ -660,6 +817,15 @@ class RoomClient:
             self._events[event_name] = []
         self._events[event_name].append(func)
 
+    def off(self, event_name: str, func: Callable) -> None:
+        handlers = self._events.get(event_name)
+        if handlers is None:
+            return
+        with contextlib.suppress(ValueError):
+            handlers.remove(func)
+        if len(handlers) == 0:
+            self._events.pop(event_name, None)
+
     def emit(self, event_name, **kwargs):
         """Call all handlers associated with the given event."""
         handlers = self._events.get(event_name, [])
@@ -667,28 +833,116 @@ class RoomClient:
             handler(**kwargs)
 
     async def __aenter__(self):
-        await self.protocol.__aenter__()
-
-        async def startup():
-            await self._ready
-
+        try:
+            await self._open_protocol(initial=True)
             await self.sync.start()
-
             await self.messaging.start()
+            self._entered = True
+            self._mark_connected()
+            self.messaging._on_room_reconnect()
+            self._lifecycle_task = asyncio.create_task(self._connection_lifecycle())
+            return self
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self.sync.stop()
+            with contextlib.suppress(Exception):
+                await self.messaging.stop()
+            with contextlib.suppress(Exception):
+                await self._close_protocol(self._protocol_instance)
+            raise
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def is_closed(self) -> bool:
+        return (
+            self._closing
+            or self._terminal_state is not None
+            or self._room_closed.done()
+        )
+
+    def close_kind(self) -> ProtocolCloseKind | None:
+        if self._close_kind is not None:
+            return self._close_kind
+        return self._protocol_instance.close_kind()
+
+    def close_reason(self) -> str | None:
+        if self._close_reason is not None:
+            return self._close_reason
+        return self._protocol_instance.close_reason()
+
+    async def wait_for_close(self) -> None:
+        if self._lifecycle_task is None:
+            await self._protocol_instance.wait_for_close()
+            return
+
+        await asyncio.shield(self._room_closed)
+
+    async def wait_until_connected(self) -> None:
+        while not self._connected:
+            self._raise_if_terminal()
+            if self._room_closed.done():
+                self._raise_if_terminal()
+                raise self._disconnected_error(
+                    base_message="room connection closed before reconnect completed"
+                )
+            await asyncio.sleep(0.05)
+
+    async def _wait_until_connected_for_messages(self) -> None:
+        while not self._connected:
+            self._raise_if_terminal_for_messages()
+            if self._room_closed.done():
+                self._raise_if_terminal_for_messages()
+                raise self._message_disconnected_error(
+                    base_message="room connection closed before message send completed"
+                )
+            await asyncio.sleep(0.05)
+
+    def _mark_connected(self) -> None:
+        self._connected = True
+        self._close_kind = None
+        self._close_reason = None
+
+    def _mark_disconnected(
+        self,
+        *,
+        reason: str | None,
+        kind: ProtocolCloseKind | None,
+    ) -> None:
+        self._connected = False
+        self._close_kind = kind
+        self._close_reason = self._normalize_close_reason(reason)
+        self._ignored_response_labels.clear()
+
+    async def _open_protocol(self, *, initial: bool) -> None:
+        protocol = self._protocol_instance
+        self._connection_ready = asyncio.Future[bool]()
+        self._local_participant_ready = asyncio.Future[bool]()
+        await protocol.__aenter__()
+
+        async def startup() -> None:
+            await self._connection_ready
             await self._local_participant_ready
 
-        async def closed():
-            # protect against early termination
-            await self.protocol.wait_for_close()
+        async def closed() -> None:
+            await protocol.wait_for_close()
 
         startup_task = asyncio.create_task(startup())
         close_task = asyncio.create_task(closed())
+
+        async def cancel_startup_tasks() -> None:
+            startup_task.cancel()
+            close_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await startup_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await close_task
+
         try:
             done, _ = await asyncio.wait(
-                [
-                    startup_task,
-                    close_task,
-                ],
+                [startup_task, close_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
@@ -697,51 +951,279 @@ class RoomClient:
                 close_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await close_task
-                return self
+                return
 
             await close_task
             startup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_task
-            raise self._startup_close_exception()
+        except asyncio.CancelledError:
+            await cancel_startup_tasks()
+            raise
         except Exception:
-            startup_task.cancel()
-            close_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await startup_task
-            with contextlib.suppress(asyncio.CancelledError):
-                await close_task
-            with contextlib.suppress(Exception):
-                await self.sync.stop()
-            with contextlib.suppress(Exception):
-                await self.messaging.stop()
-            with contextlib.suppress(Exception):
-                await self.protocol.__aexit__(None, None, None)
+            await cancel_startup_tasks()
             raise
 
-    def _protocol_close_detail(self) -> str | None:
-        close_reason = self.protocol.close_reason()
-        if close_reason is None:
+        if initial:
+            raise self._startup_close_exception(protocol=protocol)
+        raise _ProtocolStartupFailure(
+            kind=protocol.close_kind() or ProtocolCloseKind.ERROR,
+            reason=protocol.close_reason(),
+        )
+
+    async def _close_protocol(self, protocol: Protocol) -> None:
+        with contextlib.suppress(Exception):
+            await protocol.__aexit__(None, None, None)
+
+    async def _complete_reconnect(self) -> None:
+        await self._open_protocol(initial=False)
+        self._allow_disconnected_requests = True
+        try:
+            self._resend_local_attributes_nowait()
+            await self.sync._on_room_reconnect()
+            self.messaging._on_room_reconnect()
+            self._mark_connected()
+        finally:
+            self._allow_disconnected_requests = False
+
+    def _remaining_reconnect_timeout(self, *, deadline: float | None) -> float | None:
+        if deadline is None:
+            return None
+        return max(0.0, deadline - time.monotonic())
+
+    def _reconnect_timeout_reason(self, *, disconnect_reason: str | None) -> str:
+        if self._reconnect_timeout is None:
+            raise AssertionError("reconnect timeout reason requires a timeout value")
+        timeout_display = f"{self._reconnect_timeout:g}s"
+        normalized_disconnect_reason = self._normalize_close_reason(disconnect_reason)
+        if normalized_disconnect_reason is None:
+            return f"room reconnect timed out after {timeout_display}"
+        return (
+            f"room reconnect timed out after {timeout_display} "
+            f"({normalized_disconnect_reason})"
+        )
+
+    def _close_after_unexpected_disconnect(self, *, close_reason: str | None) -> None:
+        normalized_close_reason = self._normalize_close_reason(close_reason)
+        self._close_kind = ProtocolCloseKind.ERROR
+        self._close_reason = normalized_close_reason
+        self._set_terminal_state(
+            state=self._unexpected_close_terminal_state(
+                close_reason=normalized_close_reason
+            )
+        )
+        if not self._room_closed.done():
+            self._room_closed.set_result(None)
+
+    async def _reconnect(self, *, disconnect_reason: str | None) -> bool:
+        deadline = None
+        if self._reconnect_timeout is not None:
+            deadline = time.monotonic() + self._reconnect_timeout
+        first_attempt = True
+        while not self._closing:
+            if first_attempt:
+                first_attempt = False
+                if self._reconnect_timeout is None:
+                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
+            else:
+                remaining = self._remaining_reconnect_timeout(deadline=deadline)
+                if remaining is not None and remaining <= 0:
+                    timeout_reason = self._reconnect_timeout_reason(
+                        disconnect_reason=disconnect_reason
+                    )
+                    logger.warning("%s; closing room client", timeout_reason)
+                    self._close_after_unexpected_disconnect(close_reason=timeout_reason)
+                    return False
+                if remaining is None:
+                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
+                elif remaining > 0:
+                    await asyncio.sleep(
+                        min(self._reconnect_retry_interval_seconds, remaining)
+                    )
+
+            remaining = self._remaining_reconnect_timeout(deadline=deadline)
+            if remaining is not None and remaining <= 0:
+                timeout_reason = self._reconnect_timeout_reason(
+                    disconnect_reason=disconnect_reason
+                )
+                logger.warning("%s; closing room client", timeout_reason)
+                self._close_after_unexpected_disconnect(close_reason=timeout_reason)
+                return False
+
+            try:
+                next_protocol = self._protocol_factory()
+            except ProtocolReconnectUnsupportedError:
+                self._close_after_unexpected_disconnect(close_reason=disconnect_reason)
+                return False
+            except Exception as ex:
+                logger.debug("unable to create replacement room protocol", exc_info=ex)
+                next_protocol = None
+            if next_protocol is not None:
+                current_protocol = self._protocol_instance
+                self.protocol._unbind(current_protocol)
+                self._protocol_instance = next_protocol
+                self.protocol._bind(next_protocol)
+                reconnect_task = asyncio.create_task(self._complete_reconnect())
+                try:
+                    if remaining is None:
+                        await reconnect_task
+                    else:
+                        await asyncio.wait_for(reconnect_task, timeout=remaining)
+                except asyncio.TimeoutError:
+                    reconnect_task.cancel()
+                    await asyncio.gather(reconnect_task, return_exceptions=True)
+                    self._allow_disconnected_requests = False
+                    await self._close_protocol(next_protocol)
+                    await self.sync._on_room_disconnect()
+                    self.messaging._on_room_disconnect(
+                        reason=next_protocol.close_reason()
+                    )
+                    timeout_reason = self._reconnect_timeout_reason(
+                        disconnect_reason=disconnect_reason
+                    )
+                    logger.warning("%s; closing room client", timeout_reason)
+                    self._close_after_unexpected_disconnect(close_reason=timeout_reason)
+                    return False
+                except _ProtocolStartupFailure as ex:
+                    await self._close_protocol(next_protocol)
+                    if ex.kind == ProtocolCloseKind.ERROR:
+                        next_protocol = None
+                    else:
+                        self._set_terminal_state(
+                            state=self._protocol_terminal_state(protocol=next_protocol)
+                        )
+                        self._close_kind = ex.kind
+                        self._close_reason = self._normalize_close_reason(ex.reason)
+                        if not self._room_closed.done():
+                            self._room_closed.set_result(None)
+                        return False
+                except Exception as ex:
+                    logger.debug("room reconnect attempt failed", exc_info=ex)
+                    self._allow_disconnected_requests = False
+                    await self._close_protocol(next_protocol)
+                    await self.sync._on_room_disconnect()
+                    self.messaging._on_room_disconnect(
+                        reason=next_protocol.close_reason()
+                    )
+                    next_protocol = None
+                else:
+                    self.emit(
+                        "room.status",
+                        status="reconnected",
+                        message="room connection restored",
+                    )
+                    self.emit("reconnected")
+                    return True
+
+        return False
+
+    async def _connection_lifecycle(self) -> None:
+        while True:
+            protocol = self._protocol_instance
+            await protocol.wait_for_close()
+            close_kind = protocol.close_kind() or ProtocolCloseKind.ERROR
+            close_reason = protocol.close_reason()
+            state = self._protocol_terminal_state(protocol=protocol)
+
+            if self._closing:
+                if not self._room_closed.done():
+                    self._room_closed.set_result(None)
+                return
+
+            if close_kind != ProtocolCloseKind.ERROR:
+                self._set_terminal_state(state=state)
+
+            self._mark_disconnected(reason=close_reason, kind=close_kind)
+            self.emit(
+                "room.status",
+                status="disconnected",
+                message=close_reason or "room connection lost",
+            )
+            self.emit("disconnected", reason=close_reason)
+            await self.sync._on_room_disconnect()
+            self.messaging._on_room_disconnect(reason=close_reason)
+            await self._fail_pending_work(state=state)
+            await self._close_protocol(protocol)
+
+            if close_kind == ProtocolCloseKind.ERROR:
+                if self._reconnect_timeout == 0:
+                    if close_reason is None:
+                        logger.warning(
+                            "room connection lost; automatic reconnect disabled"
+                        )
+                    else:
+                        logger.warning(
+                            "room connection lost (%s); automatic reconnect disabled",
+                            close_reason,
+                        )
+                    self._close_after_unexpected_disconnect(close_reason=close_reason)
+                else:
+                    if close_reason is None:
+                        logger.warning(
+                            "room connection lost; automatically attempting to reconnect"
+                        )
+                    else:
+                        logger.warning(
+                            "room connection lost (%s); automatically attempting to reconnect",
+                            close_reason,
+                        )
+                if self._reconnect_timeout != 0 and await self._reconnect(
+                    disconnect_reason=close_reason
+                ):
+                    continue
+                return
+
+            self._close_kind = close_kind
+            self._close_reason = close_reason
+            if not self._room_closed.done():
+                self._room_closed.set_result(None)
+            return
+
+    @staticmethod
+    def _normalize_close_reason(reason: str | None) -> str | None:
+        if reason is None:
             return None
 
-        normalized = close_reason.strip()
+        normalized = reason.strip()
         if normalized == "":
             return None
         return normalized
 
-    def _format_closed_message(self, *, base_message: str) -> str:
-        close_detail = self._protocol_close_detail()
+    def _protocol_close_detail(self, *, protocol: Protocol | None = None) -> str | None:
+        close_reason = (
+            self._protocol_instance if protocol is None else protocol
+        ).close_reason()
+        return self._normalize_close_reason(close_reason)
+
+    def _format_closed_message(
+        self,
+        *,
+        base_message: str,
+        protocol: Protocol | None = None,
+        close_reason: str | None = None,
+    ) -> str:
+        close_detail = self._normalize_close_reason(close_reason)
+        if close_detail is None:
+            close_detail = self._protocol_close_detail(protocol=protocol)
         if close_detail is None:
             return base_message
         return f"{base_message}: {close_detail}"
 
-    def _protocol_terminal_state(self) -> _RoomClientTerminalState:
+    def _protocol_terminal_state(
+        self, *, protocol: Protocol | None = None
+    ) -> _RoomClientTerminalState:
         return _RoomClientTerminalState(
             request_message=self._format_closed_message(
-                base_message="room connection closed before request completed"
+                base_message="room connection closed before request completed",
+                protocol=protocol,
             ),
             tool_call_message=self._format_closed_message(
-                base_message="room connection closed before tool call completed"
+                base_message="room connection closed before tool call completed",
+                protocol=protocol,
+            ),
+            message_send_message=self._format_closed_message(
+                base_message="room connection closed before message send completed",
+                protocol=protocol,
             ),
         )
 
@@ -750,6 +1232,25 @@ class RoomClient:
         return _RoomClientTerminalState(
             request_message="room client was closed before request completed",
             tool_call_message="room client was closed before tool call completed",
+            message_send_message="room client was closed before message send completed",
+        )
+
+    def _unexpected_close_terminal_state(
+        self, *, close_reason: str | None
+    ) -> _RoomClientTerminalState:
+        return _RoomClientTerminalState(
+            request_message=self._format_closed_message(
+                base_message="room connection unexpectedly closed before request completed",
+                close_reason=close_reason,
+            ),
+            tool_call_message=self._format_closed_message(
+                base_message="room connection unexpectedly closed before tool call completed",
+                close_reason=close_reason,
+            ),
+            message_send_message=self._format_closed_message(
+                base_message="room connection unexpectedly closed before message send completed",
+                close_reason=close_reason,
+            ),
         )
 
     def _set_terminal_state(
@@ -764,27 +1265,67 @@ class RoomClient:
         if state is not None:
             raise state.request_error()
 
-    def _startup_close_exception(self) -> RoomException:
+    def _raise_if_terminal_for_messages(self) -> None:
+        state = self._terminal_state
+        if state is not None:
+            raise state.message_send_error()
+
+    def _disconnected_error(self, *, base_message: str) -> RoomException:
+        return RoomException(
+            self._format_closed_message(base_message=base_message),
+            code=ErrorCode.INVALID_STATE,
+        )
+
+    def _message_disconnected_error(self, *, base_message: str) -> RoomException:
+        return RoomException(
+            self._format_closed_message(base_message=base_message),
+            code=ErrorCode.INVALID_STATE,
+        )
+
+    def _coerce_message_send_error(self, error: RoomException) -> RoomException:
+        state = self._terminal_state
+        if state is None or str(error) not in (
+            state.request_message,
+            state.tool_call_message,
+        ):
+            return error
+        return state.message_send_error()
+
+    def _startup_close_exception(self, *, protocol: Protocol) -> RoomException:
         return RoomException(
             self._format_closed_message(
-                base_message="room connection closed before the room became ready"
+                base_message="room connection closed before the room became ready",
+                protocol=protocol,
             ),
             code=None,
         )
 
     async def __aexit__(self, exc_type, exc, tb):
+        del exc_type, exc, tb
+        self._closing = True
+        self._mark_disconnected(
+            reason=self.close_reason(),
+            kind=self.close_kind() or ProtocolCloseKind.CLIENT,
+        )
         closing_state = self._client_closed_terminal_state()
+        self._set_terminal_state(state=closing_state)
         await self._fail_pending_work(state=closing_state)
         close_watcher = self._close_watcher_task
         self._close_watcher_task = None
         if close_watcher is not None:
             close_watcher.cancel()
         try:
+            await self._close_protocol(self._protocol_instance)
+            lifecycle_task = self._lifecycle_task
+            if lifecycle_task is not None:
+                await asyncio.gather(lifecycle_task, return_exceptions=True)
             await self.sync.stop()
             await self.messaging.stop()
-            await self.protocol.__aexit__(None, None, None)
         finally:
-            self._set_terminal_state(state=closing_state)
+            self._lifecycle_task = None
+            self._entered = False
+            if not self._room_closed.done():
+                self._room_closed.set_result(None)
             if close_watcher is not None:
                 with contextlib.suppress(asyncio.CancelledError):
                     await close_watcher
@@ -811,12 +1352,139 @@ class RoomClient:
 
         return self._room_name
 
+    def _send_protocol_nowait(
+        self,
+        *,
+        type: str,
+        data: bytes | str,
+        label: str,
+        message_id: int | None = None,
+        expect_response: bool = False,
+    ) -> int | None:
+        try:
+            self._raise_if_terminal()
+        except RoomException as ex:
+            logger.debug("skipping %s because the room is closed", label, exc_info=ex)
+            return None
+
+        if (
+            self._entered
+            and not self._connected
+            and not self._allow_disconnected_requests
+        ):
+            logger.debug("skipping %s while room is disconnected", label)
+            return None
+
+        protocol = self._protocol_instance
+        resolved_message_id = message_id
+        if resolved_message_id is None:
+            resolved_message_id = protocol.next_message_id()
+
+        if expect_response:
+            self._ignored_response_labels[resolved_message_id] = label
+
+        try:
+            protocol.send_nowait(
+                type=type,
+                data=data,
+                message_id=resolved_message_id,
+            )
+        except Exception as ex:
+            self._ignored_response_labels.pop(resolved_message_id, None)
+            if self.is_closed or isinstance(ex, ChanClosed):
+                logger.debug(
+                    "skipping %s because the room is closed",
+                    label,
+                    exc_info=ex,
+                )
+            else:
+                logger.warning("unable to queue %s", label, exc_info=ex)
+            return None
+
+        return resolved_message_id
+
+    def _send_room_request_nowait(
+        self,
+        type: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        label: str,
+        expect_response: bool = False,
+    ) -> int | None:
+        return self._send_protocol_nowait(
+            type=type,
+            data=pack_message(header=request, data=data),
+            label=label,
+            expect_response=expect_response,
+        )
+
+    def invoke_nowait(
+        self,
+        *,
+        toolkit: str,
+        tool: str,
+        input: str | dict | Content | None = None,
+        participant_id: Optional[str] = None,
+        on_behalf_of_id: Optional[str] = None,
+        caller_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if input is None:
+            input = EmptyContent()
+
+        if isinstance(input, AsyncIterable):
+            raise RoomException("invoke_nowait does not support streamed tool inputs")
+
+        input_content = ensure_content(input)
+        request_header, invoke_data = pack_request_parts(input_content)
+        request_payload: Dict[str, Any] = {
+            "toolkit": toolkit,
+            "tool": tool,
+            "participant_id": participant_id,
+            "on_behalf_of_id": on_behalf_of_id,
+            "arguments": request_header,
+            "tool_call_id": uuid.uuid4().hex,
+        }
+        if caller_context is not None:
+            request_payload["caller_context"] = caller_context
+
+        self._send_room_request_nowait(
+            "room.invoke_tool",
+            request_payload,
+            invoke_data,
+            label=f"{toolkit}.{tool}",
+            expect_response=True,
+        )
+
+    def _send_local_attributes_nowait(self, attributes: dict[str, Any]) -> None:
+        self._send_protocol_nowait(
+            type="set_attributes",
+            data=pack_message(attributes),
+            label="local participant attribute update",
+        )
+
+    def _resend_local_attributes_nowait(self) -> None:
+        local_participant = self._local_participant
+        if local_participant is None or len(local_participant.attributes) == 0:
+            return
+        self._send_local_attributes_nowait(local_participant.attributes)
+
     # send a request, optionally with a binary trailer
     async def send_request(
         self, type: str, request: dict, data: bytes | None = None
     ) -> FileContent | None | dict | str:
         self._raise_if_terminal()
-        request_id = self.protocol.next_message_id()
+        if (
+            self._entered
+            and not self._connected
+            and not self._allow_disconnected_requests
+        ):
+            raise self._disconnected_error(
+                base_message="room connection is disconnected"
+            )
+
+        protocol = self._protocol_instance
+        request_id = protocol.next_message_id()
         logger.debug("sending request %s %s", request_id, type)
 
         creation_trace = None
@@ -834,7 +1502,7 @@ class RoomClient:
         message = pack_message(header=request, data=data)
 
         try:
-            await self.protocol.send(type=type, data=message, message_id=request_id)
+            await protocol.send(type=type, data=message, message_id=request_id)
             result = await pr.fut
             logger.debug("returning response %s", type)
             return result
@@ -851,7 +1519,14 @@ class RoomClient:
             raise
         except ChanClosed as ex:
             self._pending_requests.pop(request_id, None)
-            state = self._set_terminal_state(state=self._protocol_terminal_state())
+            if self._entered:
+                raise self._disconnected_error(
+                    base_message="room connection closed before request completed"
+                ) from ex
+
+            state = self._set_terminal_state(
+                state=self._protocol_terminal_state(protocol=protocol)
+            )
             await self._fail_pending_work(state=state)
             raise state.request_error() from ex
         except Exception:
@@ -863,12 +1538,16 @@ class RoomClient:
     async def _handle_status(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
+        if protocol is not self._protocol_instance:
+            return
         init, _ = unpack_message(data)
         self.emit("room.status", **init)
 
     async def _handle_ready(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
+        if protocol is not self._protocol_instance:
+            return
         init, _ = unpack_message(data)
 
         self._room_name = init["room_name"]
@@ -877,10 +1556,14 @@ class RoomClient:
 
         if not self._ready.done():
             self._ready.set_result(True)
+        if not self._connection_ready.done():
+            self._connection_ready.set_result(True)
 
     async def _handle_response(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
+        if protocol is not self._protocol_instance:
+            return
         response = unpack_content(data=data)
 
         request_id = message_id
@@ -927,6 +1610,14 @@ class RoomClient:
                         pr.fut.cancelled(),
                         exc_info=ex,
                     )
+        elif request_id in self._ignored_response_labels:
+            label = self._ignored_response_labels.pop(request_id)
+            if isinstance(response, ErrorContent):
+                logger.warning(
+                    "one-way room request failed for %s: %s",
+                    label,
+                    response.text,
+                )
         else:
             logger.debug(
                 "received a response for a request that is not pending {id}".format(
@@ -941,13 +1632,25 @@ class RoomClient:
         return self._local_participant
 
     def _on_participant_init(self, participant_id: str, attributes: dict):
-        self._local_participant = LocalParticipant(
-            id=participant_id, attributes=attributes, protocol=self.protocol
-        )
+        if self._local_participant is None:
+            self._local_participant = LocalParticipant(
+                id=participant_id,
+                attributes=attributes,
+                room=self,
+            )
+        else:
+            merged_attributes = attributes.copy()
+            merged_attributes.update(self._local_participant.attributes)
+            self._local_participant._replace_identity(
+                participant_id=participant_id,
+                attributes=merged_attributes,
+            )
         if not self._local_participant_ready.done():
             self._local_participant_ready.set_result(True)
 
     async def _handle_participant(self, protocol, message_id, msg_type, data):
+        if protocol is not self._protocol_instance:
+            return
         # Decode and parse the message
         message, _ = unpack_message(data)
         type = message["type"]
@@ -958,6 +1661,8 @@ class RoomClient:
             self._on_participant_init(participant_id, attributes)
 
     def _ensure_close_watcher(self) -> None:
+        if self._lifecycle_task is not None:
+            return
         if self._close_watcher_task is not None or self._terminal_state is not None:
             return
 
@@ -965,8 +1670,11 @@ class RoomClient:
 
         async def watch_for_close() -> None:
             try:
-                await self.protocol.wait_for_close()
-                state = self._set_terminal_state(state=self._protocol_terminal_state())
+                protocol = self._protocol_instance
+                await protocol.wait_for_close()
+                state = self._set_terminal_state(
+                    state=self._protocol_terminal_state(protocol=protocol)
+                )
                 await self._fail_pending_work(state=state)
             finally:
                 if (
@@ -1031,7 +1739,8 @@ class RoomClient:
     async def _handle_tool_call_response_chunk(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
     ) -> None:
-        del protocol
+        if protocol is not self._protocol_instance:
+            return
         del message_id
         del typ
         header, payload = unpack_message(data)
@@ -1499,6 +2208,13 @@ class _SyncOpenStreamState:
             await self._task
 
 
+@dataclass(frozen=True, slots=True)
+class _SyncOpenDocumentConfig:
+    create: bool
+    schema: dict[str, Any] | None
+    schema_path: str | None
+
+
 class SyncClient:
     def __init__(self, *, room: RoomClient):
         self.room = room
@@ -1507,6 +2223,8 @@ class SyncClient:
             str, asyncio.Future[_RefCount[MeshDocument]]
         ]()
         self._document_streams = dict[str, _SyncOpenStreamState]()
+        self._document_configs = dict[str, _SyncOpenDocumentConfig]()
+        self._reconnect_base_vectors = dict[str, bytes]()
         self._started = False
 
     @staticmethod
@@ -1544,6 +2262,7 @@ class SyncClient:
                 await self.close(path=path)
             except Exception as ex:
                 logger.debug("sync stream close failed for %s", path, exc_info=ex)
+        self._reconnect_base_vectors.clear()
         self._started = False
 
     async def _invoke(
@@ -1621,56 +2340,33 @@ class SyncClient:
 
         connecting_fut.add_done_callback(_consume_exception)
         self._connecting_documents[path] = connecting_fut
-
-        # if locally cached, can send state vector
-        # vec = doc.get_state_vector()
-        # "vector": base64.standard_b64encode(vec).decode("utf-8")
         try:
-            stream_state = _SyncOpenStreamState(
-                path=path,
+            config = _SyncOpenDocumentConfig(
                 create=create,
-                vector=None,
                 schema=None if schema is None else schema.to_json(),
                 schema_path=None,
+            )
+            (
+                stream_state,
+                response_stream,
+                state_headers,
+                first_chunk,
+            ) = await self._open_stream(
+                path=path,
+                config=config,
+                vector=None,
                 initial_json=initial_json,
             )
-            response = await self._invoke(
-                operation="open",
-                input=stream_state.input_stream(),
-            )
-            if isinstance(response, Content):
-                raise self._unexpected_response_error(operation="open")
-
-            response_stream = response.__aiter__()
-            try:
-                first_chunk = await response_stream.__anext__()
-            except StopAsyncIteration as exc:
-                raise RoomException(
-                    "sync.open stream closed before the initial document state was returned",
-                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-                ) from exc
-
-            if isinstance(first_chunk, ErrorContent):
-                raise RoomException(first_chunk.text, code=first_chunk.code)
-            if not isinstance(first_chunk, BinaryContent):
-                raise self._unexpected_response_error(operation="open")
-
-            try:
-                state_headers = _SyncOpenStateChunkHeaders.model_validate(
-                    first_chunk.headers
-                )
-            except ValidationError as exc:
-                raise self._unexpected_response_error(operation="open") from exc
-
-            if _normalize_sync_path(state_headers.path) != path:
-                raise RoomException(
-                    "sync.open stream returned a mismatched path",
-                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-                )
 
             def publish_sync(base64: str) -> None:
+                current_stream = self._document_streams.get(path)
+                if current_stream is None:
+                    logger.debug(
+                        "dropping sync for disconnected document stream %s", path
+                    )
+                    return
                 try:
-                    stream_state.queue_sync(data=base64.encode("utf-8"))
+                    current_stream.queue_sync(data=base64.encode("utf-8"))
                 except Exception as ex:
                     logger.debug(
                         "dropping sync for closed document stream %s",
@@ -1686,17 +2382,15 @@ class SyncClient:
 
             ref = _RefCount(doc)
             self._connected_documents[path] = ref
+            self._document_configs[path] = config
             self._document_streams[path] = stream_state
+            self._reconnect_base_vectors.pop(path, None)
             self._apply_sync_payload(doc=ref, payload=first_chunk.data)
-            stream_state.attach_task(
-                asyncio.create_task(
-                    self._consume_open_stream(
-                        path=path,
-                        doc=ref,
-                        response_stream=response_stream,
-                        stream_state=stream_state,
-                    )
-                )
+            self._attach_stream_consumer(
+                path=path,
+                doc=ref,
+                stream_state=stream_state,
+                response_stream=response_stream,
             )
             connecting_fut.set_result(ref)
             self._connecting_documents.pop(path)
@@ -1728,6 +2422,8 @@ class SyncClient:
         ref.count = ref.count - 1
         if ref.count == 0:
             doc = self._connected_documents.pop(path)
+            self._document_configs.pop(path, None)
+            self._reconnect_base_vectors.pop(path, None)
             stream_state = self._document_streams.pop(path, None)
             if stream_state is not None:
                 stream_state.close_input_stream()
@@ -1791,6 +2487,127 @@ class SyncClient:
                     pass
         finally:
             stream_state.close_input_stream()
+
+    async def _open_stream(
+        self,
+        *,
+        path: str,
+        config: _SyncOpenDocumentConfig,
+        vector: str | None,
+        initial_json: dict[str, Any] | None,
+    ) -> tuple[
+        _SyncOpenStreamState,
+        AsyncIterator[Content],
+        _SyncOpenStateChunkHeaders,
+        BinaryContent,
+    ]:
+        stream_state = _SyncOpenStreamState(
+            path=path,
+            create=config.create,
+            vector=vector,
+            schema=config.schema,
+            schema_path=config.schema_path,
+            initial_json=initial_json,
+        )
+        try:
+            response = await self._invoke(
+                operation="open",
+                input=stream_state.input_stream(),
+            )
+            if isinstance(response, Content):
+                raise self._unexpected_response_error(operation="open")
+
+            response_stream = response.__aiter__()
+            try:
+                first_chunk = await response_stream.__anext__()
+            except StopAsyncIteration as exc:
+                raise RoomException(
+                    "sync.open stream closed before the initial document state was returned",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                ) from exc
+
+            if isinstance(first_chunk, ErrorContent):
+                raise RoomException(first_chunk.text, code=first_chunk.code)
+            if not isinstance(first_chunk, BinaryContent):
+                raise self._unexpected_response_error(operation="open")
+
+            try:
+                state_headers = _SyncOpenStateChunkHeaders.model_validate(
+                    first_chunk.headers
+                )
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="open") from exc
+
+            if _normalize_sync_path(state_headers.path) != path:
+                raise RoomException(
+                    "sync.open stream returned a mismatched path",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+
+            return stream_state, response_stream, state_headers, first_chunk
+        except Exception:
+            stream_state.close_input_stream()
+            raise
+
+    def _attach_stream_consumer(
+        self,
+        *,
+        path: str,
+        doc: _RefCount[MeshDocument],
+        stream_state: _SyncOpenStreamState,
+        response_stream: AsyncIterator[Content],
+    ) -> None:
+        stream_state.attach_task(
+            asyncio.create_task(
+                self._consume_open_stream(
+                    path=path,
+                    doc=doc,
+                    response_stream=response_stream,
+                    stream_state=stream_state,
+                )
+            )
+        )
+
+    async def _on_room_disconnect(self) -> None:
+        for path, ref in self._connected_documents.items():
+            self._reconnect_base_vectors.setdefault(path, ref.ref.get_state_vector())
+        open_streams = list(self._document_streams.values())
+        self._document_streams.clear()
+        for stream_state in open_streams:
+            stream_state.close_input_stream()
+
+    async def _on_room_reconnect(self) -> None:
+        for path, ref in list(self._connected_documents.items()):
+            config = self._document_configs.get(path)
+            if config is None:
+                continue
+
+            reconnect_base_vector = self._reconnect_base_vectors.pop(path, None)
+            reconnect_sync_payload: bytes | None = None
+            if reconnect_base_vector is not None:
+                reconnect_state = ref.ref.get_state(vector=reconnect_base_vector)
+                if reconnect_state:
+                    reconnect_sync_payload = base64.standard_b64encode(reconnect_state)
+
+            vector = base64.standard_b64encode(ref.ref.get_state_vector()).decode(
+                "utf-8"
+            )
+            stream_state, response_stream, _, first_chunk = await self._open_stream(
+                path=path,
+                config=config,
+                vector=vector,
+                initial_json=None,
+            )
+            self._document_streams[path] = stream_state
+            self._apply_sync_payload(doc=ref, payload=first_chunk.data)
+            if reconnect_sync_payload is not None:
+                stream_state.queue_sync(data=reconnect_sync_payload)
+            self._attach_stream_consumer(
+                path=path,
+                doc=ref,
+                stream_state=stream_state,
+                response_stream=response_stream,
+            )
 
     async def _handle_sync(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -3084,8 +3901,10 @@ class MessagingClient:
         self._events = {}
         room.protocol.register_handler("messaging.send", self._handle_message_send)
         self._message_queue = Chan[_QueuedRoomMessage]()
-        self._send_task = None
-        self._enabled = False
+        self._send_task: asyncio.Task[None] | None = None
+        self._desired_enabled = False
+        self._online = False
+        self._enable_in_flight = False
 
     @staticmethod
     def _message_json(message: dict) -> str:
@@ -3104,6 +3923,13 @@ class MessagingClient:
             input=input,
         )
 
+    def _invoke_nowait(self, *, operation: str, input: dict) -> None:
+        self.room.invoke_nowait(
+            toolkit="messaging",
+            tool=operation,
+            input=input,
+        )
+
     @property
     def remote_participants(self) -> list[RemoteParticipant]:
         """
@@ -3113,7 +3939,11 @@ class MessagingClient:
 
     @property
     def is_enabled(self) -> bool:
-        return self._enabled
+        return self._desired_enabled
+
+    @property
+    def online(self) -> bool:
+        return self._online
 
     #
     def on(self, event_name: str, func: Callable):
@@ -3161,6 +3991,16 @@ class MessagingClient:
         if msg.fut is not None and not msg.fut.done():
             msg.fut.set_exception(error)
 
+    def _drain_queued_messages(self, *, error: RoomException) -> None:
+        while True:
+            try:
+                queued = self._message_queue.recv_nowait()
+            except ChanClosed:
+                return
+            except Exception:
+                return
+            self._drop_queued_message(msg=queued, error=error)
+
     def _remove_participant(self, participant_id: str) -> RemoteParticipant | None:
         part = self._participants.pop(participant_id, None)
         if part is None:
@@ -3198,17 +4038,25 @@ class MessagingClient:
 
         return current
 
-    async def enable(self):
-        await self._invoke(operation="enable", input={})
-        self._enabled = True
+    def enable(self) -> asyncio.Future[None]:
+        self._desired_enabled = True
+        if self.room.is_connected:
+            self._enable_current_connection_nowait()
+        return _completed_future()
 
-    async def disable(self):
-        await self._invoke(operation="disable", input={})
-        self._enabled = False
+    def disable(self) -> asyncio.Future[None]:
+        was_online = self._online
+        self._desired_enabled = False
+        self._clear_current_connection_state()
+        if self.room.is_connected and was_online:
+            self._invoke_nowait(operation="disable", input={})
+        return _completed_future()
 
     async def _handle_message_send(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
     ) -> None:
+        if protocol is not self.room._protocol_instance:
+            return
         header, payload = unpack_message(data)
 
         message = RoomMessage(
@@ -3230,16 +4078,79 @@ class MessagingClient:
             self.emit("message", message=message)
 
     async def start(self):
+        if self._send_task is not None:
+            return
         self._send_task = asyncio.create_task(self._send_messages())
+        if self._desired_enabled and self.room.is_connected:
+            self._enable_current_connection_nowait()
 
     async def stop(self):
+        if self.room._closing and self.room._terminal_state is not None:
+            self._drain_queued_messages(
+                error=self.room._terminal_state.message_send_error()
+            )
+        else:
+            self._drain_queued_messages(
+                error=RoomException(
+                    "Cannot send messages because messaging has been stopped",
+                    code=ErrorCode.INVALID_STATE,
+                )
+            )
         self._message_queue.close()
         if self._send_task is not None:
-            await asyncio.gather(self._send_task)
-        self._enabled = False
+            await asyncio.gather(self._send_task, return_exceptions=True)
+        self._send_task = None
+        self._desired_enabled = False
+        self._clear_current_connection_state()
+
+    async def _wait_until_online(self) -> None:
+        while not self._online:
+            if (
+                not self.room.is_connected
+                and not self.room._allow_disconnected_requests
+            ):
+                await self.room._wait_until_connected_for_messages()
+                continue
+            self.room._raise_if_terminal_for_messages()
+            await asyncio.sleep(0.05)
+
+    def _set_online(self, online: bool) -> None:
+        if self._online == online:
+            return
+        self._online = online
+        self.emit("state", online=online)
+        self.emit("online" if online else "offline")
+
+    def _enable_current_connection_nowait(self) -> None:
+        if self._online or self._enable_in_flight:
+            return
+        self._enable_in_flight = True
+        self._invoke_nowait(operation="enable", input={})
+
+    def _clear_current_connection_state(self) -> None:
+        self._enable_in_flight = False
+        self._set_online(False)
+        for participant_id in list(self._participants.keys()):
+            self._remove_participant(participant_id)
+
+    def _on_room_disconnect(self, *, reason: str | None) -> None:
+        self._clear_current_connection_state()
+
+    def _on_room_reconnect(self) -> None:
+        if self._desired_enabled:
+            self._enable_current_connection_nowait()
 
     async def _send_messages(self):
         async for msg in self._message_queue:
+            try:
+                await self.room._wait_until_connected_for_messages()
+                if self._desired_enabled:
+                    await self._wait_until_online()
+            except RoomException as ex:
+                self._drop_queued_message(msg=msg, error=ex)
+                self._drain_queued_messages(error=ex)
+                return
+
             resolved_to = self._resolve_message_recipient(msg.to)
             if resolved_to is None:
                 self._drop_queued_message(
@@ -3267,6 +4178,7 @@ class MessagingClient:
                 raise
 
             except RoomException as ex:
+                ex = self.room._coerce_message_send_error(ex)
                 if ex.code == ErrorCode.NOT_FOUND:
                     self._mark_participant_offline(msg.to)
                     if msg.drop_if_offline:
@@ -3295,16 +4207,22 @@ class MessagingClient:
                 "Cannot send messages because messaging has not been started"
             )
 
-        self._message_queue.send_nowait(
-            _QueuedRoomMessage(
-                from_participant_id=self.room.local_participant.id,
-                to=to,
-                type=type,
-                message=message,
-                attachment=attachment,
-                drop_if_offline=True,
+        try:
+            self._message_queue.send_nowait(
+                _QueuedRoomMessage(
+                    from_participant_id=self.room.local_participant.id,
+                    to=to,
+                    type=type,
+                    message=message,
+                    attachment=attachment,
+                    drop_if_offline=True,
+                )
             )
-        )
+        except ChanClosed as ex:
+            raise RoomException(
+                "Cannot send messages because messaging has been stopped",
+                code=ErrorCode.INVALID_STATE,
+            ) from ex
 
     async def send_message(
         self,
@@ -3328,7 +4246,13 @@ class MessagingClient:
             drop_if_offline=False,
         )
 
-        self._message_queue.send_nowait(msg)
+        try:
+            self._message_queue.send_nowait(msg)
+        except ChanClosed as ex:
+            raise RoomException(
+                "Cannot send messages because messaging has been stopped",
+                code=ErrorCode.INVALID_STATE,
+            ) from ex
 
         if msg.fut is None:
             raise RoomException("queued messaging future was not created")
@@ -3338,14 +4262,20 @@ class MessagingClient:
     async def broadcast_message(
         self, *, type: str, message: dict, attachment: Optional[bytes] = None
     ):
-        await self._invoke(
-            operation="broadcast",
-            input={
-                "type": type,
-                "message_json": self._message_json(message),
-                "attachment_base64": self._attachment_base64(attachment),
-            },
-        )
+        await self.room._wait_until_connected_for_messages()
+        if self._desired_enabled:
+            await self._wait_until_online()
+        try:
+            await self._invoke(
+                operation="broadcast",
+                input={
+                    "type": type,
+                    "message_json": self._message_json(message),
+                    "attachment_base64": self._attachment_base64(attachment),
+                },
+            )
+        except RoomException as ex:
+            raise self.room._coerce_message_send_error(ex) from ex
 
     def _on_participant_enabled(self, message: RoomMessage):
         data = message.message
@@ -3370,7 +4300,8 @@ class MessagingClient:
         self._remove_participant(message.message["id"])
 
     def _on_messaging_enabled(self, message: RoomMessage):
-        self._enabled = True
+        self._enable_in_flight = False
+        self._participants.clear()
         for data in message.message["participants"]:
             participant = RemoteParticipant(
                 id=data["id"], role=data["role"], online=True
@@ -3381,6 +4312,11 @@ class MessagingClient:
 
             self._participants[data["id"]] = participant
 
+        self._set_online(True)
+        if not self._desired_enabled:
+            self._invoke_nowait(operation="disable", input={})
+            self._clear_current_connection_state()
+            return
         self.emit("messaging_enabled")
 
 

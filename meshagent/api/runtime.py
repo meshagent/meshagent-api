@@ -163,7 +163,7 @@ class RuntimeDocument(Document):
         return b64.standard_b64decode(base64_state)
 
     def get_state_vector(self) -> bytes:
-        base64_state = runtime.get_state_vector()
+        base64_state = runtime.get_state_vector(self._id)
         return b64.standard_b64decode(base64_state)
 
     def send_changes(self, changes) -> None:

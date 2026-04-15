@@ -8,7 +8,7 @@ from meshagent.api.version import __version__
 from meshagent.api.http import new_client_session
 from typing import Optional
 
-from meshagent.api.protocol import Protocol, ClientProtocol
+from meshagent.api.protocol import Protocol, ClientProtocol, ProtocolCloseKind
 
 logger = logging.getLogger("protocol.websocket")
 
@@ -97,6 +97,19 @@ class WebSocketClientProtocol(ClientProtocol):
     def url(self):
         return self._url
 
+    def create_factory(self):
+        session = self._session if self._session_external else None
+
+        def factory() -> ClientProtocol:
+            return WebSocketClientProtocol(
+                url=self._url,
+                token=self.token,
+                heartbeat=self._heartbeat,
+                session=session,
+            )
+
+        return factory
+
     async def __aenter__(self):
         if self._session is None:
             self._session = new_client_session()
@@ -147,11 +160,19 @@ class WebSocketClientProtocol(ClientProtocol):
 
         ws_exception = self._ws.exception()
         if self._ws.closed or close_event is not None or ws_exception is not None:
-            self._close_reason = _format_websocket_close_reason(
+            close_reason = _format_websocket_close_reason(
                 close_event=close_event,
                 close_code=self._ws.close_code,
                 exc=ws_exception,
             )
+            close_kind = self.close_kind()
+            if close_kind is None:
+                close_kind = (
+                    ProtocolCloseKind.ERROR
+                    if ws_exception is not None
+                    else ProtocolCloseKind.SERVER
+                )
+            self._set_close_state(kind=close_kind, reason=close_reason)
             _log_websocket_close(
                 role="client",
                 url=self._url,
@@ -160,7 +181,7 @@ class WebSocketClientProtocol(ClientProtocol):
                 exc=ws_exception,
             )
 
-        if self._ws.closed:
+        if self._ws.closed or close_event is not None or ws_exception is not None:
             super()._shutdown()
 
     async def __aexit__(self, exc_type, exc, tb):
@@ -185,12 +206,16 @@ class WebSocketServerProtocol(Protocol):
     ):
         super().__init__()
         self.socket = socket
-        self.token = token
+        self._token = token
         self._url = url
 
     @property
     def url(self):
         return self._url
+
+    @property
+    def token(self) -> str | None:
+        return self._token
 
     async def __aenter__(self):
         self._ws_recv_task = asyncio.create_task(self._ws_recv())
@@ -219,11 +244,19 @@ class WebSocketServerProtocol(Protocol):
                 or close_event is not None
                 or socket_exception is not None
             ):
-                self._close_reason = _format_websocket_close_reason(
+                close_reason = _format_websocket_close_reason(
                     close_event=close_event,
                     close_code=self.socket.close_code,
                     exc=socket_exception,
                 )
+                close_kind = self.close_kind()
+                if close_kind is None:
+                    close_kind = (
+                        ProtocolCloseKind.ERROR
+                        if socket_exception is not None
+                        else ProtocolCloseKind.SERVER
+                    )
+                self._set_close_state(kind=close_kind, reason=close_reason)
                 _log_websocket_close(
                     role="server",
                     url=self._url,
@@ -231,7 +264,7 @@ class WebSocketServerProtocol(Protocol):
                     close_code=self.socket.close_code,
                     exc=socket_exception,
                 )
-            self.close()
+            self._shutdown()
 
     async def __aexit__(self, exc_type, exc, tb):
         if not self.socket.closed:

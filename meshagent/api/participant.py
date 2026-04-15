@@ -13,5 +13,9 @@ class Participant:
     def id(self):
         return self._id
 
+    @property
+    def attributes(self) -> dict:
+        return self._attributes.copy()
+
     def get_attribute(self, name: str):
         return self._attributes.get(name, None)

@@ -2,8 +2,9 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import uuid
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
@@ -20,7 +21,14 @@ from meshagent.api.messaging import (
     JsonContent,
     TextContent,
     _ControlContent,
+    pack_content,
     pack_message,
+    unpack_message,
+    unpack_content_parts,
+)
+from meshagent.api.protocol import (
+    ProtocolCloseKind,
+    ProtocolReconnectUnsupportedError,
 )
 from meshagent.api import ErrorCode
 from meshagent.api.oauth import OAuthClientConfig
@@ -59,7 +67,7 @@ from meshagent.api.specs.service import (
     EmptyDirMountSpec,
     RoomStorageMountSpec,
 )
-from meshagent.api.schema import ElementType, MeshSchema
+from meshagent.api.schema import ChildProperty, ElementType, MeshSchema, ValueProperty
 
 
 class _FakeProtocol:
@@ -70,6 +78,9 @@ class _FakeProtocol:
         self.sent_messages: list[tuple[str, bytes | str, int | None]] = []
         self.send_started = asyncio.Event()
         self._next_message_id = 0
+        self._close_reason: str | None = None
+        self._close_kind: str | None = None
+        self._is_open = False
 
     def register_handler(self, typ: str, handler: object) -> None:
         self.handlers[typ] = handler
@@ -83,17 +94,34 @@ class _FakeProtocol:
 
     async def __aenter__(self):
         self.entered = True
+        self._is_open = True
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         del exc_type, exc, tb
         self.exited = True
+        self._is_open = False
+
+    def create_factory(self):
+        protocol = self
+        used = False
+
+        def factory():
+            nonlocal used
+            if used:
+                raise ProtocolReconnectUnsupportedError(
+                    "protocol_factory was not configured for reconnecting this protocol"
+                )
+            used = True
+            return protocol
+
+        return factory
 
     def next_message_id(self) -> int:
         self._next_message_id += 1
         return self._next_message_id
 
-    async def send(
+    def send_nowait(
         self,
         type: str,
         data: bytes | str,
@@ -103,11 +131,26 @@ class _FakeProtocol:
         self.send_started.set()
         return -1 if message_id is None else message_id
 
+    async def send(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        return self.send_nowait(type=type, data=data, message_id=message_id)
+
     async def wait_for_close(self) -> None:
         await asyncio.Future()
 
     def close_reason(self) -> str | None:
-        return None
+        return self._close_reason
+
+    def close_kind(self) -> str | None:
+        return self._close_kind
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
 
 
 class _CloseableProtocol(_FakeProtocol):
@@ -117,6 +160,7 @@ class _CloseableProtocol(_FakeProtocol):
         self._close_reason = close_reason
 
     def close(self) -> None:
+        self._is_open = False
         self._close_event.set()
 
     async def wait_for_close(self) -> None:
@@ -281,16 +325,86 @@ class _FakeRoom:
 
     def __init__(self):
         self.protocol = _FakeProtocol()
+        self._protocol_instance = self.protocol
         self.events: list[tuple[str, dict]] = []
         self.requests: list[tuple[str, dict, bytes | None]] = []
         self._pending_requests = {}
         self._tool_call_streams = {}
         self._close_watcher_task = None
+        self._lifecycle_task = None
         self._terminal_state = None
+        self._room_closed = asyncio.Future()
+        self._entered = True
+        self._connected = True
+        self._closing = False
+        self._allow_disconnected_requests = False
+        self._close_reason = None
+        self.local_participant = None
         self.list_toolkits_response: dict | None = None
 
     def emit(self, event_name: str, **kwargs) -> None:
         self.events.append((event_name, kwargs))
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def wait_until_connected(self) -> None:
+        if self._connected:
+            return
+        await asyncio.shield(self._room_closed)
+
+    async def _wait_until_connected_for_messages(self) -> None:
+        await self.wait_until_connected()
+        self._raise_if_terminal_for_messages()
+
+    def _raise_if_terminal(self) -> None:
+        state = self._terminal_state
+        if state is not None:
+            raise state.request_error()
+
+    def _raise_if_terminal_for_messages(self) -> None:
+        state = self._terminal_state
+        if state is not None:
+            raise state.message_send_error()
+
+    def _coerce_message_send_error(self, error: RoomException) -> RoomException:
+        return error
+
+    def invoke_nowait(
+        self,
+        *,
+        toolkit: str,
+        tool: str,
+        input: str | dict | Content | None = None,
+        participant_id: str | None = None,
+        on_behalf_of_id: str | None = None,
+        caller_context: dict | None = None,
+    ) -> None:
+        if input is None:
+            arguments: dict[str, object] = {"type": "empty"}
+            data = None
+        elif isinstance(input, dict):
+            arguments = {"type": "json", "json": input}
+            data = None
+        elif isinstance(input, str):
+            arguments = {"type": "text", "text": input}
+            data = None
+        else:
+            arguments = input.to_json()
+            data = input.get_data()
+
+        request = {
+            "toolkit": toolkit,
+            "tool": tool,
+            "participant_id": participant_id,
+            "on_behalf_of_id": on_behalf_of_id,
+            "arguments": arguments,
+            "tool_call_id": uuid.uuid4().hex,
+        }
+        if caller_context is not None:
+            request["caller_context"] = caller_context
+        self.requests.append(("room.invoke_tool", request, data))
 
     async def send_request(
         self, typ: str, request: dict, data: bytes | None = None
@@ -500,10 +614,971 @@ class _StatusClosingProtocol(_FakeProtocol):
         return "websocket closed with code 1013"
 
 
+async def _wait_until(
+    predicate: Callable[[], bool], *, timeout: float = 1.0, interval: float = 0.01
+) -> None:
+    async def wait_loop() -> None:
+        while not predicate():
+            await asyncio.sleep(interval)
+
+    await asyncio.wait_for(wait_loop(), timeout=timeout)
+
+
+def _simple_thread_schema() -> MeshSchema:
+    return MeshSchema(
+        root_tag_name="thread",
+        elements=[ElementType(tag_name="thread", properties=[])],
+    )
+
+
+class _ReconnectProtocol:
+    def __init__(self, controller: "_ReconnectRoomController", *, index: int) -> None:
+        self.controller = controller
+        self.index = index
+        self.handlers: dict[str, object] = {}
+        self.sent_messages: list[tuple[str, bytes | str, int | None]] = []
+        self.entered = False
+        self.exited = False
+        self._next_message_id = 0
+        self._close_event = asyncio.Event()
+        self._close_reason: str | None = None
+        self._close_kind: ProtocolCloseKind | None = None
+        self._is_open = False
+        self._tool_calls: dict[str, tuple[str, str]] = {}
+        self._token = "token"
+        self._url = f"wss://example.test/room/{index}"
+        self._background_send_error: BaseException | None = None
+        self._background_send_tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def token(self) -> str:
+        return self._token
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+    def register_handler(self, typ: str, handler: object) -> None:
+        self.handlers[typ] = handler
+
+    def unregister_handler(self, typ: str, handler: object) -> None:
+        assert self.handlers[typ] is handler
+        self.handlers.pop(typ)
+
+    def get_handler(self, typ: str) -> object | None:
+        return self.handlers.get(typ)
+
+    async def __aenter__(self):
+        self.entered = True
+        self._is_open = True
+        asyncio.create_task(self._emit_ready())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        del exc_type, exc, tb
+        self.exited = True
+        self._is_open = False
+        if self._close_kind is None:
+            self._close_kind = ProtocolCloseKind.CLIENT
+        self._close_event.set()
+
+    def next_message_id(self) -> int:
+        self._next_message_id += 1
+        return self._next_message_id
+
+    def _raise_background_send_error(self) -> None:
+        if self._background_send_error is None:
+            return
+        error = self._background_send_error
+        self._background_send_error = None
+        raise error
+
+    def _on_background_send_done(self, task: asyncio.Task[None]) -> None:
+        self._background_send_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as ex:
+            if self._background_send_error is None:
+                self._background_send_error = ex
+
+    def _start_handle_send_task(
+        self,
+        *,
+        typ: str,
+        data: bytes,
+        message_id: int,
+    ) -> asyncio.Task[None]:
+        self._raise_background_send_error()
+        task = asyncio.create_task(
+            self.controller.handle_send(
+                protocol=self,
+                typ=typ,
+                data=data,
+                message_id=message_id,
+            )
+        )
+        self._background_send_tasks.add(task)
+        task.add_done_callback(self._on_background_send_done)
+        return task
+
+    def send_nowait(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        if message_id is None:
+            message_id = self.next_message_id()
+        self.sent_messages.append((type, data, message_id))
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._start_handle_send_task(typ=type, data=data, message_id=message_id)
+        return message_id
+
+    async def send(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        if message_id is None:
+            message_id = self.next_message_id()
+        self.sent_messages.append((type, data, message_id))
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        task = self._start_handle_send_task(typ=type, data=data, message_id=message_id)
+        await task
+        return message_id
+
+    async def wait_for_close(self) -> None:
+        await self._close_event.wait()
+
+    def close_kind(self) -> ProtocolCloseKind | None:
+        return self._close_kind
+
+    def close_reason(self) -> str | None:
+        return self._close_reason
+
+    def close_unexpected(self, *, reason: str) -> None:
+        self._close_kind = ProtocolCloseKind.ERROR
+        self._close_reason = reason
+        self._is_open = False
+        self._close_event.set()
+
+    def close_server(self, *, reason: str) -> None:
+        self._close_kind = ProtocolCloseKind.SERVER
+        self._close_reason = reason
+        self._is_open = False
+        self._close_event.set()
+
+    async def _emit_ready(self) -> None:
+        await asyncio.sleep(0)
+        await self._emit(
+            "room_ready",
+            pack_message(
+                {
+                    "room_name": "test-room",
+                    "room_url": "wss://example.test/room",
+                    "session_id": "session-id",
+                }
+            ),
+        )
+        await self._emit(
+            "connected",
+            pack_message(
+                {
+                    "type": "init",
+                    "participantId": "local-participant",
+                    "attributes": {"name": "Local Participant"},
+                }
+            ),
+        )
+
+    async def _emit(self, typ: str, data: bytes, *, message_id: int = 1) -> None:
+        handler = self.handlers.get(typ)
+        if handler is None:
+            return
+        result = handler(self, message_id, typ, data)
+        if asyncio.iscoroutine(result):
+            await result
+
+    async def emit_response(self, *, message_id: int, content: Content) -> None:
+        await self._emit("__response__", pack_content(content), message_id=message_id)
+
+    async def emit_tool_call_chunk(
+        self,
+        *,
+        tool_call_id: str,
+        chunk: Content,
+        message_id: int = 1,
+    ) -> None:
+        await self._emit(
+            "room.tool_call_response_chunk",
+            pack_message(
+                header={
+                    "tool_call_id": tool_call_id,
+                    "chunk": chunk.to_json(),
+                },
+                data=chunk.get_data(),
+            ),
+            message_id=message_id,
+        )
+
+    async def emit_messaging_enabled(self) -> None:
+        await self._emit(
+            "messaging.send",
+            pack_message(
+                header={
+                    "from_participant_id": "room",
+                    "type": "messaging.enabled",
+                    "message": {"participants": self.controller.messaging_participants},
+                }
+            ),
+        )
+
+
+class _ReconnectRoomController:
+    def __init__(
+        self,
+        *,
+        schema: MeshSchema,
+        initial_sync_payload: bytes = b"",
+        delay_messaging_send_responses: bool = False,
+    ) -> None:
+        self.schema_json = schema.to_json()
+        self.initial_sync_payload = initial_sync_payload
+        self.delay_messaging_send_responses = delay_messaging_send_responses
+        self.protocols: list[_ReconnectProtocol] = []
+        self.sync_open_headers: list[dict[str, object]] = []
+        self.sync_input_chunks: list[tuple[int, bytes]] = []
+        self.messaging_enable_calls: list[int] = []
+        self.messaging_send_inputs: list[tuple[int, dict[str, object]]] = []
+        self.set_attribute_payloads: list[tuple[int, dict[str, object]]] = []
+        self.messaging_participants = [
+            {
+                "id": "remote-participant",
+                "role": "user",
+                "attributes": {"name": "Remote Participant"},
+            }
+        ]
+
+    def protocol_factory(self) -> _ReconnectProtocol:
+        protocol = _ReconnectProtocol(self, index=len(self.protocols))
+        self.protocols.append(protocol)
+        return protocol
+
+    async def handle_send(
+        self,
+        *,
+        protocol: _ReconnectProtocol,
+        typ: str,
+        data: bytes,
+        message_id: int,
+    ) -> None:
+        if typ == "room.invoke_tool":
+            request, _ = unpack_message(data)
+            toolkit = request["toolkit"]
+            tool = request["tool"]
+            tool_call_id = request["tool_call_id"]
+            protocol._tool_calls[tool_call_id] = (toolkit, tool)
+            if toolkit == "sync" and tool == "open":
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=_ControlContent(method="open"),
+                )
+                return
+            if toolkit == "messaging" and tool == "enable":
+                self.messaging_enable_calls.append(protocol.index)
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=EmptyContent(),
+                )
+                await protocol.emit_messaging_enabled()
+                return
+            if toolkit == "messaging" and tool == "send":
+                arguments = request["arguments"]["json"]
+                assert isinstance(arguments, dict)
+                self.messaging_send_inputs.append((protocol.index, arguments))
+                if self.delay_messaging_send_responses:
+                    return
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=EmptyContent(),
+                )
+                return
+            if toolkit == "messaging" and tool in ("broadcast", "disable"):
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=EmptyContent(),
+                )
+                return
+            raise AssertionError(f"unexpected invoke request: {toolkit}.{tool}")
+
+        if typ == "room.tool_call_request_chunk":
+            request, payload = unpack_message(data)
+            tool_call_id = request["tool_call_id"]
+            toolkit, tool = protocol._tool_calls[tool_call_id]
+            chunk = unpack_content_parts(header=request["chunk"], payload=payload)
+            await protocol.emit_response(message_id=message_id, content=EmptyContent())
+            if toolkit != "sync" or tool != "open":
+                raise AssertionError(f"unexpected stream chunk for {toolkit}.{tool}")
+
+            if isinstance(chunk, BinaryContent):
+                kind = chunk.headers["kind"]
+                assert isinstance(kind, str)
+                if kind == "start":
+                    self.sync_open_headers.append(dict(chunk.headers))
+                    path = chunk.headers["path"]
+                    assert isinstance(path, str)
+                    await protocol.emit_tool_call_chunk(
+                        tool_call_id=tool_call_id,
+                        chunk=BinaryContent(
+                            data=self.initial_sync_payload,
+                            headers={
+                                "kind": "state",
+                                "path": path,
+                                "schema": self.schema_json,
+                            },
+                        ),
+                    )
+                    return
+                if kind == "sync":
+                    self.sync_input_chunks.append((protocol.index, chunk.data))
+                    return
+                raise AssertionError(f"unexpected sync chunk kind: {kind}")
+
+            if isinstance(chunk, _ControlContent):
+                assert chunk.method == "close"
+                await protocol.emit_tool_call_chunk(
+                    tool_call_id=tool_call_id,
+                    chunk=_ControlContent(method="close"),
+                )
+                return
+
+            raise AssertionError(f"unexpected sync chunk type: {type(chunk)!r}")
+
+        if typ == "set_attributes":
+            payload, _ = unpack_message(data)
+            self.set_attribute_payloads.append((protocol.index, payload))
+            return
+
+        raise AssertionError(f"unexpected protocol send: {typ}")
+
+
+def _shared_document_schema() -> MeshSchema:
+    return MeshSchema(
+        root_tag_name="thread",
+        elements=[
+            ElementType(
+                tag_name="thread",
+                properties=[
+                    ChildProperty(
+                        name="children",
+                        description="",
+                        child_tag_names=["item"],
+                    )
+                ],
+            ),
+            ElementType(
+                tag_name="item",
+                properties=[
+                    ValueProperty(name="text", description="", type="string"),
+                ],
+            ),
+        ],
+    )
+
+
+def _document_item_texts(doc) -> list[str]:
+    return sorted(str(child["text"]) for child in doc.root.get_children())
+
+
+class _SharedReconnectProtocol:
+    def __init__(
+        self,
+        controller: "_SharedReconnectRoomController",
+        *,
+        participant_key: str,
+        index: int,
+    ) -> None:
+        self.controller = controller
+        self.participant_key = participant_key
+        self.index = index
+        self.handlers: dict[str, object] = {}
+        self.sent_messages: list[tuple[str, bytes | str, int | None]] = []
+        self.entered = False
+        self.exited = False
+        self._next_message_id = 0
+        self._close_event = asyncio.Event()
+        self._close_reason: str | None = None
+        self._close_kind: ProtocolCloseKind | None = None
+        self._is_open = False
+        self._tool_calls: dict[str, tuple[str, str]] = {}
+        self._closed_notified = False
+        self._token = "token"
+        self._url = f"wss://example.test/shared-room/{participant_key}/{index}"
+        self._background_send_error: BaseException | None = None
+        self._background_send_tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def token(self) -> str:
+        return self._token
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+    def register_handler(self, typ: str, handler: object) -> None:
+        self.handlers[typ] = handler
+
+    def unregister_handler(self, typ: str, handler: object) -> None:
+        assert self.handlers[typ] is handler
+        self.handlers.pop(typ)
+
+    def get_handler(self, typ: str) -> object | None:
+        return self.handlers.get(typ)
+
+    async def __aenter__(self):
+        self.entered = True
+        self._is_open = True
+        self.controller.on_protocol_enter(self)
+        asyncio.create_task(self._emit_ready())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        del exc_type, exc, tb
+        self.exited = True
+        self._is_open = False
+        if self._close_kind is None:
+            self._close_kind = ProtocolCloseKind.CLIENT
+        self._notify_closed()
+        self._close_event.set()
+
+    def _notify_closed(self) -> None:
+        if self._closed_notified:
+            return
+        self._closed_notified = True
+        self.controller.on_protocol_closed(self)
+
+    def next_message_id(self) -> int:
+        self._next_message_id += 1
+        return self._next_message_id
+
+    def _raise_background_send_error(self) -> None:
+        if self._background_send_error is None:
+            return
+        error = self._background_send_error
+        self._background_send_error = None
+        raise error
+
+    def _on_background_send_done(self, task: asyncio.Task[None]) -> None:
+        self._background_send_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as ex:
+            if self._background_send_error is None:
+                self._background_send_error = ex
+
+    def _start_handle_send_task(
+        self,
+        *,
+        typ: str,
+        data: bytes,
+        message_id: int,
+    ) -> asyncio.Task[None]:
+        self._raise_background_send_error()
+        task = asyncio.create_task(
+            self.controller.handle_send(
+                protocol=self,
+                typ=typ,
+                data=data,
+                message_id=message_id,
+            )
+        )
+        self._background_send_tasks.add(task)
+        task.add_done_callback(self._on_background_send_done)
+        return task
+
+    def send_nowait(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        if message_id is None:
+            message_id = self.next_message_id()
+        self.sent_messages.append((type, data, message_id))
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._start_handle_send_task(typ=type, data=data, message_id=message_id)
+        return message_id
+
+    async def send(
+        self,
+        type: str,
+        data: bytes | str,
+        message_id: int | None = None,
+    ) -> int:
+        if message_id is None:
+            message_id = self.next_message_id()
+        self.sent_messages.append((type, data, message_id))
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        task = self._start_handle_send_task(typ=type, data=data, message_id=message_id)
+        await task
+        return message_id
+
+    async def wait_for_close(self) -> None:
+        await self._close_event.wait()
+
+    def close_kind(self) -> ProtocolCloseKind | None:
+        return self._close_kind
+
+    def close_reason(self) -> str | None:
+        return self._close_reason
+
+    def close_unexpected(self, *, reason: str) -> None:
+        if self._close_event.is_set():
+            return
+        self._close_kind = ProtocolCloseKind.ERROR
+        self._close_reason = reason
+        self._is_open = False
+        self._notify_closed()
+        self._close_event.set()
+
+    def close_server(self, *, reason: str) -> None:
+        if self._close_event.is_set():
+            return
+        self._close_kind = ProtocolCloseKind.SERVER
+        self._close_reason = reason
+        self._is_open = False
+        self._notify_closed()
+        self._close_event.set()
+
+    async def _emit_ready(self) -> None:
+        await asyncio.sleep(0)
+        await self._emit(
+            "room_ready",
+            pack_message(
+                {
+                    "room_name": "shared-room",
+                    "room_url": "wss://example.test/shared-room",
+                    "session_id": f"session-{self.participant_key}",
+                }
+            ),
+        )
+        participant = self.controller.participant_state(self.participant_key)
+        await self._emit(
+            "connected",
+            pack_message(
+                {
+                    "type": "init",
+                    "participantId": participant["id"],
+                    "attributes": participant["attributes"],
+                }
+            ),
+        )
+
+    async def _emit(self, typ: str, data: bytes, *, message_id: int = 1) -> None:
+        handler = self.handlers.get(typ)
+        if handler is None:
+            return
+        result = handler(self, message_id, typ, data)
+        if asyncio.iscoroutine(result):
+            await result
+
+    async def emit_response(self, *, message_id: int, content: Content) -> None:
+        await self._emit("__response__", pack_content(content), message_id=message_id)
+
+    async def emit_tool_call_chunk(
+        self,
+        *,
+        tool_call_id: str,
+        chunk: Content,
+        message_id: int = 1,
+    ) -> None:
+        await self._emit(
+            "room.tool_call_response_chunk",
+            pack_message(
+                header={
+                    "tool_call_id": tool_call_id,
+                    "chunk": chunk.to_json(),
+                },
+                data=chunk.get_data(),
+            ),
+            message_id=message_id,
+        )
+
+
+class _SharedReconnectRoomController:
+    def __init__(self, *, schema: MeshSchema) -> None:
+        self.schema = schema
+        self.schema_json = schema.to_json()
+        self.protocols: list[_SharedReconnectProtocol] = []
+        self._active_protocols: dict[str, _SharedReconnectProtocol] = {}
+        self._streams_by_path: dict[
+            str, dict[str, tuple[_SharedReconnectProtocol, str]]
+        ] = {}
+        self._tool_call_paths: dict[tuple[int, str], str] = {}
+        self._open_paths_by_protocol: dict[int, set[str]] = {}
+        self._documents: dict[str, object] = {}
+        self._messaging_enabled: set[str] = set()
+        self._participants: dict[str, dict[str, object]] = {
+            "alice": {
+                "id": "alice",
+                "role": "user",
+                "attributes": {"name": "Alice"},
+            },
+            "bob": {
+                "id": "bob",
+                "role": "user",
+                "attributes": {"name": "Bob"},
+            },
+        }
+
+    def make_protocol_factory(
+        self, participant_key: str
+    ) -> Callable[[], _SharedReconnectProtocol]:
+        def factory() -> _SharedReconnectProtocol:
+            protocol = _SharedReconnectProtocol(
+                self,
+                participant_key=participant_key,
+                index=len(self.protocols),
+            )
+            self.protocols.append(protocol)
+            return protocol
+
+        return factory
+
+    def participant_state(self, participant_key: str) -> dict[str, object]:
+        participant = self._participants[participant_key]
+        return {
+            "id": participant["id"],
+            "role": participant["role"],
+            "attributes": dict(participant["attributes"]),
+        }
+
+    def participant_attributes(self, participant_key: str) -> dict[str, object]:
+        participant = self._participants[participant_key]
+        return dict(participant["attributes"])
+
+    def document_item_texts(self, path: str) -> list[str]:
+        document = self._documents[path]
+        return _document_item_texts(document)
+
+    def cleanup(self) -> None:
+        for document in self._documents.values():
+            document.close()
+        self._documents.clear()
+
+    def on_protocol_enter(self, protocol: _SharedReconnectProtocol) -> None:
+        self._active_protocols[protocol.participant_key] = protocol
+        self._open_paths_by_protocol.setdefault(protocol.index, set())
+
+    def on_protocol_closed(self, protocol: _SharedReconnectProtocol) -> None:
+        active = self._active_protocols.get(protocol.participant_key)
+        if active is protocol:
+            self._active_protocols.pop(protocol.participant_key)
+
+        open_paths = self._open_paths_by_protocol.pop(protocol.index, set())
+        for path in open_paths:
+            streams = self._streams_by_path.get(path)
+            if streams is None:
+                continue
+            streams.pop(protocol.participant_key, None)
+            if not streams:
+                self._streams_by_path.pop(path)
+
+        for key in list(self._tool_call_paths.keys()):
+            protocol_index, _ = key
+            if protocol_index == protocol.index:
+                self._tool_call_paths.pop(key)
+
+        if protocol.participant_key in self._messaging_enabled:
+            self._messaging_enabled.remove(protocol.participant_key)
+            self._schedule(
+                self._broadcast_messaging_event(
+                    source_participant_key=protocol.participant_key,
+                    message_type="participant.disabled",
+                    message={"id": self._participants[protocol.participant_key]["id"]},
+                )
+            )
+
+    def _schedule(self, coroutine: asyncio.Future | asyncio.Task | object) -> None:
+        if asyncio.iscoroutine(coroutine):
+            asyncio.create_task(coroutine)
+
+    def _ensure_document(self, *, path: str, schema: MeshSchema) -> object:
+        existing = self._documents.get(path)
+        if existing is not None:
+            return existing
+
+        def publish_sync(base64_value: str) -> None:
+            self._schedule(
+                self._broadcast_sync_update(path=path, base64_value=base64_value)
+            )
+
+        document = room_server_client.runtime.new_document(
+            schema=schema,
+            on_document_sync=publish_sync,
+        )
+        self._documents[path] = document
+        return document
+
+    async def _broadcast_sync_update(self, *, path: str, base64_value: str) -> None:
+        streams = list(self._streams_by_path.get(path, {}).values())
+        payload = base64_value.encode("utf-8")
+        for protocol, tool_call_id in streams:
+            await protocol.emit_tool_call_chunk(
+                tool_call_id=tool_call_id,
+                chunk=BinaryContent(
+                    data=payload,
+                    headers={"kind": "sync", "path": path},
+                ),
+            )
+
+    def _participant_json(self, participant_key: str) -> dict[str, object]:
+        participant = self._participants[participant_key]
+        return {
+            "id": participant["id"],
+            "role": participant["role"],
+            "attributes": dict(participant["attributes"]),
+        }
+
+    def _messaging_participants_json(self, *, exclude: str) -> list[dict[str, object]]:
+        participants = []
+        for participant_key in sorted(self._messaging_enabled):
+            if participant_key == exclude:
+                continue
+            if participant_key not in self._active_protocols:
+                continue
+            participants.append(self._participant_json(participant_key))
+        return participants
+
+    async def _broadcast_messaging_event(
+        self,
+        *,
+        source_participant_key: str,
+        message_type: str,
+        message: dict[str, object],
+    ) -> None:
+        source_participant = self._participants[source_participant_key]
+        for participant_key in sorted(self._messaging_enabled):
+            if participant_key == source_participant_key:
+                continue
+            protocol = self._active_protocols.get(participant_key)
+            if protocol is None:
+                continue
+            await protocol._emit(
+                "messaging.send",
+                pack_message(
+                    header={
+                        "from_participant_id": source_participant["id"],
+                        "type": message_type,
+                        "message": message,
+                    }
+                ),
+            )
+
+    async def _handle_messaging_enable(
+        self,
+        *,
+        protocol: _SharedReconnectProtocol,
+        message_id: int,
+    ) -> None:
+        participant_key = protocol.participant_key
+        self._messaging_enabled.add(participant_key)
+        await protocol.emit_response(message_id=message_id, content=EmptyContent())
+        participant = self._participants[participant_key]
+        await protocol._emit(
+            "messaging.send",
+            pack_message(
+                header={
+                    "from_participant_id": participant["id"],
+                    "type": "messaging.enabled",
+                    "message": {
+                        "participants": self._messaging_participants_json(
+                            exclude=participant_key
+                        )
+                    },
+                }
+            ),
+        )
+        await self._broadcast_messaging_event(
+            source_participant_key=participant_key,
+            message_type="participant.enabled",
+            message=self._participant_json(participant_key),
+        )
+
+    async def _handle_messaging_disable(
+        self,
+        *,
+        protocol: _SharedReconnectProtocol,
+        message_id: int,
+    ) -> None:
+        participant_key = protocol.participant_key
+        self._messaging_enabled.discard(participant_key)
+        await protocol.emit_response(message_id=message_id, content=EmptyContent())
+        await self._broadcast_messaging_event(
+            source_participant_key=participant_key,
+            message_type="participant.disabled",
+            message={"id": self._participants[participant_key]["id"]},
+        )
+
+    async def handle_send(
+        self,
+        *,
+        protocol: _SharedReconnectProtocol,
+        typ: str,
+        data: bytes,
+        message_id: int,
+    ) -> None:
+        if typ == "room.invoke_tool":
+            request, _ = unpack_message(data)
+            toolkit = request["toolkit"]
+            tool = request["tool"]
+            tool_call_id = request["tool_call_id"]
+            protocol._tool_calls[tool_call_id] = (toolkit, tool)
+            if toolkit == "sync" and tool == "open":
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=_ControlContent(method="open"),
+                )
+                return
+            if toolkit == "messaging" and tool == "enable":
+                await self._handle_messaging_enable(
+                    protocol=protocol,
+                    message_id=message_id,
+                )
+                return
+            if toolkit == "messaging" and tool == "disable":
+                await self._handle_messaging_disable(
+                    protocol=protocol,
+                    message_id=message_id,
+                )
+                return
+            if toolkit == "messaging" and tool in ("send", "broadcast"):
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=EmptyContent(),
+                )
+                return
+            raise AssertionError(f"unexpected invoke request: {toolkit}.{tool}")
+
+        if typ == "room.tool_call_request_chunk":
+            request, payload = unpack_message(data)
+            tool_call_id = request["tool_call_id"]
+            toolkit, tool = protocol._tool_calls[tool_call_id]
+            chunk = unpack_content_parts(header=request["chunk"], payload=payload)
+            await protocol.emit_response(message_id=message_id, content=EmptyContent())
+            if toolkit != "sync" or tool != "open":
+                raise AssertionError(f"unexpected stream chunk for {toolkit}.{tool}")
+
+            if isinstance(chunk, BinaryContent):
+                kind = chunk.headers["kind"]
+                assert isinstance(kind, str)
+                if kind == "start":
+                    path = chunk.headers["path"]
+                    assert isinstance(path, str)
+                    vector_header = chunk.headers["vector"]
+                    vector = (
+                        None
+                        if vector_header is None
+                        else base64.standard_b64decode(str(vector_header))
+                    )
+                    schema_json = chunk.headers["schema"]
+                    schema = (
+                        self.schema
+                        if not isinstance(schema_json, dict)
+                        else MeshSchema.from_json(schema_json)
+                    )
+                    document = self._ensure_document(path=path, schema=schema)
+                    self._streams_by_path.setdefault(path, {})[
+                        protocol.participant_key
+                    ] = (
+                        protocol,
+                        tool_call_id,
+                    )
+                    self._tool_call_paths[(protocol.index, tool_call_id)] = path
+                    self._open_paths_by_protocol.setdefault(protocol.index, set()).add(
+                        path
+                    )
+                    await protocol.emit_tool_call_chunk(
+                        tool_call_id=tool_call_id,
+                        chunk=BinaryContent(
+                            data=base64.standard_b64encode(
+                                document.get_state(vector=vector)
+                            ),
+                            headers={
+                                "kind": "state",
+                                "path": path,
+                                "schema": document.schema.to_json(),
+                            },
+                        ),
+                    )
+                    return
+                if kind == "sync":
+                    path = self._tool_call_paths[(protocol.index, tool_call_id)]
+                    document = self._documents[path]
+                    room_server_client.runtime.apply_backend_changes(
+                        document.id,
+                        chunk.data.decode("utf-8"),
+                    )
+                    return
+                raise AssertionError(f"unexpected sync chunk kind: {kind}")
+
+            if isinstance(chunk, _ControlContent):
+                assert chunk.method == "close"
+                path = self._tool_call_paths.pop((protocol.index, tool_call_id))
+                self._open_paths_by_protocol.setdefault(protocol.index, set()).discard(
+                    path
+                )
+                streams = self._streams_by_path.get(path)
+                if streams is not None:
+                    streams.pop(protocol.participant_key, None)
+                    if not streams:
+                        self._streams_by_path.pop(path)
+                await protocol.emit_tool_call_chunk(
+                    tool_call_id=tool_call_id,
+                    chunk=_ControlContent(method="close"),
+                )
+                return
+
+            raise AssertionError(f"unexpected sync chunk type: {type(chunk)!r}")
+
+        if typ == "set_attributes":
+            payload, _ = unpack_message(data)
+            participant = self._participants[protocol.participant_key]
+            attributes = participant["attributes"]
+            assert isinstance(attributes, dict)
+            attributes.update(payload)
+            if protocol.participant_key in self._messaging_enabled:
+                await self._broadcast_messaging_event(
+                    source_participant_key=protocol.participant_key,
+                    message_type="participant.attributes",
+                    message={"attributes": payload},
+                )
+            return
+
+        raise AssertionError(f"unexpected protocol send: {typ}")
+
+
 @pytest.mark.asyncio
 async def test_room_client_enter_raises_if_connection_closes_before_ready() -> None:
     protocol = _ClosingProtocol()
-    client = RoomClient(protocol=protocol)
+    client = RoomClient(protocol_factory=protocol.create_factory())
 
     with pytest.raises(
         RoomException,
@@ -520,7 +1595,7 @@ async def test_room_client_enter_includes_close_reason_when_connection_closes_ea
     None
 ):
     protocol = _ClosingProtocolWithReason()
-    client = RoomClient(protocol=protocol)
+    client = RoomClient(protocol_factory=protocol.create_factory())
 
     with pytest.raises(
         RoomException,
@@ -537,7 +1612,7 @@ async def test_room_client_enter_does_not_include_last_room_status_when_connecti
     None
 ):
     protocol = _StatusClosingProtocol()
-    client = RoomClient(protocol=protocol)
+    client = RoomClient(protocol_factory=protocol.create_factory())
 
     with pytest.raises(
         RoomException,
@@ -554,7 +1629,7 @@ async def test_room_client_exit_fails_open_tool_streams_and_cancels_close_watche
     None
 ):
     protocol = _FakeProtocol()
-    client = RoomClient(protocol=protocol)
+    client = RoomClient(protocol_factory=protocol.create_factory())
     client._ensure_close_watcher()
 
     started = asyncio.Event()
@@ -601,7 +1676,7 @@ async def test_room_client_exit_fails_open_tool_streams_and_cancels_close_watche
 @pytest.mark.asyncio
 async def test_send_request_fails_when_connection_closes_before_response() -> None:
     protocol = _CloseableProtocol(close_reason="websocket closed with code 1013")
-    client = RoomClient(protocol=protocol)
+    client = RoomClient(protocol_factory=protocol.create_factory())
 
     request_task = asyncio.create_task(
         client.send_request("room.ping", {"hello": "world"})
@@ -632,7 +1707,7 @@ async def test_room_client_exit_fails_pending_requests_and_cancels_close_watcher
     None
 ):
     protocol = _CloseableProtocol()
-    client = RoomClient(protocol=protocol)
+    client = RoomClient(protocol_factory=protocol.create_factory())
 
     request_task = asyncio.create_task(
         client.send_request("room.ping", {"hello": "world"})
@@ -650,6 +1725,431 @@ async def test_room_client_exit_fails_pending_requests_and_cancels_close_watcher
     assert client._pending_requests == {}
     assert protocol.exited is True
     assert client._close_watcher_task is None
+
+
+@pytest.mark.asyncio
+async def test_room_client_wait_for_close_ignores_unexpected_disconnects() -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    room = RoomClient(protocol_factory=controller.protocol_factory)
+    await room.__aenter__()
+
+    try:
+        wait_task = asyncio.create_task(room.protocol.wait_for_close())
+
+        controller.protocols[0].close_unexpected(reason="transient transport error")
+
+        await _wait_until(lambda: len(controller.protocols) == 2)
+        await _wait_until(lambda: room.is_connected)
+        assert wait_task.done() is False
+
+        controller.protocols[1].close_server(reason="websocket closed with code 1000")
+
+        await asyncio.wait_for(wait_task, timeout=1)
+        assert room.close_reason() == "websocket closed with code 1000"
+    finally:
+        await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_reconnect_timeout_zero_disables_retry_and_closes_room() -> (
+    None
+):
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    room = RoomClient(
+        protocol_factory=controller.protocol_factory,
+        reconnect_timeout=0,
+    )
+    await room.__aenter__()
+
+    try:
+        wait_task = asyncio.create_task(room.wait_for_close())
+
+        controller.protocols[0].close_unexpected(reason="transient transport error")
+
+        await asyncio.wait_for(wait_task, timeout=1)
+
+        assert len(controller.protocols) == 1
+        assert room.is_connected is False
+        assert room.is_closed is True
+        assert room.close_kind() == ProtocolCloseKind.ERROR
+        assert room.close_reason() == "transient transport error"
+
+        with pytest.raises(RoomException) as ex_info:
+            await room.send_request("room.ping", {"hello": "world"})
+        assert str(ex_info.value) == (
+            "room connection unexpectedly closed before request completed: "
+            "transient transport error"
+        )
+    finally:
+        await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_reconnect_restores_sync_and_messaging_state() -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    room = RoomClient(protocol_factory=controller.protocol_factory)
+    await room.__aenter__()
+
+    try:
+        observed_disconnect_reasons: list[str | None] = []
+        observed_reconnect_count = 0
+
+        def _on_disconnected(*, reason: str | None) -> None:
+            observed_disconnect_reasons.append(reason)
+
+        def _on_reconnected() -> None:
+            nonlocal observed_reconnect_count
+            observed_reconnect_count += 1
+
+        room.on("disconnected", _on_disconnected)
+        room.on("reconnected", _on_reconnected)
+
+        room.messaging.enable()
+        doc = await room.sync.open(path="thread.thread")
+        original_local_participant = room.local_participant
+        expected_vector = base64.standard_b64encode(doc.get_state_vector()).decode(
+            "utf-8"
+        )
+
+        assert room.messaging.online is True
+        assert len(room.messaging.remote_participants) == 1
+        assert controller.sync_open_headers[0]["vector"] is None
+
+        controller.protocols[0].close_unexpected(reason="transient transport error")
+
+        await _wait_until(lambda: room.is_connected is False)
+        assert room.messaging.online is False
+        assert room.messaging.remote_participants == []
+
+        with pytest.raises(
+            RoomException,
+            match="attempted to sync to a document that is not connected",
+        ) as ex_info:
+            await room.sync.sync(path="thread.thread", data=b"YQ==")
+        assert ex_info.value.code == ErrorCode.SYNC_NOT_CONNECTED
+        assert controller.sync_input_chunks == []
+
+        send_task = asyncio.create_task(
+            room.messaging.send_message(
+                to=SimpleNamespace(id="remote-participant"),
+                type="direct",
+                message={"value": 1},
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert send_task.done() is False
+
+        await _wait_until(lambda: len(controller.protocols) == 2)
+        await _wait_until(lambda: room.is_connected)
+        await asyncio.wait_for(send_task, timeout=1)
+
+        assert controller.messaging_enable_calls == [0, 1]
+        assert controller.messaging_send_inputs == [
+            (
+                1,
+                {
+                    "to_participant_id": "remote-participant",
+                    "type": "direct",
+                    "message_json": '{"value": 1}',
+                    "attachment_base64": None,
+                },
+            )
+        ]
+        assert controller.sync_open_headers[1]["vector"] == expected_vector
+        assert room.messaging.online is True
+        assert len(room.messaging.remote_participants) == 1
+        assert room.local_participant is original_local_participant
+
+        room.local_participant.set_attribute("status", "ready")
+        await _wait_until(
+            lambda: (1, {"status": "ready"}) in controller.set_attribute_payloads
+        )
+        assert (1, {"name": "Local Participant"}) in controller.set_attribute_payloads
+
+        assert observed_disconnect_reasons == ["transient transport error"]
+        assert observed_reconnect_count == 1
+    finally:
+        controller.protocols[-1].close_server(reason="websocket closed with code 1000")
+        await room.wait_for_close()
+        await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_close_fails_in_flight_message_send_with_room_closed_error() -> (
+    None
+):
+    controller = _ReconnectRoomController(
+        schema=_simple_thread_schema(),
+        delay_messaging_send_responses=True,
+    )
+    room = RoomClient(protocol_factory=controller.protocol_factory)
+    await room.__aenter__()
+
+    try:
+        room.messaging.enable()
+        await _wait_until(lambda: room.messaging.online)
+        await _wait_until(lambda: len(room.messaging.remote_participants) == 1)
+
+        send_task = asyncio.create_task(
+            room.messaging.send_message(
+                to=room.messaging.remote_participants[0],
+                type="direct",
+                message={"value": 1},
+            )
+        )
+        await _wait_until(lambda: len(controller.messaging_send_inputs) == 1)
+
+        await room.__aexit__(None, None, None)
+
+        with pytest.raises(
+            RoomException,
+            match="room client was closed before message send completed",
+        ):
+            await send_task
+    finally:
+        if room._entered:
+            await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_reconnect_timeout_closes_room_and_fails_waiting_message_sends() -> (
+    None
+):
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory() -> _ReconnectProtocol:
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls == 1:
+            return controller.protocol_factory()
+        raise RuntimeError(f"reconnect attempt {protocol_factory_calls} failed")
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=0.1,
+    )
+    await room.__aenter__()
+
+    try:
+        room.messaging.enable()
+        await _wait_until(lambda: room.messaging.online)
+
+        controller.protocols[0].close_unexpected(reason="transient transport error")
+
+        await _wait_until(lambda: room.is_connected is False)
+
+        send_task = asyncio.create_task(
+            room.messaging.send_message(
+                to=SimpleNamespace(id="remote-participant"),
+                type="direct",
+                message={"value": 1},
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert send_task.done() is False
+
+        await asyncio.wait_for(room.wait_for_close(), timeout=1)
+
+        assert protocol_factory_calls >= 2
+        assert room.is_closed is True
+        assert room.close_kind() == ProtocolCloseKind.ERROR
+        assert room.close_reason() == (
+            "room reconnect timed out after 0.1s (transient transport error)"
+        )
+
+        with pytest.raises(RoomException) as ex_info:
+            await send_task
+        assert str(ex_info.value) == (
+            "room connection unexpectedly closed before message send completed: "
+            "room reconnect timed out after 0.1s (transient transport error)"
+        )
+    finally:
+        await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_closed_attribute_updates_do_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    room = RoomClient(protocol_factory=controller.protocol_factory)
+    await room.__aenter__()
+
+    try:
+        controller.protocols[-1].close_server(reason="websocket closed with code 1000")
+        await room.wait_for_close()
+
+        with caplog.at_level(logging.WARNING, logger="room_server_client"):
+            await room.local_participant.set_attribute("status", "closed")
+
+        assert [
+            record
+            for record in caplog.records
+            if record.name == "room_server_client" and record.levelno >= logging.WARNING
+        ] == []
+    finally:
+        if room._entered:
+            await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_unexpected_disconnect_warns_once_before_retrying_reconnects(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory() -> _ReconnectProtocol:
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls in (2, 3):
+            raise RuntimeError(f"reconnect attempt {protocol_factory_calls} failed")
+        return controller.protocol_factory()
+
+    room = RoomClient(protocol_factory=protocol_factory)
+    await room.__aenter__()
+
+    try:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="room_server_client"):
+            controller.protocols[0].close_unexpected(reason="transient transport error")
+            await _wait_until(lambda: len(controller.protocols) == 2)
+            await _wait_until(lambda: room.is_connected)
+
+        warning_records = [
+            record
+            for record in caplog.records
+            if record.name == "room_server_client" and record.levelno >= logging.WARNING
+        ]
+        assert len(warning_records) == 1
+        assert warning_records[0].message == (
+            "room connection lost (transient transport error); automatically "
+            "attempting to reconnect"
+        )
+    finally:
+        controller.protocols[-1].close_server(reason="websocket closed with code 1000")
+        await room.wait_for_close()
+        await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_reconnect_resynchronizes_offline_sync_document_changes_from_both_participants() -> (
+    None
+):
+    controller = _SharedReconnectRoomController(schema=_shared_document_schema())
+    alice = RoomClient(protocol_factory=controller.make_protocol_factory("alice"))
+    bob = RoomClient(protocol_factory=controller.make_protocol_factory("bob"))
+    await alice.__aenter__()
+    await bob.__aenter__()
+
+    try:
+        path = "thread.thread"
+        alice_doc = await alice.sync.open(path=path)
+        bob_doc = await bob.sync.open(path=path)
+
+        alice_protocol = controller._active_protocols["alice"]
+        alice_protocol.close_unexpected(reason="alice transport error")
+        await _wait_until(lambda: alice.is_connected is False)
+
+        alice_doc.root.append_child("item", {"text": "alice-offline"})
+        bob_doc.root.append_child("item", {"text": "bob-online"})
+        await _wait_until(
+            lambda: controller.document_item_texts(path) == ["bob-online"]
+        )
+        await _wait_until(lambda: alice.is_connected)
+        await _wait_until(
+            lambda: (
+                _document_item_texts(alice_doc) == ["alice-offline", "bob-online"]
+                and _document_item_texts(bob_doc) == ["alice-offline", "bob-online"]
+            )
+        )
+
+        bob_protocol = controller._active_protocols["bob"]
+        bob_protocol.close_unexpected(reason="bob transport error")
+        await _wait_until(lambda: bob.is_connected is False)
+
+        bob_doc.root.append_child("item", {"text": "bob-offline"})
+        alice_doc.root.append_child("item", {"text": "alice-online"})
+        await _wait_until(
+            lambda: (
+                controller.document_item_texts(path)
+                == ["alice-offline", "alice-online", "bob-online"]
+            )
+        )
+        await _wait_until(lambda: bob.is_connected)
+        await _wait_until(
+            lambda: (
+                _document_item_texts(alice_doc)
+                == ["alice-offline", "alice-online", "bob-offline", "bob-online"]
+                and _document_item_texts(bob_doc)
+                == ["alice-offline", "alice-online", "bob-offline", "bob-online"]
+            )
+        )
+    finally:
+        await alice.__aexit__(None, None, None)
+        await bob.__aexit__(None, None, None)
+        controller.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_room_client_reconnect_resynchronizes_offline_local_participant_attributes_from_both_participants() -> (
+    None
+):
+    controller = _SharedReconnectRoomController(schema=_shared_document_schema())
+    alice = RoomClient(protocol_factory=controller.make_protocol_factory("alice"))
+    bob = RoomClient(protocol_factory=controller.make_protocol_factory("bob"))
+    await alice.__aenter__()
+    await bob.__aenter__()
+
+    try:
+        alice.messaging.enable()
+        bob.messaging.enable()
+        await _wait_until(lambda: alice.messaging.online and bob.messaging.online)
+        await _wait_until(
+            lambda: (
+                alice.messaging.get_participant("bob") is not None
+                and bob.messaging.get_participant("alice") is not None
+            )
+        )
+
+        bob_protocol = controller._active_protocols["bob"]
+        bob_protocol.close_unexpected(reason="bob transport error")
+        await _wait_until(lambda: bob.is_connected is False)
+        assert bob.messaging.online is False
+        await _wait_until(lambda: alice.messaging.get_participant("bob") is None)
+
+        bob.local_participant.set_attribute("status", "bob-offline")
+        await _wait_until(lambda: bob.is_connected)
+        await _wait_until(lambda: bob.messaging.online)
+        await _wait_until(
+            lambda: (
+                alice.messaging.get_participant("bob") is not None
+                and alice.messaging.get_participant("bob").get_attribute("status")
+                == "bob-offline"
+            )
+        )
+
+        alice_protocol = controller._active_protocols["alice"]
+        alice_protocol.close_unexpected(reason="alice transport error")
+        await _wait_until(lambda: alice.is_connected is False)
+        assert alice.messaging.online is False
+        await _wait_until(lambda: bob.messaging.get_participant("alice") is None)
+
+        alice.local_participant.set_attribute("status", "alice-offline")
+        await _wait_until(lambda: alice.is_connected)
+        await _wait_until(lambda: alice.messaging.online)
+        await _wait_until(
+            lambda: (
+                bob.messaging.get_participant("alice") is not None
+                and bob.messaging.get_participant("alice").get_attribute("status")
+                == "alice-offline"
+            )
+        )
+    finally:
+        await alice.__aexit__(None, None, None)
+        await bob.__aexit__(None, None, None)
+        controller.cleanup()
 
 
 @pytest.mark.asyncio
@@ -826,6 +2326,35 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
         def __init__(self) -> None:
             super().__init__()
             self.local_participant = SimpleNamespace(id="local-participant")
+            self.messaging_client: MessagingClient | None = None
+
+        def invoke_nowait(
+            self,
+            *,
+            toolkit: str,
+            tool: str,
+            input: str | dict | Content | None = None,
+            participant_id: str | None = None,
+            on_behalf_of_id: str | None = None,
+            caller_context: dict | None = None,
+        ) -> None:
+            super().invoke_nowait(
+                toolkit=toolkit,
+                tool=tool,
+                input=input,
+                participant_id=participant_id,
+                on_behalf_of_id=on_behalf_of_id,
+                caller_context=caller_context,
+            )
+            if tool == "enable":
+                assert self.messaging_client is not None
+                self.messaging_client._on_messaging_enabled(
+                    RoomMessage(
+                        from_participant_id="local-participant",
+                        type="messaging.enabled",
+                        message={"participants": []},
+                    )
+                )
 
         async def send_request(
             self, typ: str, request: dict, data: bytes | None = None
@@ -837,22 +2366,25 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
 
     room = _FakeMessagingRoom()
     client = MessagingClient(room=room)  # type: ignore[arg-type]
+    room.messaging_client = client
 
-    await client.enable()
+    await client.start()
+    client.enable()
+    assert client.online is True
     await client.broadcast_message(
         type="broadcast",
         message={"hello": "world"},
         attachment=b"bytes",
     )
-    await client.start()
     await client.send_message(
         to=SimpleNamespace(id="remote-participant"),
         type="direct",
         message={"value": 1},
         attachment=b"\x00\x01",
     )
+    client.disable()
+    assert client.online is False
     await client.stop()
-    await client.disable()
     await _cancel_close_watcher(room)
 
     assert [request[0] for request in room.requests] == [
