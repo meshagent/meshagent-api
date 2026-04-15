@@ -35,6 +35,7 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Annotated,
+    NoReturn,
     Union,
 )
 from collections.abc import AsyncIterable
@@ -617,6 +618,13 @@ class _ProtocolStartupFailure(Exception):
         super().__init__(reason or kind.value)
 
 
+@dataclass(frozen=True, slots=True)
+class _ProtocolRetryResult:
+    connected: bool
+    close_kind: ProtocolCloseKind | None = None
+    close_reason: str | None = None
+
+
 class _RoomProtocolProxy:
     def __init__(self, *, room: "RoomClient") -> None:
         self._room = room
@@ -837,12 +845,51 @@ class RoomClient:
             try:
                 await self._open_protocol(initial=True)
             except _ProtocolStartupFailure as ex:
-                retried = await self._retry_initial_protocol_startup(
-                    close_kind=ex.kind,
+                if ex.kind != ProtocolCloseKind.ERROR or self._reconnect_timeout == 0:
+                    self._set_startup_terminal_state(
+                        close_kind=ex.kind,
+                        close_reason=ex.reason,
+                        protocol=self._protocol_instance,
+                    )
+                    raise self._startup_exception(
+                        close_kind=ex.kind,
+                        close_reason=ex.reason,
+                        protocol=self._protocol_instance,
+                    )
+
+                await self._close_protocol(self._protocol_instance)
+                retry_result = await self._retry_protocol_connection(
+                    disconnect_reason=ex.reason,
+                    protocol_factory_failure_log_message=(
+                        "unable to create replacement room protocol during initial startup"
+                    ),
+                    attempt_failure_log_message="room startup attempt failed",
+                    attempt=self._attempt_initial_protocol_startup,
                 )
-                if not retried:
-                    raise self._startup_close_exception(
-                        protocol=self._protocol_instance
+                if not retry_result.connected:
+                    self._finalize_initial_startup_retry_failure(
+                        retry_result=retry_result
+                    )
+            except Exception as ex:
+                if self._reconnect_timeout == 0:
+                    self._close_after_unexpected_disconnect(close_reason=str(ex))
+                    raise self._startup_exception(
+                        close_kind=ProtocolCloseKind.ERROR,
+                        close_reason=str(ex),
+                    ) from ex
+
+                await self._close_protocol(self._protocol_instance)
+                retry_result = await self._retry_protocol_connection(
+                    disconnect_reason=str(ex),
+                    protocol_factory_failure_log_message=(
+                        "unable to create replacement room protocol during initial startup"
+                    ),
+                    attempt_failure_log_message="room startup attempt failed",
+                    attempt=self._attempt_initial_protocol_startup,
+                )
+                if not retry_result.connected:
+                    self._finalize_initial_startup_retry_failure(
+                        retry_result=retry_result
                     )
             await self.sync.start()
             await self.messaging.start()
@@ -883,6 +930,10 @@ class RoomClient:
         return self._protocol_instance.close_reason()
 
     async def wait_for_close(self) -> None:
+        if self._room_closed.done():
+            await asyncio.shield(self._room_closed)
+            return
+
         if self._lifecycle_task is None:
             await self._protocol_instance.wait_for_close()
             return
@@ -982,6 +1033,12 @@ class RoomClient:
         with contextlib.suppress(Exception):
             await protocol.__aexit__(None, None, None)
 
+    def _replace_protocol(self, next_protocol: Protocol) -> None:
+        current_protocol = self._protocol_instance
+        self.protocol._unbind(current_protocol)
+        self._protocol_instance = next_protocol
+        self.protocol._bind(next_protocol)
+
     async def _complete_reconnect(self) -> None:
         await self._open_protocol(initial=False)
         self._allow_disconnected_requests = True
@@ -993,19 +1050,66 @@ class RoomClient:
         finally:
             self._allow_disconnected_requests = False
 
-    async def _retry_initial_protocol_startup(
+    async def _attempt_initial_protocol_startup(
         self,
         *,
-        close_kind: ProtocolCloseKind,
-    ) -> bool:
-        if close_kind != ProtocolCloseKind.ERROR or self._reconnect_timeout == 0:
-            return False
+        protocol: Protocol,
+        remaining: float | None,
+    ) -> None:
+        del protocol
+        if remaining is None:
+            await self._open_protocol(initial=False)
+        else:
+            await asyncio.wait_for(
+                self._open_protocol(initial=False), timeout=remaining
+            )
+
+    async def _attempt_reconnect(
+        self,
+        *,
+        protocol: Protocol,
+        remaining: float | None,
+    ) -> None:
+        reconnect_task = asyncio.create_task(self._complete_reconnect())
+        try:
+            if remaining is None:
+                await reconnect_task
+            else:
+                await asyncio.wait_for(reconnect_task, timeout=remaining)
+        except asyncio.TimeoutError:
+            reconnect_task.cancel()
+            await asyncio.gather(reconnect_task, return_exceptions=True)
+            self._allow_disconnected_requests = False
+            await self.sync._on_room_disconnect()
+            self.messaging._on_room_disconnect(reason=protocol.close_reason())
+            raise
+        except _ProtocolStartupFailure:
+            raise
+        except Exception:
+            self._allow_disconnected_requests = False
+            await self.sync._on_room_disconnect()
+            self.messaging._on_room_disconnect(reason=protocol.close_reason())
+            raise
+
+    async def _retry_protocol_connection(
+        self,
+        *,
+        disconnect_reason: str | None,
+        protocol_factory_failure_log_message: str,
+        attempt_failure_log_message: str,
+        attempt: Callable[[Protocol, float | None], Awaitable[None]],
+    ) -> _ProtocolRetryResult:
+        failure_reason = self._normalize_close_reason(disconnect_reason)
+
+        def record_failure_reason(reason: str | None) -> None:
+            nonlocal failure_reason
+            normalized_reason = self._normalize_close_reason(reason)
+            if failure_reason is None and normalized_reason is not None:
+                failure_reason = normalized_reason
 
         deadline = None
         if self._reconnect_timeout is not None:
             deadline = time.monotonic() + self._reconnect_timeout
-
-        await self._close_protocol(self._protocol_instance)
 
         first_attempt = True
         while not self._closing:
@@ -1016,7 +1120,9 @@ class RoomClient:
             else:
                 remaining = self._remaining_reconnect_timeout(deadline=deadline)
                 if remaining is not None and remaining <= 0:
-                    return False
+                    return self._timed_out_retry_result(
+                        disconnect_reason=failure_reason
+                    )
 
                 if remaining is None:
                     await asyncio.sleep(self._reconnect_retry_interval_seconds)
@@ -1027,50 +1133,71 @@ class RoomClient:
 
             remaining = self._remaining_reconnect_timeout(deadline=deadline)
             if remaining is not None and remaining <= 0:
-                return False
+                return self._timed_out_retry_result(disconnect_reason=failure_reason)
 
             try:
                 next_protocol = self._protocol_factory()
             except ProtocolReconnectUnsupportedError:
-                return False
+                return _ProtocolRetryResult(
+                    connected=False,
+                    close_kind=ProtocolCloseKind.ERROR,
+                    close_reason=failure_reason,
+                )
             except Exception as ex:
+                record_failure_reason(str(ex))
                 logger.debug(
-                    "unable to create replacement room protocol during initial startup",
+                    protocol_factory_failure_log_message,
                     exc_info=ex,
                 )
                 continue
 
-            current_protocol = self._protocol_instance
-            self.protocol._unbind(current_protocol)
-            self._protocol_instance = next_protocol
-            self.protocol._bind(next_protocol)
+            self._replace_protocol(next_protocol)
             try:
-                if remaining is None:
-                    await self._open_protocol(initial=False)
-                else:
-                    await asyncio.wait_for(
-                        self._open_protocol(initial=False),
-                        timeout=remaining,
-                    )
+                await attempt(protocol=next_protocol, remaining=remaining)
             except asyncio.TimeoutError:
+                record_failure_reason(next_protocol.close_reason())
                 await self._close_protocol(next_protocol)
-                return False
+                return self._timed_out_retry_result(disconnect_reason=failure_reason)
             except _ProtocolStartupFailure as ex:
+                record_failure_reason(ex.reason)
                 await self._close_protocol(next_protocol)
                 if ex.kind != ProtocolCloseKind.ERROR:
-                    return False
-            except Exception:
+                    return _ProtocolRetryResult(
+                        connected=False,
+                        close_kind=ex.kind,
+                        close_reason=ex.reason,
+                    )
+            except Exception as ex:
+                record_failure_reason(str(ex))
+                logger.debug(attempt_failure_log_message, exc_info=ex)
                 await self._close_protocol(next_protocol)
-                raise
+                continue
             else:
-                return True
+                return _ProtocolRetryResult(connected=True)
 
-        return False
+        return _ProtocolRetryResult(
+            connected=False,
+            close_kind=ProtocolCloseKind.CLIENT,
+            close_reason=self.close_reason(),
+        )
 
     def _remaining_reconnect_timeout(self, *, deadline: float | None) -> float | None:
         if deadline is None:
             return None
         return max(0.0, deadline - time.monotonic())
+
+    def _timed_out_retry_result(
+        self, *, disconnect_reason: str | None
+    ) -> _ProtocolRetryResult:
+        if self._reconnect_timeout is None:
+            raise AssertionError("timed out retry result requires a timeout value")
+        return _ProtocolRetryResult(
+            connected=False,
+            close_kind=ProtocolCloseKind.ERROR,
+            close_reason=self._reconnect_timeout_reason(
+                disconnect_reason=disconnect_reason
+            ),
+        )
 
     def _reconnect_timeout_reason(self, *, disconnect_reason: str | None) -> str:
         if self._reconnect_timeout is None:
@@ -1096,106 +1223,89 @@ class RoomClient:
         if not self._room_closed.done():
             self._room_closed.set_result(None)
 
-    async def _reconnect(self, *, disconnect_reason: str | None) -> bool:
-        deadline = None
-        if self._reconnect_timeout is not None:
-            deadline = time.monotonic() + self._reconnect_timeout
-        first_attempt = True
-        while not self._closing:
-            if first_attempt:
-                first_attempt = False
-                if self._reconnect_timeout is None:
-                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
-            else:
-                remaining = self._remaining_reconnect_timeout(deadline=deadline)
-                if remaining is not None and remaining <= 0:
-                    timeout_reason = self._reconnect_timeout_reason(
-                        disconnect_reason=disconnect_reason
-                    )
-                    logger.warning("%s; closing room client", timeout_reason)
-                    self._close_after_unexpected_disconnect(close_reason=timeout_reason)
-                    return False
-                if remaining is None:
-                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
-                elif remaining > 0:
-                    await asyncio.sleep(
-                        min(self._reconnect_retry_interval_seconds, remaining)
-                    )
-
-            remaining = self._remaining_reconnect_timeout(deadline=deadline)
-            if remaining is not None and remaining <= 0:
-                timeout_reason = self._reconnect_timeout_reason(
-                    disconnect_reason=disconnect_reason
+    def _set_startup_terminal_state(
+        self,
+        *,
+        close_kind: ProtocolCloseKind,
+        close_reason: str | None,
+        protocol: Protocol | None = None,
+    ) -> None:
+        normalized_close_reason = self._normalize_close_reason(close_reason)
+        self._close_kind = close_kind
+        self._close_reason = normalized_close_reason
+        if close_kind == ProtocolCloseKind.ERROR:
+            self._set_terminal_state(
+                state=self._unexpected_close_terminal_state(
+                    close_reason=normalized_close_reason
                 )
-                logger.warning("%s; closing room client", timeout_reason)
-                self._close_after_unexpected_disconnect(close_reason=timeout_reason)
-                return False
+            )
+        elif close_kind == ProtocolCloseKind.CLIENT:
+            self._set_terminal_state(state=self._client_closed_terminal_state())
+        else:
+            self._set_terminal_state(
+                state=self._protocol_terminal_state(protocol=protocol)
+            )
+        if not self._room_closed.done():
+            self._room_closed.set_result(None)
 
-            try:
-                next_protocol = self._protocol_factory()
-            except ProtocolReconnectUnsupportedError:
-                self._close_after_unexpected_disconnect(close_reason=disconnect_reason)
-                return False
-            except Exception as ex:
-                logger.debug("unable to create replacement room protocol", exc_info=ex)
-                next_protocol = None
-            if next_protocol is not None:
-                current_protocol = self._protocol_instance
-                self.protocol._unbind(current_protocol)
-                self._protocol_instance = next_protocol
-                self.protocol._bind(next_protocol)
-                reconnect_task = asyncio.create_task(self._complete_reconnect())
-                try:
-                    if remaining is None:
-                        await reconnect_task
-                    else:
-                        await asyncio.wait_for(reconnect_task, timeout=remaining)
-                except asyncio.TimeoutError:
-                    reconnect_task.cancel()
-                    await asyncio.gather(reconnect_task, return_exceptions=True)
-                    self._allow_disconnected_requests = False
-                    await self._close_protocol(next_protocol)
-                    await self.sync._on_room_disconnect()
-                    self.messaging._on_room_disconnect(
-                        reason=next_protocol.close_reason()
-                    )
-                    timeout_reason = self._reconnect_timeout_reason(
-                        disconnect_reason=disconnect_reason
-                    )
-                    logger.warning("%s; closing room client", timeout_reason)
-                    self._close_after_unexpected_disconnect(close_reason=timeout_reason)
-                    return False
-                except _ProtocolStartupFailure as ex:
-                    await self._close_protocol(next_protocol)
-                    if ex.kind == ProtocolCloseKind.ERROR:
-                        next_protocol = None
-                    else:
-                        self._set_terminal_state(
-                            state=self._protocol_terminal_state(protocol=next_protocol)
-                        )
-                        self._close_kind = ex.kind
-                        self._close_reason = self._normalize_close_reason(ex.reason)
-                        if not self._room_closed.done():
-                            self._room_closed.set_result(None)
-                        return False
-                except Exception as ex:
-                    logger.debug("room reconnect attempt failed", exc_info=ex)
-                    self._allow_disconnected_requests = False
-                    await self._close_protocol(next_protocol)
-                    await self.sync._on_room_disconnect()
-                    self.messaging._on_room_disconnect(
-                        reason=next_protocol.close_reason()
-                    )
-                    next_protocol = None
-                else:
-                    self.emit(
-                        "room.status",
-                        status="reconnected",
-                        message="room connection restored",
-                    )
-                    self.emit("reconnected")
-                    return True
+    def _finalize_initial_startup_retry_failure(
+        self, *, retry_result: _ProtocolRetryResult
+    ) -> NoReturn:
+        close_kind = retry_result.close_kind
+        if close_kind is None:
+            raise AssertionError("initial startup retry failure requires a close kind")
+        self._set_startup_terminal_state(
+            close_kind=close_kind,
+            close_reason=retry_result.close_reason,
+            protocol=self._protocol_instance,
+        )
+        raise self._startup_exception(
+            close_kind=close_kind,
+            close_reason=retry_result.close_reason,
+            protocol=self._protocol_instance,
+        )
 
+    async def _reconnect(self, *, disconnect_reason: str | None) -> bool:
+        retry_result = await self._retry_protocol_connection(
+            disconnect_reason=disconnect_reason,
+            protocol_factory_failure_log_message=(
+                "unable to create replacement room protocol"
+            ),
+            attempt_failure_log_message="room reconnect attempt failed",
+            attempt=self._attempt_reconnect,
+        )
+        if retry_result.connected:
+            self.emit(
+                "room.status",
+                status="reconnected",
+                message="room connection restored",
+            )
+            self.emit("reconnected")
+            return True
+
+        close_kind = retry_result.close_kind
+        if close_kind == ProtocolCloseKind.ERROR:
+            if (
+                retry_result.close_reason is not None
+                and retry_result.close_reason.startswith(
+                    "room reconnect timed out after"
+                )
+            ):
+                logger.warning("%s; closing room client", retry_result.close_reason)
+            self._close_after_unexpected_disconnect(
+                close_reason=retry_result.close_reason
+            )
+            return False
+
+        if close_kind is None:
+            raise AssertionError("reconnect failure requires a close kind")
+        self._set_terminal_state(
+            state=self._protocol_terminal_state(protocol=self._protocol_instance)
+        )
+        self._close_kind = close_kind
+        self._close_reason = self._normalize_close_reason(retry_result.close_reason)
+        if not self._room_closed.done():
+            self._room_closed.set_result(None)
         return False
 
     async def _connection_lifecycle(self) -> None:
@@ -1372,11 +1482,26 @@ class RoomClient:
             return error
         return state.message_send_error()
 
-    def _startup_close_exception(self, *, protocol: Protocol) -> RoomException:
+    def _startup_exception(
+        self,
+        *,
+        close_kind: ProtocolCloseKind,
+        close_reason: str | None,
+        protocol: Protocol | None = None,
+    ) -> RoomException:
+        if close_kind == ProtocolCloseKind.ERROR:
+            base_message = (
+                "room connection unexpectedly closed before the room became ready"
+            )
+        elif close_kind == ProtocolCloseKind.CLIENT:
+            base_message = "room client was closed before the room became ready"
+        else:
+            base_message = "room connection closed before the room became ready"
         return RoomException(
             self._format_closed_message(
-                base_message="room connection closed before the room became ready",
+                base_message=base_message,
                 protocol=protocol,
+                close_reason=close_reason,
             ),
             code=None,
         )

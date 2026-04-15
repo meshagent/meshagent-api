@@ -585,11 +585,19 @@ class _BadSyncResponseRoom:
 
 
 class _ClosingProtocol(_FakeProtocol):
+    def __init__(self) -> None:
+        super().__init__()
+        self._close_kind = ProtocolCloseKind.SERVER
+
     async def wait_for_close(self) -> None:
         return None
 
 
 class _ClosingProtocolWithReason(_FakeProtocol):
+    def __init__(self) -> None:
+        super().__init__()
+        self._close_kind = ProtocolCloseKind.SERVER
+
     async def wait_for_close(self) -> None:
         return None
 
@@ -598,6 +606,10 @@ class _ClosingProtocolWithReason(_FakeProtocol):
 
 
 class _StatusClosingProtocol(_FakeProtocol):
+    def __init__(self) -> None:
+        super().__init__()
+        self._close_kind = ProtocolCloseKind.SERVER
+
     async def wait_for_close(self) -> None:
         handler = self.handlers["room.status"]
         result = handler(
@@ -612,6 +624,16 @@ class _StatusClosingProtocol(_FakeProtocol):
 
     def close_reason(self) -> str | None:
         return "websocket closed with code 1013"
+
+
+class _StartupExceptionProtocol(_FakeProtocol):
+    def __init__(self, *, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    async def __aenter__(self):
+        self.entered = True
+        raise RuntimeError(self._message)
 
 
 class _ErrorClosingProtocol(_FakeProtocol):
@@ -1611,6 +1633,9 @@ async def test_room_client_enter_raises_if_connection_closes_before_ready() -> N
 
     assert protocol.entered is True
     assert protocol.exited is True
+    assert client.is_closed is True
+    assert client.close_kind() == ProtocolCloseKind.SERVER
+    await asyncio.wait_for(client.wait_for_close(), timeout=1)
 
 
 @pytest.mark.asyncio
@@ -1676,6 +1701,73 @@ async def test_room_client_enter_retries_transient_error_close_before_ready() ->
     finally:
         if room._entered:
             await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_retries_transient_startup_exception() -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory():
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls == 1:
+            return _StartupExceptionProtocol(message="transient startup error")
+        return controller.protocol_factory()
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=0.1,
+    )
+
+    try:
+        await room.__aenter__()
+        assert protocol_factory_calls == 2
+        assert len(controller.protocols) == 1
+        assert room.is_connected is True
+    finally:
+        if room._entered:
+            await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_reconnect_timeout_closes_room_after_startup_failures() -> (
+    None
+):
+    protocol_factory_calls = 0
+
+    def protocol_factory():
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        return _StartupExceptionProtocol(message="transient startup error")
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=0.1,
+    )
+
+    with pytest.raises(RoomException) as ex_info:
+        await room.__aenter__()
+
+    assert str(ex_info.value) == (
+        "room connection unexpectedly closed before the room became ready: "
+        "room reconnect timed out after 0.1s (transient startup error)"
+    )
+    assert protocol_factory_calls >= 2
+    assert room.is_connected is False
+    assert room.is_closed is True
+    assert room.close_kind() == ProtocolCloseKind.ERROR
+    assert room.close_reason() == (
+        "room reconnect timed out after 0.1s (transient startup error)"
+    )
+    await asyncio.wait_for(room.wait_for_close(), timeout=1)
+
+    with pytest.raises(RoomException) as request_ex_info:
+        await room.send_request("room.ping", {"hello": "world"})
+    assert str(request_ex_info.value) == (
+        "room connection unexpectedly closed before request completed: "
+        "room reconnect timed out after 0.1s (transient startup error)"
+    )
 
 
 @pytest.mark.asyncio
