@@ -988,14 +988,25 @@ class Meshagent:
             sessions = data.get("sessions", [])
             return [RoomSession.model_validate(session) for session in sessions]
 
-    async def list_recent_sessions(self, project_id: str) -> list[RoomSession]:
+    async def list_recent_sessions(
+        self,
+        project_id: str,
+        *,
+        limit: int = 25,
+        room_id: Optional[str] = None,
+    ) -> list[RoomSession]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/sessions
         Returns a JSON dict: { "sessions": [...] }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/sessions"
+        params: dict[str, str] = {"limit": str(limit)}
+        if room_id is not None:
+            params["room_id"] = room_id
 
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             sessions = data.get("sessions", [])
