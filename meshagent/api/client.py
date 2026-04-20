@@ -744,6 +744,7 @@ class Meshagent:
         is_admin: bool | None = None,
         is_developer: bool | None = None,
         can_create_rooms: bool | None = None,
+        can_use_llm_proxy: bool | None = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/:id/users
@@ -759,6 +760,11 @@ class Meshagent:
             **(
                 {"can_create_rooms": can_create_rooms}
                 if can_create_rooms is not None
+                else {}
+            ),
+            **(
+                {"can_use_llm_proxy": can_use_llm_proxy}
+                if can_use_llm_proxy is not None
                 else {}
             ),
         }
@@ -789,10 +795,11 @@ class Meshagent:
         is_admin: bool,
         is_developer: bool,
         can_create_rooms: bool,
+        can_use_llm_proxy: bool,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/:project_id/users/:user_id
-        Body: { "is_admin", "is_developer", "can_create_rooms" }
+        Body: { "is_admin", "is_developer", "can_create_rooms", "can_use_llm_proxy" }
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
@@ -800,6 +807,7 @@ class Meshagent:
             "is_admin": is_admin,
             "is_developer": is_developer,
             "can_create_rooms": can_create_rooms,
+            "can_use_llm_proxy": can_use_llm_proxy,
         }
         async with self._session.put(
             url, headers=self._get_headers(), json=body

@@ -12,6 +12,7 @@ def test_full_oauth_scopes_match_official_scope_set() -> None:
         "room/*",
         "create_users",
         "create_rooms",
+        "llm_proxy",
         "admin",
         "developer",
         "connect_room",
