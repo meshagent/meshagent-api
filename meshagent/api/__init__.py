@@ -27,7 +27,15 @@ from .room_server_client import (
     FileHandle,
     StorageEntry,
 )
-from .client import Meshagent
+from .client import (
+    Meshagent,
+    CreateProjectRepositoryRequest,
+    CreateRepositoryTokenRequest,
+    UpdateProjectRepositoryRequest,
+    ProjectInfo,
+    ProjectRepository,
+    RepositoryToken,
+)
 from .participant_token import ParticipantToken, ParticipantGrant, ApiScope, LLMGrant
 from .participant import Participant
 from .schema import (
@@ -69,6 +77,12 @@ from .error_codes import ErrorCode
 
 __all__ = [
     Meshagent,
+    CreateProjectRepositoryRequest,
+    CreateRepositoryTokenRequest,
+    UpdateProjectRepositoryRequest,
+    ProjectInfo,
+    ProjectRepository,
+    RepositoryToken,
     DatabaseJson,
     DatabaseRecord,
     DatabaseRowChunks,

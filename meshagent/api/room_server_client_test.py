@@ -4130,8 +4130,8 @@ async def test_containers_client_load_uses_room_invoke_with_strict_payload() -> 
             self.requests.append(kwargs)
             return JsonContent(
                 json={
-                    "resolved_ref": "room.meshagent.com/images/example.tar:latest",
-                    "refs": ["room.meshagent.com/images/example.tar:latest"],
+                    "resolved_ref": "registry.meshagent.com/images/example.tar:latest",
+                    "refs": ["registry.meshagent.com/images/example.tar:latest"],
                 }
             )
 
@@ -4140,8 +4140,8 @@ async def test_containers_client_load_uses_room_invoke_with_strict_payload() -> 
 
     loaded = await client.load(archive_path="/images/example.tar")
 
-    assert loaded.resolved_ref == "room.meshagent.com/images/example.tar:latest"
-    assert loaded.refs == ["room.meshagent.com/images/example.tar:latest"]
+    assert loaded.resolved_ref == "registry.meshagent.com/images/example.tar:latest"
+    assert loaded.refs == ["registry.meshagent.com/images/example.tar:latest"]
     assert room.requests == [
         {
             "toolkit": "containers",

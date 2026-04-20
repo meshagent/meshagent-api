@@ -1,8 +1,16 @@
 import aiohttp
 import base64
 import json
+import re
 from typing import Any, Dict, List, Optional, Literal, TypeVar, cast
-from pydantic import BaseModel, ValidationError, JsonValue, Field, ConfigDict
+from pydantic import (
+    BaseModel,
+    ValidationError,
+    JsonValue,
+    Field,
+    ConfigDict,
+    field_validator,
+)
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.helpers import meshagent_base_url
@@ -308,6 +316,114 @@ class Route(BaseModel):
     annotations: dict[str, str]
 
 
+_OCI_REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
+
+
+def _normalize_repository_name(value: str) -> str:
+    normalized = value.strip()
+    if normalized == "":
+        raise ValueError("repository name must not be empty")
+
+    parts = normalized.split("/")
+    if any(
+        part == "" or _OCI_REPOSITORY_COMPONENT_RE.fullmatch(part) is None
+        for part in parts
+    ):
+        raise ValueError("repository name must be a valid OCI repository path")
+
+    return normalized
+
+
+class _RepositoryRequestBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _normalize_repository_name(value)
+
+
+class CreateProjectRepositoryRequest(_RepositoryRequestBase):
+    pass
+
+
+class UpdateProjectRepositoryRequest(_RepositoryRequestBase):
+    pass
+
+
+# Backward-compatible aliases for older internal imports.
+_CreateProjectRepositoryRequest = CreateProjectRepositoryRequest
+_UpdateProjectRepositoryRequest = UpdateProjectRepositoryRequest
+
+
+class ProjectRepository(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    description: str = ""
+    annotations: dict[str, str] = Field(default_factory=dict)
+    created_at: datetime
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _normalize_repository_name(value)
+
+    @property
+    def storage_prefix(self) -> str:
+        return self.name
+
+
+class ProjectInfo(BaseModel):
+    id: str
+    owner_user_id: str | None = Field(default=None, alias="owner_user_id")
+    name: str
+    project_key: str
+    created_at: datetime | None = Field(default=None, alias="created_at")
+    settings: dict[str, JsonValue] | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CreateRepositoryTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actions: list[Literal["pull", "push"]] = Field(default_factory=lambda: ["pull"])
+    expires_in_seconds: int | None = None
+
+    @field_validator("actions")
+    @classmethod
+    def validate_actions(cls, value: list[Literal["pull", "push"]]) -> list[str]:
+        normalized_actions: list[str] = []
+        seen: set[str] = set()
+        for action in value:
+            normalized_action = action.strip()
+            if normalized_action not in {"pull", "push"}:
+                raise ValueError(f"unsupported repository token action: {action}")
+            if normalized_action not in seen:
+                seen.add(normalized_action)
+                normalized_actions.append(normalized_action)
+        if len(normalized_actions) == 0:
+            raise ValueError("repository token actions must not be empty")
+        return normalized_actions
+
+    @field_validator("expires_in_seconds")
+    @classmethod
+    def validate_expires_in_seconds(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("expires_in_seconds must be greater than zero")
+        return value
+
+
+class RepositoryToken(BaseModel):
+    token: str
+    expires_at: datetime
+
+
 class Balance(BaseModel):
     balance: float
     auto_recharge_threshold: Optional[float] = Field(
@@ -609,7 +725,7 @@ class Meshagent:
         """
         Corresponds to: POST /accounts/projects
         Body: { "name": "<name>" }
-        Returns a JSON dict with { "id", "owner_user_id", "name" } on success.
+        Returns a JSON dict with { "id", "owner_user_id", "name", "project_key" } on success.
         """
         url = f"{self.base_url}/accounts/projects"
 
@@ -765,6 +881,13 @@ class Meshagent:
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             return await resp.json()
+
+    async def get_project_info(self, project_id: str) -> ProjectInfo:
+        url = f"{self.base_url}/accounts/projects/{project_id}"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, ProjectInfo)
 
     async def create_api_key(
         self, project_id: str, name: str, description: str
@@ -1741,6 +1864,91 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/services/{service_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
+
+    async def create_repository(
+        self,
+        *,
+        project_id: str,
+        repository: CreateProjectRepositoryRequest,
+    ) -> ProjectRepository:
+        url = f"{self.base_url}/accounts/projects/{project_id}/repositories"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=repository.model_dump(mode="json"),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, ProjectRepository)
+
+    async def update_repository(
+        self,
+        *,
+        project_id: str,
+        repository_id: str,
+        repository: UpdateProjectRepositoryRequest,
+    ) -> ProjectRepository:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/repositories/"
+            f"{repository_id}"
+        )
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json=repository.model_dump(mode="json"),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, ProjectRepository)
+
+    async def get_repository(
+        self, *, project_id: str, repository_id: str
+    ) -> ProjectRepository:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/repositories/"
+            f"{repository_id}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, ProjectRepository)
+
+    async def list_repositories(self, *, project_id: str) -> List[ProjectRepository]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/repositories"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    ProjectRepository.model_validate(item)
+                    for item in data["repositories"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid repositories payload: {exc}") from exc
+
+    async def delete_repository(self, *, project_id: str, repository_id: str) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/repositories/"
+            f"{repository_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_repository_token(
+        self,
+        *,
+        project_id: str,
+        repository_id: str,
+        request: CreateRepositoryTokenRequest,
+    ) -> RepositoryToken:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/repositories/"
+            f"{repository_id}/token"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=request.model_dump(mode="json"),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, RepositoryToken)
 
     async def create_project_secret(
         self,
