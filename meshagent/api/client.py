@@ -70,6 +70,19 @@ class RoomConnectionInfo(BaseModel):
     room_url: str
 
 
+class MeshagentDomains(BaseModel):
+    studio: str | None = None
+    accounts: str | None = None
+    api: str | None = None
+    mail: str | None = None
+    pages: str | None = None
+    registry: str | None = None
+
+
+class MeshagentDeploymentConfig(BaseModel):
+    domains: MeshagentDomains
+
+
 class RoomShare(BaseModel):
     id: str
     project_id: str
@@ -587,6 +600,16 @@ class Meshagent:
             raise RoomException(
                 f"Invalid {model_type.__name__} payload: {exc}"
             ) from exc
+
+    async def get_config(self) -> MeshagentDeploymentConfig:
+        url = f"{self.base_url}/config"
+
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, MeshagentDeploymentConfig)
 
     async def upload(self, *, project_id: str, path: str, data: bytes) -> None:
         """Upload a file to project storage.

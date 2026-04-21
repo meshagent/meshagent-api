@@ -146,6 +146,40 @@ async def test_update_scheduled_task_allows_partial_update_without_annotations()
 
 
 @pytest.mark.asyncio
+async def test_get_config_returns_typed_deployment_config():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "domains": {
+                        "studio": "studio.meshagent.life",
+                        "accounts": "accounts.meshagent.life",
+                        "api": "api.meshagent.life",
+                        "mail": "mail.meshagent.life",
+                        "pages": "meshagent.life",
+                        "registry": "registry.meshagent.life",
+                    }
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    config = await client.get_config()
+
+    assert config.domains.registry == "registry.meshagent.life"
+    assert config.domains.api == "api.meshagent.life"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/config",
+            None,
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_project_secret_sends_base64_payload():
     session = _FakeSession([_FakeResponse(status=200, payload={"id": "secret-1"})])
     client = Meshagent(base_url="http://example.test", token="token", session=session)
