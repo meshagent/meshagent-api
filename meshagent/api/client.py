@@ -1066,10 +1066,12 @@ class Meshagent:
         end: Optional[datetime] = None,
         interval: Optional[str] = None,
         report: Optional[str] = None,
+        users: Optional[list[str]] = None,
+        room: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/usage
-        Allows filtering using optional start/end timestamps, interval, and report name.
+        Allows filtering using optional start/end timestamps, interval, report name, users, and room.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/usage"
         params: Dict[str, str] = {}
@@ -1081,6 +1083,10 @@ class Meshagent:
             params["interval"] = interval
         if report is not None:
             params["report"] = report
+        if users:
+            params["users"] = ",".join(users)
+        if room is not None and room.strip() != "":
+            params["room"] = room.strip()
 
         async with self._session.get(
             url,
