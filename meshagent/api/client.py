@@ -70,6 +70,19 @@ class RoomConnectionInfo(BaseModel):
     room_url: str
 
 
+class MeshagentDomains(BaseModel):
+    studio: str | None = None
+    accounts: str | None = None
+    api: str | None = None
+    mail: str | None = None
+    pages: str | None = None
+    registry: str | None = None
+
+
+class MeshagentDeploymentConfig(BaseModel):
+    domains: MeshagentDomains
+
+
 class RoomShare(BaseModel):
     id: str
     project_id: str
@@ -588,6 +601,16 @@ class Meshagent:
                 f"Invalid {model_type.__name__} payload: {exc}"
             ) from exc
 
+    async def get_config(self) -> MeshagentDeploymentConfig:
+        url = f"{self.base_url}/config"
+
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, MeshagentDeploymentConfig)
+
     async def upload(self, *, project_id: str, path: str, data: bytes) -> None:
         """Upload a file to project storage.
 
@@ -744,6 +767,7 @@ class Meshagent:
         is_admin: bool | None = None,
         is_developer: bool | None = None,
         can_create_rooms: bool | None = None,
+        can_use_llm_proxy: bool | None = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/:id/users
@@ -759,6 +783,11 @@ class Meshagent:
             **(
                 {"can_create_rooms": can_create_rooms}
                 if can_create_rooms is not None
+                else {}
+            ),
+            **(
+                {"can_use_llm_proxy": can_use_llm_proxy}
+                if can_use_llm_proxy is not None
                 else {}
             ),
         }
@@ -789,10 +818,11 @@ class Meshagent:
         is_admin: bool,
         is_developer: bool,
         can_create_rooms: bool,
+        can_use_llm_proxy: bool,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/:project_id/users/:user_id
-        Body: { "is_admin", "is_developer", "can_create_rooms" }
+        Body: { "is_admin", "is_developer", "can_create_rooms", "can_use_llm_proxy" }
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
@@ -800,6 +830,7 @@ class Meshagent:
             "is_admin": is_admin,
             "is_developer": is_developer,
             "can_create_rooms": can_create_rooms,
+            "can_use_llm_proxy": can_use_llm_proxy,
         }
         async with self._session.put(
             url, headers=self._get_headers(), json=body
