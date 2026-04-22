@@ -7167,6 +7167,7 @@ class RoomContainer(BaseModel):
     image: Optional[str] = None
     status: Optional[str] = None
     name: Optional[str] = None
+    ports: list[int] = Field(default_factory=list)
     started_by: ContainerStartedBy
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
     private: bool
