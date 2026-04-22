@@ -7068,11 +7068,74 @@ class PullMessage(BaseModel):
     )
 
 
+def _normalize_string_map_field(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if isinstance(value, list):
+        normalized = dict[str, str]()
+        for entry in value:
+            if not isinstance(entry, dict):
+                raise TypeError("expected a list of {'key', 'value'} objects")
+            key = entry.get("key")
+            item_value = entry.get("value")
+            if not isinstance(key, str) or not isinstance(item_value, str):
+                raise TypeError(
+                    "string map entries must contain string key/value pairs"
+                )
+            normalized[key] = item_value
+        return normalized
+    if isinstance(value, dict):
+        normalized = dict[str, str]()
+        for key, item_value in value.items():
+            if not isinstance(key, str) or not isinstance(item_value, str):
+                raise TypeError("string map values must be strings")
+            normalized[key] = item_value
+        return normalized
+    raise TypeError("expected a string map or list of key/value pairs")
+
+
 class Image(BaseModel):
     id: str
-    tags: List[str]
-    size: int
-    labels: Dict[str, str]
+    preferred_ref: Optional[str] = None
+    references: List[str] = Field(default_factory=list)
+    labels: Dict[str, str] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    target_media_type: Optional[str] = None
+
+    @field_validator("labels", mode="before")
+    @classmethod
+    def _validate_labels(cls, value: Any) -> dict[str, str]:
+        return _normalize_string_map_field(value)
+
+
+class ImageDescriptor(BaseModel):
+    digest: str
+    media_type: Optional[str] = None
+    size: Optional[int] = None
+    annotations: Dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("annotations", mode="before")
+    @classmethod
+    def _validate_annotations(cls, value: Any) -> dict[str, str]:
+        return _normalize_string_map_field(value)
+
+
+class ImageManifest(BaseModel):
+    descriptor: ImageDescriptor
+    platform_os: Optional[str] = None
+    platform_architecture: Optional[str] = None
+    platform_variant: Optional[str] = None
+
+
+class ImageInspection(BaseModel):
+    image: Image
+    target: ImageDescriptor
+    selected_manifest: Optional[ImageDescriptor] = None
+    manifests: List[ImageManifest] = Field(default_factory=list)
+    config: Optional[ImageDescriptor] = None
+    layers: List[ImageDescriptor] = Field(default_factory=list)
+    content_size: Optional[int] = None
 
 
 class DockerSecret(BaseModel):
@@ -7556,6 +7619,11 @@ class ContainersClient:
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
         payload = dict(item)
+        references = payload.get("references")
+        if references is None and isinstance(payload.get("tags"), list):
+            payload["references"] = list(payload["tags"])
+            if payload.get("preferred_ref") is None and len(payload["references"]) > 0:
+                payload["preferred_ref"] = payload["references"][0]
         labels = payload.get("labels")
         if isinstance(labels, list):
             normalized_labels = dict[str, str]()
@@ -7586,6 +7654,16 @@ class ContainersClient:
             raise self._unexpected_response_error(operation="list_images")
         imgs = res["images"]
         return [Image.model_validate(self._image_payload(i)) for i in imgs]
+
+    async def inspect_image(self, *, image_id: str) -> ImageInspection:
+        res = await self.room.invoke(
+            toolkit="containers",
+            tool="inspect_image",
+            input={"image_id": image_id},
+        )
+        if not isinstance(res, JsonContent):
+            raise self._unexpected_response_error(operation="inspect_image")
+        return ImageInspection.model_validate(res.json)
 
     async def delete_image(self, *, image: str) -> None:
         await self.room.invoke(

@@ -42,6 +42,7 @@ from meshagent.api.room_server_client import (
     DockerSecret,
     DatabaseExpression,
     DatabaseStruct,
+    Image,
     ListDataType,
     LivekitClient,
     MemoryClient,
@@ -3799,11 +3800,56 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
                         "images": [
                             {
                                 "id": "img-1",
-                                "tags": ["demo:latest"],
-                                "size": 1,
-                                "labels": {},
+                                "preferred_ref": "demo:latest",
+                                "references": ["demo:latest"],
+                                "labels": [],
+                                "created_at": "2026-01-01T00:00:00Z",
+                                "updated_at": "2026-01-02T00:00:00Z",
+                                "target_media_type": "application/vnd.oci.image.manifest.v1+json",
                             }
                         ]
+                    }
+                )
+            if tool == "inspect_image":
+                return JsonContent(
+                    json={
+                        "image": {
+                            "id": "img-1",
+                            "preferred_ref": "demo:latest",
+                            "references": ["demo:latest"],
+                            "labels": [{"key": "role", "value": "demo"}],
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "updated_at": "2026-01-02T00:00:00Z",
+                            "target_media_type": "application/vnd.oci.image.manifest.v1+json",
+                        },
+                        "target": {
+                            "digest": "sha256:target",
+                            "media_type": "application/vnd.oci.image.manifest.v1+json",
+                            "size": 123,
+                            "annotations": [],
+                        },
+                        "selected_manifest": {
+                            "digest": "sha256:target",
+                            "media_type": "application/vnd.oci.image.manifest.v1+json",
+                            "size": 123,
+                            "annotations": [],
+                        },
+                        "manifests": [],
+                        "config": {
+                            "digest": "sha256:config",
+                            "media_type": "application/vnd.oci.image.config.v1+json",
+                            "size": 45,
+                            "annotations": [],
+                        },
+                        "layers": [
+                            {
+                                "digest": "sha256:layer-1",
+                                "media_type": "application/vnd.oci.image.layer.v1.tar+gzip",
+                                "size": 67,
+                                "annotations": [],
+                            }
+                        ],
+                        "content_size": 235,
                     }
                 )
             if tool == "list_containers":
@@ -3863,7 +3909,8 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
         size=11,
     )
     await client.run_service(service_id="svc-1", env={"A": "1"})
-    await client.list_images()
+    images = await client.list_images()
+    inspection = await client.inspect_image(image_id="img-1")
     await client.list_builds()
     await client.cancel_build(build_id="build-1")
     await client.delete_build(build_id="build-1")
@@ -3875,11 +3922,28 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
         "build",
         "run_service",
         "list_images",
+        "inspect_image",
         "list_builds",
         "cancel_build",
         "delete_build",
         "list_containers",
     ]
+
+    assert images == [
+        Image(
+            id="img-1",
+            preferred_ref="demo:latest",
+            references=["demo:latest"],
+            labels={},
+            created_at=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc),
+            target_media_type="application/vnd.oci.image.manifest.v1+json",
+        )
+    ]
+    assert inspection.image.id == "img-1"
+    assert inspection.image.references == ["demo:latest"]
+    assert inspection.target.digest == "sha256:target"
+    assert inspection.content_size == 235
 
     pull_input = room.requests[0]["input"]
     assert isinstance(pull_input, dict)
