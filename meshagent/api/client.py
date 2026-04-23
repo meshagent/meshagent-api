@@ -672,6 +672,21 @@ class Meshagent:
             payload = await resp.json()
             return cast(ProjectRole, payload["role"])
 
+    async def can_use_llm_proxy(self, project_id: str) -> bool:
+        """
+        Corresponds to: GET /accounts/projects/{id}/role
+        Returns whether the current user can use the project LLM proxy.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/role"
+
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+        ) as resp:
+            await self._raise_for_status(resp)
+            payload = await resp.json()
+            return bool(payload.get("can_use_llm_proxy", False))
+
     async def create_share(
         self, project_id: str, settings: Optional[dict] = None
     ) -> Dict[str, Any]:
