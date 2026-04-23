@@ -447,6 +447,7 @@ class Balance(BaseModel):
     )
     last_recharge: Optional[datetime] = Field(default=None, alias="last_recharge")
     monthly_budget: Optional[float] = Field(default=None, alias="monthly_budget")
+    auto_recharge_paused: bool = Field(default=False, alias="auto_recharge_paused")
 
     model_config = ConfigDict(populate_by_name=True)
 
