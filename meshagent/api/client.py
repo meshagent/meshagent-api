@@ -446,6 +446,7 @@ class Balance(BaseModel):
         default=None, alias="auto_recharge_amount"
     )
     last_recharge: Optional[datetime] = Field(default=None, alias="last_recharge")
+    monthly_budget: Optional[float] = Field(default=None, alias="monthly_budget")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -1004,6 +1005,7 @@ class Meshagent:
         enabled: bool,
         amount: float,
         threshold: float,
+        monthly_budget: float | None = None,
     ) -> None:
         """POST /accounts/projects/{project_id}/recharge"""
         url = f"{self.base_url}/accounts/projects/{project_id}/recharge"
@@ -1011,6 +1013,7 @@ class Meshagent:
             "enabled": enabled,
             "amount": amount,
             "threshold": threshold,
+            "monthly_budget": monthly_budget,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
