@@ -329,6 +329,104 @@ class Route(BaseModel):
     annotations: dict[str, str]
 
 
+FeedVisibility = Literal["public", "project", "private"]
+FeedJsonSchema = dict[str, JsonValue] | bool
+
+
+class _FeedRequestBase(BaseModel):
+    name: str
+    description: str = ""
+    visibility: FeedVisibility = "private"
+    paused: bool = False
+    annotations: dict[str, str] = Field(default_factory=dict)
+    message_schema: FeedJsonSchema | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("name must not be empty")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("message_schema")
+    @classmethod
+    def validate_message_schema(
+        cls, value: FeedJsonSchema | None
+    ) -> FeedJsonSchema | None:
+        if value is None or isinstance(value, bool):
+            return value
+        if not isinstance(value, dict):
+            raise ValueError("message_schema must be a JSON object or boolean")
+        return value
+
+
+class _CreateFeedRequest(_FeedRequestBase):
+    pass
+
+
+class _UpdateFeedRequest(_FeedRequestBase):
+    visibility: FeedVisibility | None = None
+
+
+class Feed(BaseModel):
+    id: str
+    project_id: str
+    created_at: datetime
+    name: str
+    description: str = ""
+    visibility: FeedVisibility = "private"
+    paused: bool = False
+    annotations: dict[str, str] = Field(default_factory=dict)
+    message_schema: FeedJsonSchema | None = None
+
+
+class _FeedSubscriptionRequestBase(BaseModel):
+    room: str
+    path: str
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("room")
+    @classmethod
+    def validate_room(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("room must not be empty")
+        return normalized
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("path must not be empty")
+        return normalized
+
+
+class _CreateFeedSubscriptionRequest(_FeedSubscriptionRequestBase):
+    pass
+
+
+class _UpdateFeedSubscriptionRequest(BaseModel):
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
+class FeedSubscription(BaseModel):
+    id: str
+    feed_id: str
+    project_id: str
+    room: str
+    room_id: Optional[str] = None
+    path: str
+    created_at: datetime
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
 _OCI_REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 
 
@@ -480,6 +578,7 @@ class ScheduledTask(BaseModel):
     active: bool
     once: bool
     annotations: dict[str, str]
+    storage_write_path: Optional[str] = None
 
     room_id: Optional[str] = None
     last_run_id: Optional[int] = None
@@ -498,6 +597,7 @@ class _CreateScheduledTaskRequest(BaseModel):
     active: bool = True
     once: bool = False
     annotations: dict[str, str]
+    storage_write_path: Optional[str] = None
 
 
 class _UpdateScheduledTaskRequest(BaseModel):
@@ -507,6 +607,7 @@ class _UpdateScheduledTaskRequest(BaseModel):
     schedule: Optional[str] = None
     active: Optional[bool] = None
     annotations: Optional[dict[str, str]] = None
+    storage_write_path: Optional[str] = None
 
 
 class _ListScheduledTasksResponse(BaseModel):
@@ -1543,6 +1644,224 @@ class Meshagent:
         Returns {} on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_feed(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        description: str = "",
+        visibility: FeedVisibility = "private",
+        paused: bool = False,
+        annotations: Optional[dict[str, str]] = None,
+        message_schema: FeedJsonSchema | None = None,
+    ) -> Feed:
+        url = f"{self.base_url}/accounts/projects/{project_id}/feeds"
+        payload = _CreateFeedRequest(
+            name=name,
+            description=description,
+            visibility=visibility,
+            paused=paused,
+            annotations=annotations or {},
+            message_schema=message_schema,
+        ).model_dump(mode="json", exclude_none=True)
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return Feed.model_validate((await resp.json())["feed"])
+
+    async def update_feed(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        name: str,
+        description: str = "",
+        paused: bool = False,
+        annotations: Optional[dict[str, str]] = None,
+        message_schema: FeedJsonSchema | None = None,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+        payload = _UpdateFeedRequest(
+            name=name,
+            description=description,
+            paused=paused,
+            annotations=annotations or {},
+            message_schema=message_schema,
+        ).model_dump(mode="json", exclude_none=True)
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_feed(self, *, project_id: str, feed_id: str) -> Feed:
+        url = f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return Feed.model_validate((await resp.json())["feed"])
+
+    async def list_feeds(self, *, project_id: str) -> List[Feed]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/feeds"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [Feed.model_validate(item) for item in data["feeds"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid feeds payload: {exc}") from exc
+
+    async def list_room_feeds(self, *, project_id: str, room_name: str) -> List[Feed]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/feeds"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [Feed.model_validate(item) for item in data["feeds"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid feeds payload: {exc}") from exc
+
+    async def delete_feed(self, *, project_id: str, feed_id: str) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def publish_feed_message(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        message: Any,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}/messages"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=message,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def publish_feed_batch(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        messages: list[Any],
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+            "/messages/batch"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=messages,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_feed_subscription(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        room: str,
+        path: str,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> FeedSubscription:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+            "/subscriptions"
+        )
+        payload = _CreateFeedSubscriptionRequest(
+            room=room,
+            path=path,
+            annotations=annotations or {},
+        ).model_dump(mode="json")
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return FeedSubscription.model_validate((await resp.json())["subscription"])
+
+    async def update_feed_subscription(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        subscription_id: str,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+            f"/subscriptions/{subscription_id}"
+        )
+        payload = _UpdateFeedSubscriptionRequest(
+            annotations=annotations or {},
+        ).model_dump(mode="json")
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_feed_subscription(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        subscription_id: str,
+    ) -> FeedSubscription:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+            f"/subscriptions/{subscription_id}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return FeedSubscription.model_validate((await resp.json())["subscription"])
+
+    async def list_feed_subscriptions(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+    ) -> List[FeedSubscription]:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+            "/subscriptions"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    FeedSubscription.model_validate(item)
+                    for item in data["subscriptions"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid feed subscriptions payload: {exc}"
+                ) from exc
+
+    async def delete_feed_subscription(
+        self,
+        *,
+        project_id: str,
+        feed_id: str,
+        subscription_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
+            f"/subscriptions/{subscription_id}"
+        )
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
@@ -3046,6 +3365,7 @@ class Meshagent:
         task_id: Optional[str] = None,
         once: bool = False,
         annotations: Optional[dict[str, str]] = None,
+        storage_write_path: Optional[str] = None,
     ) -> str:
         """
         POST /accounts/projects/{project_id}/scheduled-tasks
@@ -3064,6 +3384,7 @@ class Meshagent:
             active=active,
             once=once,
             annotations=annotations,
+            storage_write_path=storage_write_path,
         ).model_dump(mode="json", exclude_none=True)
 
         async with self._session.post(
@@ -3084,6 +3405,8 @@ class Meshagent:
         schedule: Optional[str] = None,
         active: Optional[bool] = None,
         annotations: Optional[dict[str, str]] = None,
+        storage_write_path: Optional[str] = None,
+        clear_storage_write_path: bool = False,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/scheduled-tasks/{task_id}
@@ -3091,6 +3414,11 @@ class Meshagent:
         Patch-like update. Any omitted fields are left unchanged.
         Returns the updated ScheduledTask when the server returns it; otherwise fetches it.
         """
+        if clear_storage_write_path and storage_write_path is not None:
+            raise ValueError(
+                "clear_storage_write_path cannot be combined with storage_write_path"
+            )
+
         url = (
             f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/{task_id}"
         )
@@ -3102,6 +3430,7 @@ class Meshagent:
             schedule=schedule,
             active=active,
             annotations=annotations,
+            storage_write_path="" if clear_storage_write_path else storage_write_path,
         ).model_dump(mode="json", exclude_none=True)
 
         async with self._session.put(
