@@ -78,36 +78,36 @@ from dataclasses import dataclass
 from meshagent.api.urls import websocket_room_url
 
 
-class DatabaseValueEncoder(ABC):
+class DatasetValueEncoder(ABC):
     @abstractmethod
-    def encode_database_value(self) -> Any:
+    def encode_dataset_value(self) -> Any:
         raise NotImplementedError
 
 
-type DatabaseJsonScalarValue = None | bool | int | float | str
-type DatabaseJsonValue = (
-    DatabaseJsonScalarValue | list["DatabaseJsonValue"] | dict[str, "DatabaseJsonValue"]
+type DatasetJsonScalarValue = None | bool | int | float | str
+type DatasetJsonValue = (
+    DatasetJsonScalarValue | list["DatasetJsonValue"] | dict[str, "DatasetJsonValue"]
 )
 
 
-def _normalize_database_json_value(
+def _normalize_dataset_json_value(
     value: Any,
     *,
     path: str = "json",
-) -> DatabaseJsonValue:
+) -> DatasetJsonValue:
     if value is None or isinstance(value, bool | int | float | str):
         return value
     if isinstance(value, list):
         return [
-            _normalize_database_json_value(item, path=f"{path}[{index}]")
+            _normalize_dataset_json_value(item, path=f"{path}[{index}]")
             for index, item in enumerate(value)
         ]
     if isinstance(value, dict):
-        normalized = dict[str, DatabaseJsonValue]()
+        normalized = dict[str, DatasetJsonValue]()
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{path} object keys must be strings")
-            normalized[key] = _normalize_database_json_value(
+            normalized[key] = _normalize_dataset_json_value(
                 item,
                 path=f"{path}.{key}",
             )
@@ -116,63 +116,63 @@ def _normalize_database_json_value(
 
 
 @dataclass(frozen=True, slots=True)
-class DatabaseExpression(DatabaseValueEncoder):
+class DatasetExpression(DatasetValueEncoder):
     expression: str
 
     def __post_init__(self) -> None:
         normalized = self.expression.strip()
         if normalized == "":
-            raise ValueError("database expression must not be empty")
+            raise ValueError("dataset expression must not be empty")
         object.__setattr__(self, "expression", normalized)
 
-    def encode_database_value(self) -> dict[str, str]:
+    def encode_dataset_value(self) -> dict[str, str]:
         return {"expression": self.expression}
 
 
 @dataclass(frozen=True, slots=True)
-class DatabaseStruct(DatabaseValueEncoder):
-    fields: dict[str, "DatabaseValue"]
+class DatasetStruct(DatasetValueEncoder):
+    fields: dict[str, "DatasetValue"]
 
     def __post_init__(self) -> None:
-        normalized = dict[str, DatabaseValue]()
+        normalized = dict[str, DatasetValue]()
         for key, value in self.fields.items():
             if not isinstance(key, str):
-                raise TypeError("database struct keys must be strings")
+                raise TypeError("dataset struct keys must be strings")
             normalized[key] = value
         object.__setattr__(self, "fields", normalized)
 
     def to_json(self) -> dict[str, Any]:
         return {key: _encode_record_value(value) for key, value in self.fields.items()}
 
-    def encode_database_value(self) -> dict[str, dict[str, Any]]:
+    def encode_dataset_value(self) -> dict[str, dict[str, Any]]:
         return {"struct": self.to_json()}
 
 
 @dataclass(frozen=True, slots=True)
-class DatabaseJson(DatabaseValueEncoder):
-    value: DatabaseJsonValue
+class DatasetJson(DatasetValueEncoder):
+    value: DatasetJsonValue
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "value",
-            _normalize_database_json_value(self.value),
+            _normalize_dataset_json_value(self.value),
         )
 
-    def to_json(self) -> DatabaseJsonValue:
+    def to_json(self) -> DatasetJsonValue:
         return self.value
 
-    def encode_database_value(self) -> dict[str, DatabaseJsonValue]:
+    def encode_dataset_value(self) -> dict[str, DatasetJsonValue]:
         return {"json": self.value}
 
 
-type DatabaseScalarValue = (
+type DatasetScalarValue = (
     None | bool | int | float | str | bytes | uuid.UUID | date | datetime
 )
-type DatabaseValue = DatabaseScalarValue | list["DatabaseValue"] | DatabaseValueEncoder
-type DatabaseRecord = dict[str, DatabaseValue]
-type DatabaseRows = list[DatabaseRecord]
-type DatabaseRowChunks = AsyncIterable[DatabaseRows] | list[DatabaseRows]
+type DatasetValue = DatasetScalarValue | list["DatasetValue"] | DatasetValueEncoder
+type DatasetRecord = dict[str, DatasetValue]
+type DatasetRows = list[DatasetRecord]
+type DatasetRowChunks = AsyncIterable[DatasetRows] | list[DatasetRows]
 
 
 def _completed_future() -> asyncio.Future[None]:
@@ -181,82 +181,80 @@ def _completed_future() -> asyncio.Future[None]:
     return fut
 
 
-def _parse_database_date(value: str) -> date:
+def _parse_dataset_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError("database date value is not valid") from exc
+        raise ValueError("dataset date value is not valid") from exc
 
 
-def _parse_database_timestamp(value: str) -> datetime:
+def _parse_dataset_timestamp(value: str) -> datetime:
     normalized = value.replace("Z", "+00:00")
     try:
         return datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise ValueError("database timestamp value is not valid") from exc
+        raise ValueError("dataset timestamp value is not valid") from exc
 
 
-def _decode_record_value(value: Any) -> DatabaseValue:
+def _decode_record_value(value: Any) -> DatasetValue:
     if isinstance(value, dict):
         if len(value) != 1:
-            raise ValueError(
-                "database object values must use a single-key type wrapper"
-            )
+            raise ValueError("dataset object values must use a single-key type wrapper")
         wrapper, payload = next(iter(value.items()))
         if wrapper == "binary":
             if not isinstance(payload, str):
-                raise ValueError("database binary values must be base64 strings")
+                raise ValueError("dataset binary values must be base64 strings")
             return base64.b64decode(payload.encode())
         if wrapper == "uuid":
             if not isinstance(payload, str):
-                raise ValueError("database uuid values must be strings")
+                raise ValueError("dataset uuid values must be strings")
             return uuid.UUID(payload)
         if wrapper == "expression":
             if not isinstance(payload, str):
-                raise ValueError("database expression values must be strings")
-            return DatabaseExpression(payload)
+                raise ValueError("dataset expression values must be strings")
+            return DatasetExpression(payload)
         if wrapper == "date":
             if not isinstance(payload, str):
-                raise ValueError("database date values must be strings")
-            return _parse_database_date(payload)
+                raise ValueError("dataset date values must be strings")
+            return _parse_dataset_date(payload)
         if wrapper == "timestamp":
             if not isinstance(payload, str):
-                raise ValueError("database timestamp values must be strings")
-            return _parse_database_timestamp(payload)
+                raise ValueError("dataset timestamp values must be strings")
+            return _parse_dataset_timestamp(payload)
         if wrapper == "list":
             if not isinstance(payload, list):
-                raise ValueError("database list values must be arrays")
+                raise ValueError("dataset list values must be arrays")
             return [_decode_record_value(item) for item in payload]
         if wrapper == "struct":
             if not isinstance(payload, dict):
-                raise ValueError("database struct values must be objects")
-            return DatabaseStruct(
+                raise ValueError("dataset struct values must be objects")
+            return DatasetStruct(
                 {key: _decode_record_value(item) for key, item in payload.items()}
             )
         if wrapper == "json":
-            return DatabaseJson(payload)
-        raise ValueError(f"unsupported database value wrapper '{wrapper}'")
+            return DatasetJson(payload)
+        raise ValueError(f"unsupported dataset value wrapper '{wrapper}'")
 
     if isinstance(value, list):
-        raise ValueError("database list values must use a {'list': [...]} wrapper")
+        raise ValueError("dataset list values must use a {'list': [...]} wrapper")
 
     return value
 
 
-def decode_records(records: list[dict[str, Any]]) -> DatabaseRows:
-    decoded_records = list[dict[str, DatabaseValue]]()
+def decode_records(records: list[dict[str, Any]]) -> DatasetRows:
+    decoded_records = list[dict[str, DatasetValue]]()
     for record in records:
         if not isinstance(record, dict):
-            raise ValueError("database records must be objects")
+            raise ValueError("dataset records must be objects")
         decoded_records.append(
             {str(key): _decode_record_value(value) for key, value in record.items()}
         )
     return decoded_records
 
 
-def _encode_record_value(value: DatabaseValue | Any) -> Any:
-    if isinstance(value, DatabaseValueEncoder):
-        return value.encode_database_value()
+def _encode_record_value(value: DatasetValue | Any) -> Any:
+    if isinstance(value, DatasetValueEncoder):
+        return value.encode_dataset_value()
 
     if isinstance(value, bytes):
         return {"binary": base64.b64encode(value).decode()}
@@ -276,14 +274,12 @@ def _encode_record_value(value: DatabaseValue | Any) -> Any:
         return {"list": [_encode_record_value(item) for item in value]}
 
     if isinstance(value, dict):
-        raise TypeError(
-            "database object values must use DatabaseStruct or DatabaseJson"
-        )
+        raise TypeError("dataset object values must use DatasetStruct or DatasetJson")
 
     return value
 
 
-def encode_records(records: DatabaseRows):
+def encode_records(records: DatasetRows):
     transformed_records = list[dict[str, Any]]()
     for record in records:
         transformed_records.append(
@@ -808,7 +804,7 @@ class RoomClient:
         self.livekit = LivekitClient(room=self)
         self.developer = DeveloperClient(room=self)
         self.queues = QueuesClient(room=self)
-        self.database = DatabaseClient(room=self)
+        self.datasets = DatasetsClient(room=self)
         self.memory = MemoryClient(room=self)
         self.containers = ContainersClient(room=self)
         self.secrets = SecretsClient(
@@ -4909,7 +4905,7 @@ StructDataType.model_rebuild()
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
 
-def _require_non_empty_database_table_name(*, value: str, field_name: str) -> str:
+def _require_non_empty_dataset_table_name(*, value: str, field_name: str) -> str:
     normalized = value.strip()
     if normalized == "":
         raise ValueError(f"{field_name} must not be empty")
@@ -4932,7 +4928,7 @@ class _CreateTableRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, value: str) -> str:
-        return _require_non_empty_database_table_name(
+        return _require_non_empty_dataset_table_name(
             value=value,
             field_name="table name",
         )
@@ -5287,7 +5283,7 @@ class _SqlRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
-def _database_metadata_entries(metadata: dict | None) -> list[dict[str, str]] | None:
+def _dataset_metadata_entries(metadata: dict | None) -> list[dict[str, str]] | None:
     if metadata is None:
         return None
 
@@ -5300,12 +5296,12 @@ def _database_metadata_entries(metadata: dict | None) -> list[dict[str, str]] | 
     return entries
 
 
-def _database_metadata_dict(metadata: object) -> dict[str, str]:
+def _dataset_metadata_dict(metadata: object) -> dict[str, str]:
     if metadata is None:
         return {}
     if not isinstance(metadata, list):
         raise RoomException(
-            "unexpected return type from database.inspect",
+            "unexpected return type from datasets.inspect",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
@@ -5313,22 +5309,22 @@ def _database_metadata_dict(metadata: object) -> dict[str, str]:
     for entry in metadata:
         if not isinstance(entry, dict):
             raise RoomException(
-                "unexpected return type from database.inspect",
+                "unexpected return type from datasets.inspect",
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
         key = entry.get("key")
         value = entry.get("value")
         if not isinstance(key, str) or not isinstance(value, str):
             raise RoomException(
-                "unexpected return type from database.inspect",
+                "unexpected return type from datasets.inspect",
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
         result[key] = value
     return result
 
 
-def _database_toolkit_data_type_json(data_type: DataType) -> dict[str, Any]:
-    metadata = _database_metadata_entries(data_type.metadata)
+def _dataset_toolkit_data_type_json(data_type: DataType) -> dict[str, Any]:
+    metadata = _dataset_metadata_entries(data_type.metadata)
     payload: dict[str, Any] = {
         "type": data_type.type,
         "nullable": data_type.nullable,
@@ -5337,18 +5333,18 @@ def _database_toolkit_data_type_json(data_type: DataType) -> dict[str, Any]:
 
     if isinstance(data_type, VectorDataType):
         payload["size"] = data_type.size
-        payload["element_type"] = _database_toolkit_data_type_json(
+        payload["element_type"] = _dataset_toolkit_data_type_json(
             data_type.element_type
         )
     elif isinstance(data_type, ListDataType):
-        payload["element_type"] = _database_toolkit_data_type_json(
+        payload["element_type"] = _dataset_toolkit_data_type_json(
             data_type.element_type
         )
     elif isinstance(data_type, StructDataType):
         payload["fields"] = [
             {
                 "name": field_name,
-                "data_type": _database_toolkit_data_type_json(field_type),
+                "data_type": _dataset_toolkit_data_type_json(field_type),
             }
             for field_name, field_type in data_type.fields.items()
         ]
@@ -5356,7 +5352,7 @@ def _database_toolkit_data_type_json(data_type: DataType) -> dict[str, Any]:
     return payload
 
 
-def _database_toolkit_schema_entries(
+def _dataset_toolkit_schema_entries(
     schema: dict[str, DataType] | None,
 ) -> list[dict[str, Any]] | None:
     if schema is None:
@@ -5365,50 +5361,50 @@ def _database_toolkit_schema_entries(
     return [
         {
             "name": name,
-            "data_type": _database_toolkit_data_type_json(data_type),
+            "data_type": _dataset_toolkit_data_type_json(data_type),
         }
         for name, data_type in schema.items()
     ]
 
 
-def _database_public_data_type_json(value: object) -> dict[str, Any]:
+def _dataset_public_data_type_json(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RoomException(
-            "unexpected return type from database.inspect",
+            "unexpected return type from datasets.inspect",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
     type_name = value.get("type")
     if not isinstance(type_name, str):
         raise RoomException(
-            "unexpected return type from database.inspect",
+            "unexpected return type from datasets.inspect",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
     payload: dict[str, Any] = {
         "type": type_name,
         "nullable": value.get("nullable"),
-        "metadata": _database_metadata_dict(value.get("metadata")),
+        "metadata": _dataset_metadata_dict(value.get("metadata")),
     }
 
     if type_name == "vector":
         payload["size"] = value.get("size")
-        payload["element_type"] = _database_public_data_type_json(
+        payload["element_type"] = _dataset_public_data_type_json(
             value.get("element_type")
         )
     elif type_name == "list":
-        payload["element_type"] = _database_public_data_type_json(
+        payload["element_type"] = _dataset_public_data_type_json(
             value.get("element_type")
         )
     elif type_name == "struct":
         raw_fields = value.get("fields")
         if not isinstance(raw_fields, list):
             raise RoomException(
-                "unexpected return type from database.inspect",
+                "unexpected return type from datasets.inspect",
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
         payload["fields"] = {
-            field_name: _database_public_data_type_json(field_value)
+            field_name: _dataset_public_data_type_json(field_value)
             for field_name, field_value in (
                 (
                     field.get("name"),
@@ -5421,23 +5417,23 @@ def _database_public_data_type_json(value: object) -> dict[str, Any]:
         }
         if len(payload["fields"]) != len(raw_fields):
             raise RoomException(
-                "unexpected return type from database.inspect",
+                "unexpected return type from datasets.inspect",
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
 
     return payload
 
 
-def _database_data_type_from_toolkit(value: object) -> DataType:
-    return _data_type_adapter.validate_python(_database_public_data_type_json(value))
+def _dataset_data_type_from_toolkit(value: object) -> DataType:
+    return _data_type_adapter.validate_python(_dataset_public_data_type_json(value))
 
 
-def _database_schema_from_toolkit(
+def _dataset_schema_from_toolkit(
     value: object,
 ) -> dict[str, DataType]:
     if not isinstance(value, list):
         raise RoomException(
-            "unexpected return type from database.inspect",
+            "unexpected return type from datasets.inspect",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
@@ -5445,29 +5441,29 @@ def _database_schema_from_toolkit(
     for field in value:
         if not isinstance(field, dict):
             raise RoomException(
-                "unexpected return type from database.inspect",
+                "unexpected return type from datasets.inspect",
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
         name = field.get("name")
         if not isinstance(name, str):
             raise RoomException(
-                "unexpected return type from database.inspect",
+                "unexpected return type from datasets.inspect",
                 code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
             )
-        result[name] = _database_data_type_from_toolkit(field.get("data_type"))
+        result[name] = _dataset_data_type_from_toolkit(field.get("data_type"))
     return result
 
 
-def _database_records_json(records: object) -> str:
+def _dataset_records_json(records: object) -> str:
     if not isinstance(records, list):
         raise RoomException(
-            "database toolkit records must be a list of objects",
+            "datasets toolkit records must be a list of objects",
             code=ErrorCode.INVALID_REQUEST,
         )
     return json.dumps(_encode_record_value(records))
 
 
-def _database_data_json(data: object | None) -> str | None:
+def _dataset_data_json(data: object | None) -> str | None:
     if data is None:
         return None
     if isinstance(data, list) and all(isinstance(item, dict) for item in data):
@@ -5475,7 +5471,7 @@ def _database_data_json(data: object | None) -> str | None:
     return json.dumps(_encode_record_value(data))
 
 
-def _database_results_from_json(
+def _dataset_results_from_json(
     *,
     payload: dict[str, Any],
     operation: str,
@@ -5483,17 +5479,17 @@ def _database_results_from_json(
     results = payload.get("results")
     if not isinstance(results, list):
         raise RoomException(
-            f"unexpected return type from database.{operation}",
+            f"unexpected return type from datasets.{operation}",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
     return decode_records(results)
 
 
-def _database_value_json(value: Any) -> str:
+def _dataset_value_json(value: Any) -> str:
     return json.dumps(_encode_record_value(value))
 
 
-def _database_sql_literal(value: Any) -> str:
+def _dataset_sql_literal(value: Any) -> str:
     if isinstance(value, bool):
         return str(value).upper()
     if isinstance(value, str):
@@ -5514,32 +5510,32 @@ def _database_sql_literal(value: Any) -> str:
         return f"'{value.isoformat().replace('+00:00', 'Z')}'"
     if isinstance(value, date):
         return f"'{value.isoformat()}'"
-    if isinstance(value, DatabaseJson):
+    if isinstance(value, DatasetJson):
         return "'" + json.dumps(value.to_json()).replace("'", "''") + "'"
-    if isinstance(value, DatabaseStruct):
+    if isinstance(value, DatasetStruct):
         fields = ", ".join(
-            f"'{key}', {_database_sql_literal(inner)}"
+            f"'{key}', {_dataset_sql_literal(inner)}"
             for key, inner in value.fields.items()
         )
         return f"named_struct({fields})"
     if isinstance(value, list):
-        return "[" + ", ".join(_database_sql_literal(item) for item in value) + "]"
+        return "[" + ", ".join(_dataset_sql_literal(item) for item in value) + "]"
     if isinstance(value, dict):
         raise RoomException(
-            "database object values must use DatabaseStruct or DatabaseJson",
+            "dataset object values must use DatasetStruct or DatasetJson",
             code=ErrorCode.INVALID_REQUEST,
         )
     raise RoomException(
-        f"unsupported database value type {type(value).__name__}",
+        f"unsupported dataset value type {type(value).__name__}",
         code=ErrorCode.INVALID_REQUEST,
     )
 
 
-def _database_stream_encode_value(value: Any) -> Any:
+def _dataset_stream_encode_value(value: Any) -> Any:
     return _encode_record_value(value)
 
 
-def _database_stream_decode_value(
+def _dataset_stream_decode_value(
     value: object,
     *,
     operation: str,
@@ -5548,12 +5544,12 @@ def _database_stream_decode_value(
         return _decode_record_value(value)
     except Exception as exc:
         raise RoomException(
-            f"unexpected return type from database.{operation}",
+            f"unexpected return type from datasets.{operation}",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         ) from exc
 
 
-def _database_stream_rows_chunk(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _dataset_stream_rows_chunk(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "kind": "rows",
         "rows": [
@@ -5561,7 +5557,7 @@ def _database_stream_rows_chunk(records: list[dict[str, Any]]) -> dict[str, Any]
                 "columns": [
                     {
                         "name": str(key),
-                        "value": _database_stream_encode_value(value),
+                        "value": _dataset_stream_encode_value(value),
                     }
                     for key, value in record.items()
                 ]
@@ -5615,7 +5611,7 @@ def _typed_rows_records_from_chunk(
                     f"unexpected return type from {operation}",
                     code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
                 )
-            decoded_row[name] = _database_stream_decode_value(
+            decoded_row[name] = _dataset_stream_decode_value(
                 column.get("value"),
                 operation=operation,
             )
@@ -5623,25 +5619,25 @@ def _typed_rows_records_from_chunk(
     return result
 
 
-def _database_stream_records_from_chunk(
+def _dataset_stream_records_from_chunk(
     *,
     payload: dict[str, Any],
     operation: str,
 ) -> list[dict[str, Any]]:
     return _typed_rows_records_from_chunk(
         payload=payload,
-        operation=f"database.{operation}",
+        operation=f"dataset.{operation}",
     )
 
 
-def _database_row_chunk_list(
-    records: DatabaseRows,
+def _dataset_row_chunk_list(
+    records: DatasetRows,
     *,
     rows_per_chunk: int = 128,
-) -> list[DatabaseRows]:
+) -> list[DatasetRows]:
     if not isinstance(records, list):
         raise RoomException(
-            "database stream records must be a list of objects",
+            "datasets stream records must be a list of objects",
             code=ErrorCode.INVALID_REQUEST,
         )
     if rows_per_chunk <= 0:
@@ -5655,9 +5651,9 @@ def _database_row_chunk_list(
     ]
 
 
-async def _database_async_row_chunks(
-    chunks: DatabaseRowChunks,
-) -> AsyncIterator[DatabaseRows]:
+async def _dataset_async_row_chunks(
+    chunks: DatasetRowChunks,
+) -> AsyncIterator[DatasetRows]:
     if isinstance(chunks, AsyncIterable):
         async for chunk in chunks:
             yield chunk
@@ -5666,15 +5662,15 @@ async def _database_async_row_chunks(
         yield chunk
 
 
-class _DatabaseWriteInputStream:
+class _DatasetWriteInputStream:
     def __init__(
         self,
         *,
         start: dict[str, Any],
-        chunks: DatabaseRowChunks,
+        chunks: DatasetRowChunks,
     ) -> None:
         self._start = start
-        self._source = _database_async_row_chunks(chunks).__aiter__()
+        self._source = _dataset_async_row_chunks(chunks).__aiter__()
         self._closed = asyncio.Event()
         self._pulls: asyncio.Queue[object] = asyncio.Queue()
         self._sent_start = False
@@ -5690,7 +5686,7 @@ class _DatabaseWriteInputStream:
         self._closed.set()
         self._pulls.put_nowait(object())
 
-    def __aiter__(self) -> "_DatabaseWriteInputStream":
+    def __aiter__(self) -> "_DatasetWriteInputStream":
         return self
 
     async def __anext__(self) -> Content:
@@ -5707,10 +5703,10 @@ class _DatabaseWriteInputStream:
         except StopAsyncIteration as exc:
             raise StopAsyncIteration from exc
 
-        return JsonContent(json=_database_stream_rows_chunk(next_chunk))
+        return JsonContent(json=_dataset_stream_rows_chunk(next_chunk))
 
 
-class _DatabaseReadInputStream:
+class _DatasetReadInputStream:
     def __init__(self, *, start: dict[str, Any]) -> None:
         self._start = start
         self._closed = asyncio.Event()
@@ -5728,7 +5724,7 @@ class _DatabaseReadInputStream:
         self._closed.set()
         self._pulls.put_nowait(object())
 
-    def __aiter__(self) -> "_DatabaseReadInputStream":
+    def __aiter__(self) -> "_DatasetReadInputStream":
         return self
 
     async def __anext__(self) -> Content:
@@ -5743,9 +5739,9 @@ class _DatabaseReadInputStream:
         return JsonContent(json={"kind": "pull"})
 
 
-class DatabaseClient:
+class DatasetsClient:
     """
-    A client for interacting with the 'database' toolkit on the room server.
+    A client for interacting with the 'datasets' toolkit on the room server.
     """
 
     def __init__(self, room: RoomClient):
@@ -5754,13 +5750,13 @@ class DatabaseClient:
     @staticmethod
     def _unexpected_response_error(*, operation: str) -> RoomException:
         return RoomException(
-            f"unexpected return type from database.{operation}",
+            f"unexpected return type from datasets.{operation}",
             code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
         )
 
     async def _invoke(self, *, operation: str, input: dict) -> Content:
         response = await self.room.invoke(
-            toolkit="database",
+            toolkit="dataset",
             tool=operation,
             input=input,
         )
@@ -5775,7 +5771,7 @@ class DatabaseClient:
         input: AsyncIterable[Content],
     ) -> AsyncIterable[Content]:
         response = await self.room.invoke(
-            toolkit="database",
+            toolkit="dataset",
             tool=operation,
             input=input,
         )
@@ -5787,7 +5783,7 @@ class DatabaseClient:
         self,
         *,
         operation: str,
-        input_stream: _DatabaseWriteInputStream,
+        input_stream: _DatasetWriteInputStream,
     ) -> None:
         response_stream = await self._invoke_stream(
             operation=operation,
@@ -5815,7 +5811,7 @@ class DatabaseClient:
         operation: str,
         start: dict[str, Any],
     ) -> AsyncIterator[list[dict[str, Any]]]:
-        input_stream = _DatabaseReadInputStream(start=start)
+        input_stream = _DatasetReadInputStream(start=start)
         response_stream = await self._invoke_stream(
             operation=operation,
             input=input_stream,
@@ -5831,7 +5827,7 @@ class DatabaseClient:
                     raise self._unexpected_response_error(operation=operation)
                 if not isinstance(chunk, JsonContent):
                     raise self._unexpected_response_error(operation=operation)
-                yield _database_stream_records_from_chunk(
+                yield _dataset_stream_records_from_chunk(
                     payload=chunk.json,
                     operation=operation,
                 )
@@ -5872,13 +5868,13 @@ class DatabaseClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="inspect")
-        return _database_schema_from_toolkit(response.json.get("fields"))
+        return _dataset_schema_from_toolkit(response.json.get("fields"))
 
     async def _create_table(
         self,
         *,
         name: str,
-        data: Optional[DatabaseRecord | DatabaseRows] = None,
+        data: Optional[DatasetRecord | DatasetRows] = None,
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
@@ -5888,23 +5884,23 @@ class DatabaseClient:
         chunks = (
             []
             if data is None
-            else _database_row_chunk_list(
+            else _dataset_row_chunk_list(
                 data if isinstance(data, list) else [data],
             )
         )
-        normalized_name = _require_non_empty_database_table_name(
+        normalized_name = _require_non_empty_dataset_table_name(
             value=name,
             field_name="table name",
         )
-        input_stream = _DatabaseWriteInputStream(
+        input_stream = _DatasetWriteInputStream(
             start={
                 "kind": "start",
                 "name": normalized_name,
-                "fields": _database_toolkit_schema_entries(schema),
+                "fields": _dataset_toolkit_schema_entries(schema),
                 "mode": mode,
                 "namespace": namespace,
                 "branch": branch,
-                "metadata": _database_metadata_entries(metadata),
+                "metadata": _dataset_metadata_entries(metadata),
             },
             chunks=chunks,
         )
@@ -5918,7 +5914,7 @@ class DatabaseClient:
         *,
         name: str,
         schema: Optional[Dict[str, DataType]] = None,
-        data: Optional[DatabaseRows] = None,
+        data: Optional[DatasetRows] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
@@ -5938,7 +5934,7 @@ class DatabaseClient:
         self,
         *,
         name: str,
-        data: Optional[DatabaseRows] = None,
+        data: Optional[DatasetRows] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
@@ -5957,22 +5953,22 @@ class DatabaseClient:
         self,
         *,
         name: str,
-        chunks: DatabaseRowChunks,
+        chunks: DatasetRowChunks,
         schema: Optional[Dict[str, DataType]] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
-        input_stream = _DatabaseWriteInputStream(
+        input_stream = _DatasetWriteInputStream(
             start={
                 "kind": "start",
                 "name": name,
-                "fields": _database_toolkit_schema_entries(schema),
+                "fields": _dataset_toolkit_schema_entries(schema),
                 "mode": mode,
                 "namespace": namespace,
                 "branch": branch,
-                "metadata": _database_metadata_entries(metadata),
+                "metadata": _dataset_metadata_entries(metadata),
             },
             chunks=chunks,
         )
@@ -6032,7 +6028,7 @@ class DatabaseClient:
                     {
                         "name": column_name,
                         "value_sql": None,
-                        "data_type": _database_toolkit_data_type_json(column_value),
+                        "data_type": _dataset_toolkit_data_type_json(column_value),
                     }
                 )
             else:
@@ -6066,7 +6062,7 @@ class DatabaseClient:
             operation="alter_columns",
             input={
                 "table": table,
-                "columns": _database_toolkit_schema_entries(columns),
+                "columns": _dataset_toolkit_schema_entries(columns),
                 "namespace": namespace,
                 "branch": branch,
             },
@@ -6094,13 +6090,13 @@ class DatabaseClient:
         self,
         *,
         table: str,
-        records: DatabaseRows,
+        records: DatasetRows,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
         await self.insert_stream(
             table=table,
-            chunks=_database_row_chunk_list(records),
+            chunks=_dataset_row_chunk_list(records),
             namespace=namespace,
             branch=branch,
         )
@@ -6109,11 +6105,11 @@ class DatabaseClient:
         self,
         *,
         table: str,
-        chunks: DatabaseRowChunks,
+        chunks: DatasetRowChunks,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
-        input_stream = _DatabaseWriteInputStream(
+        input_stream = _DatasetWriteInputStream(
             start={
                 "kind": "start",
                 "table": table,
@@ -6129,7 +6125,7 @@ class DatabaseClient:
         *,
         table: str,
         where: str,
-        values: DatabaseRecord,
+        values: DatasetRecord,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
@@ -6141,7 +6137,7 @@ class DatabaseClient:
                 "values": [
                     {
                         "column": column,
-                        "value_json": _database_value_json(value),
+                        "value_json": _dataset_value_json(value),
                     }
                     for column, value in values.items()
                 ],
@@ -6173,14 +6169,14 @@ class DatabaseClient:
         *,
         table: str,
         on: str,
-        records: DatabaseRows,
+        records: DatasetRows,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
         await self.merge_stream(
             table=table,
             on=on,
-            chunks=_database_row_chunk_list(records),
+            chunks=_dataset_row_chunk_list(records),
             namespace=namespace,
             branch=branch,
         )
@@ -6190,11 +6186,11 @@ class DatabaseClient:
         *,
         table: str,
         on: str,
-        chunks: DatabaseRowChunks,
+        chunks: DatasetRowChunks,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
-        input_stream = _DatabaseWriteInputStream(
+        input_stream = _DatasetWriteInputStream(
             start={
                 "kind": "start",
                 "table": table,
@@ -6294,7 +6290,7 @@ class DatabaseClient:
     ) -> AsyncIterator[list[Dict[str, Any]]]:
         if isinstance(where, dict):
             where = " AND ".join(
-                f"{column} = {_database_sql_literal(value)}"
+                f"{column} = {_dataset_sql_literal(value)}"
                 for column, value in where.items()
             )
         async for batch in self._stream_rows(
@@ -6329,7 +6325,7 @@ class DatabaseClient:
     ) -> list[Dict[str, Any]]:
         if isinstance(where, dict):
             where = " AND ".join(
-                f"{column} = {_database_sql_literal(value)}"
+                f"{column} = {_dataset_sql_literal(value)}"
                 for column, value in where.items()
             )
         response = await self._invoke(
@@ -6665,7 +6661,7 @@ class MemoryClient:
         *,
         name: str,
         table: str,
-        records: DatabaseRows,
+        records: DatasetRows,
         merge: bool = True,
         namespace: Optional[List[str]] = None,
     ) -> None:

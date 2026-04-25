@@ -37,7 +37,7 @@ Messages are encoded and decoded using a ``Protocol`` layer that is transport-ag
 - ``storage``: open or write files in the room.
 - ``sync``: collaborate on structured documents.
 - ``agents``: manage agent instances.
-- ``queues``, ``database``, ``livekit``, and more.
+- ``queues``, ``datasets``, ``livekit``, and more.
 
 ### Document Runtime and Schemas
 ``SyncClient`` and the document runtime allow multiple participants to edit structured documents (defined by a ``MeshSchema``) with real-time updates propagated via WebSocket messages.

@@ -3,7 +3,7 @@ import jwt
 from typing import Optional, List, Literal
 from datetime import datetime
 import json
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 import logging
 from .keys import parse_api_key
 from .oauth import OAuthClientConfig, ConnectorRef
@@ -59,7 +59,7 @@ class TableGrant(BaseModel):
     alter: bool = False
 
 
-class DatabaseGrant(BaseModel):
+class DatasetGrant(BaseModel):
     tables: Optional[list[TableGrant]] = None
     list_tables: bool = True
 
@@ -534,7 +534,10 @@ class ApiScope(BaseModel):
     livekit: Optional[LivekitGrant] = None
     queues: Optional[QueuesGrant] = None
     messaging: Optional[MessagingGrant] = None
-    database: Optional[DatabaseGrant] = None
+    dataset: Optional[DatasetGrant] = Field(
+        default=None,
+        validation_alias=AliasChoices("dataset", "database", "datasets"),
+    )
     memory: Optional[MemoryGrant] = None
     sync: Optional[SyncGrant] = None
     storage: Optional[StorageGrant] = None
@@ -554,7 +557,7 @@ class ApiScope(BaseModel):
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
-            database=DatabaseGrant(),
+            dataset=DatasetGrant(),
             memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
@@ -573,7 +576,7 @@ class ApiScope(BaseModel):
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
-            database=DatabaseGrant(),
+            dataset=DatasetGrant(),
             memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
@@ -590,7 +593,7 @@ class ApiScope(BaseModel):
             livekit=LivekitGrant(),
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
-            database=DatabaseGrant(),
+            dataset=DatasetGrant(),
             memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),

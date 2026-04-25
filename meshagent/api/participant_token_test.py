@@ -15,7 +15,7 @@ from .participant_token import (  # noqa: E402, F401
     QueuesGrant,
     MessagingGrant,
     TableGrant,
-    DatabaseGrant,
+    DatasetGrant,
     MemoryEntryGrant,
     MemoryGrant,
     MemoryPermissions,
@@ -132,9 +132,9 @@ def test_list_alias_fields_round_trip_for_grants(grant_type, payload) -> None:
     assert grant.model_dump()["list"] is False
 
 
-def test_database_grant() -> None:
+def test_dataset_grant() -> None:
     # unrestricted
-    g = DatabaseGrant()
+    g = DatasetGrant()
     assert g.can_read("tbl")
     assert g.can_write("tbl")
     assert g.can_alter("tbl")
@@ -150,12 +150,25 @@ def test_database_grant() -> None:
             alter=False,
         ),
     ]
-    g = DatabaseGrant(tables=tables)
+    g = DatasetGrant(tables=tables)
     assert g.can_read("read_only") and not g.can_write("read_only")
     assert g.can_write("write_only", namespace=["analytics"])
     assert not g.can_write("write_only", namespace=["default"])
     assert not g.can_read("write_only", namespace=["analytics"])
     assert not g.can_read("unknown") and not g.can_write("unknown")
+
+
+@pytest.mark.parametrize("legacy_key", ["database", "datasets"])
+def test_api_scope_reads_legacy_dataset_grant_keys_and_writes_dataset(
+    legacy_key: str,
+) -> None:
+    scope = ApiScope.model_validate({legacy_key: {"list_tables": False}})
+
+    assert scope.dataset is not None
+    assert scope.dataset.list_tables is False
+    assert scope.model_dump(mode="json", exclude_none=True) == {
+        "dataset": {"list_tables": False}
+    }
 
 
 def test_memory_grant_scoped_to_memory_name_and_namespace() -> None:

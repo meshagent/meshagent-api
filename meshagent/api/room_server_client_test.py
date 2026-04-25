@@ -36,12 +36,12 @@ from meshagent.api.oauth import OAuthClientConfig
 from meshagent.api.room_server_client import (
     AgentsClient,
     ContainersClient,
-    DatabaseClient,
-    DatabaseJson,
+    DatasetsClient,
+    DatasetJson,
     DeveloperClient,
     DockerSecret,
-    DatabaseExpression,
-    DatabaseStruct,
+    DatasetExpression,
+    DatasetStruct,
     Image,
     ListDataType,
     LivekitClient,
@@ -195,13 +195,13 @@ def test_encode_decode_records_uuid_roundtrip() -> None:
 
 
 def test_encode_decode_records_expression_roundtrip() -> None:
-    encoded = encode_records([{"id": DatabaseExpression("uuid()")}])
+    encoded = encode_records([{"id": DatasetExpression("uuid()")}])
 
     assert encoded == [{"id": {"expression": "uuid()"}}]
 
     decoded = decode_records(encoded)
 
-    assert decoded == [{"id": DatabaseExpression("uuid()")}]
+    assert decoded == [{"id": DatasetExpression("uuid()")}]
 
 
 def test_encode_decode_records_struct_and_json_roundtrip() -> None:
@@ -210,14 +210,14 @@ def test_encode_decode_records_struct_and_json_roundtrip() -> None:
     encoded = encode_records(
         [
             {
-                "meta": DatabaseStruct(
+                "meta": DatasetStruct(
                     {
                         "source": "studio",
                         "labels": ["a", "b"],
-                        "payload": DatabaseJson(payload),
+                        "payload": DatasetJson(payload),
                     }
                 ),
-                "payload": DatabaseJson(payload),
+                "payload": DatasetJson(payload),
             }
         ]
     )
@@ -239,27 +239,27 @@ def test_encode_decode_records_struct_and_json_roundtrip() -> None:
 
     assert decoded == [
         {
-            "meta": DatabaseStruct(
+            "meta": DatasetStruct(
                 {
                     "source": "studio",
                     "labels": ["a", "b"],
-                    "payload": DatabaseJson(payload),
+                    "payload": DatasetJson(payload),
                 }
             ),
-            "payload": DatabaseJson(payload),
+            "payload": DatasetJson(payload),
         }
     ]
 
 
 def test_decode_records_rejects_non_string_expression_payload() -> None:
-    with pytest.raises(ValueError, match="database expression values must be strings"):
+    with pytest.raises(ValueError, match="dataset expression values must be strings"):
         decode_records([{"id": {"expression": {"name": "uuid()"}}}])
 
 
 def test_decode_records_rejects_unwrapped_object_payload() -> None:
     with pytest.raises(
         ValueError,
-        match="database object values must use a single-key type wrapper",
+        match="dataset object values must use a single-key type wrapper",
     ):
         decode_records([{"meta": {"kind": "demo", "count": 3}}])
 
@@ -282,12 +282,12 @@ def test_encode_decode_records_date_and_timestamp_roundtrip() -> None:
     assert decoded == [{"day": day, "moment": moment}]
 
 
-def test_database_stream_decode_value_returns_typed_date_and_timestamp() -> None:
-    day = room_server_client._database_stream_decode_value(
+def test_dataset_stream_decode_value_returns_typed_date_and_timestamp() -> None:
+    day = room_server_client._dataset_stream_decode_value(
         {"date": "2026-04-09"},
         operation="search",
     )
-    moment = room_server_client._database_stream_decode_value(
+    moment = room_server_client._dataset_stream_decode_value(
         {"timestamp": "2026-04-09T12:30:45Z"},
         operation="search",
     )
@@ -3020,11 +3020,11 @@ async def test_storage_client_unexpected_response_uses_error_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_database_client_unexpected_response_uses_error_code() -> None:
-    client = DatabaseClient(room=_BadResponseRoom())  # type: ignore[arg-type]
+async def test_datasets_client_unexpected_response_uses_error_code() -> None:
+    client = DatasetsClient(room=_BadResponseRoom())  # type: ignore[arg-type]
 
     with pytest.raises(
-        RoomException, match="unexpected return type from database.list_tables"
+        RoomException, match="unexpected return type from datasets.list_tables"
     ) as ex:
         await client.list_tables()
 
@@ -3032,7 +3032,7 @@ async def test_database_client_unexpected_response_uses_error_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_database_client_uses_room_invoke_for_commands() -> None:
+async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     def _rows_chunk(payload: list[dict[str, object]]) -> dict[str, object]:
         return {
             "kind": "rows",
@@ -3050,7 +3050,7 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
             ],
         }
 
-    class _StreamingDatabaseRoom:
+    class _StreamingDatasetsRoom:
         def __init__(self) -> None:
             self.protocol = _FakeProtocol()
             self.calls: list[dict[str, object]] = []
@@ -3201,8 +3201,8 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
                 )
             return EmptyContent()
 
-    room = _StreamingDatabaseRoom()
-    client = DatabaseClient(room=room)  # type: ignore[arg-type]
+    room = _StreamingDatasetsRoom()
+    client = DatasetsClient(room=room)  # type: ignore[arg-type]
 
     await client.create_table_with_schema(
         name="records",
@@ -3276,7 +3276,7 @@ async def test_database_client_uses_room_invoke_for_commands() -> None:
         "create_branch",
         "delete_branch",
     ]
-    assert all(call["toolkit"] == "database" for call in room.calls)
+    assert all(call["toolkit"] == "datasets" for call in room.calls)
 
     create_start = room.write_starts["create_table"]
     assert create_start["kind"] == "start"

@@ -157,7 +157,7 @@ ANNOTATION_SERVICE_README = "meshagent.service.readme"
 
 ANNOTATION_AGENT_TYPE = "meshagent.agent.type"
 ANNOTATION_AGENT_WIDGET = "meshagent.agent.widget"
-ANNOTATION_AGENT_DATABASE_SCHEMA = "meshagent.agent.database.schema"
+ANNOTATION_AGENT_DATASET_SCHEMA = "meshagent.agent.dataset.schema"
 ANNOTATION_AGENT_SCHEDULE = "meshagent.agent.schedule"
 ANNOTATION_AGENT_HEARTBEAT = "meshagent.agent.heartbeat"
 ANNOTATION_AGENT_SHELL_COMMAND = "meshagent.agent.shell.command"
