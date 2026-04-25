@@ -73,6 +73,7 @@ class RoomConnectionInfo(BaseModel):
 class MeshagentDomains(BaseModel):
     studio: str | None = None
     accounts: str | None = None
+    powerboards: str | None = None
     api: str | None = None
     mail: str | None = None
     pages: str | None = None
@@ -1232,6 +1233,7 @@ class Meshagent:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         usage_type: Optional[str] = None,
+        annotations: Optional[dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/usage
@@ -1257,6 +1259,8 @@ class Meshagent:
             params["model"] = model.strip()
         if usage_type is not None and usage_type.strip() != "":
             params["usage_type"] = usage_type.strip()
+        if annotations:
+            params["annotations"] = json.dumps(annotations)
 
         async with self._session.get(
             url,
