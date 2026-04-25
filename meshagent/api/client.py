@@ -427,6 +427,44 @@ class FeedSubscription(BaseModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
+class _LLMLoggerRequestBase(BaseModel):
+    destination_feed_id: str
+    filter_expression: str
+    paused: bool = False
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("destination_feed_id")
+    @classmethod
+    def validate_destination_feed_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized == "":
+            raise ValueError("destination_feed_id must not be empty")
+        return normalized
+
+    @field_validator("filter_expression")
+    @classmethod
+    def validate_filter_expression(cls, value: str) -> str:
+        return value.strip()
+
+
+class _CreateLLMLoggerRequest(_LLMLoggerRequestBase):
+    pass
+
+
+class _UpdateLLMLoggerRequest(_LLMLoggerRequestBase):
+    pass
+
+
+class LLMLogger(BaseModel):
+    id: str
+    project_id: str
+    destination_feed_id: str
+    filter_expression: str
+    paused: bool = False
+    created_at: datetime
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
 _OCI_REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 
 
@@ -1862,6 +1900,89 @@ class Meshagent:
             f"{self.base_url}/accounts/projects/{project_id}/feeds/{feed_id}"
             f"/subscriptions/{subscription_id}"
         )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_llm_logger(
+        self,
+        *,
+        project_id: str,
+        destination_feed_id: str,
+        filter_expression: str,
+        paused: bool = False,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> LLMLogger:
+        url = f"{self.base_url}/accounts/projects/{project_id}/llm-loggers"
+        payload = _CreateLLMLoggerRequest(
+            destination_feed_id=destination_feed_id,
+            filter_expression=filter_expression,
+            paused=paused,
+            annotations=annotations or {},
+        ).model_dump(mode="json")
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return LLMLogger.model_validate((await resp.json())["logger"])
+
+    async def update_llm_logger(
+        self,
+        *,
+        project_id: str,
+        logger_id: str,
+        destination_feed_id: str,
+        filter_expression: str,
+        paused: bool = False,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/llm-loggers/{logger_id}"
+        payload = _UpdateLLMLoggerRequest(
+            destination_feed_id=destination_feed_id,
+            filter_expression=filter_expression,
+            paused=paused,
+            annotations=annotations or {},
+        ).model_dump(mode="json")
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_llm_logger(
+        self,
+        *,
+        project_id: str,
+        logger_id: str,
+    ) -> LLMLogger:
+        url = f"{self.base_url}/accounts/projects/{project_id}/llm-loggers/{logger_id}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return LLMLogger.model_validate((await resp.json())["logger"])
+
+    async def list_llm_loggers(
+        self,
+        *,
+        project_id: str,
+    ) -> List[LLMLogger]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/llm-loggers"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [LLMLogger.model_validate(item) for item in data["loggers"]]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid LLM loggers payload: {exc}") from exc
+
+    async def delete_llm_logger(
+        self,
+        *,
+        project_id: str,
+        logger_id: str,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/llm-loggers/{logger_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
