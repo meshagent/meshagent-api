@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import aiohttp
+import pyarrow as pa
 import pytest
 
 import meshagent.api.room_server_client as room_server_client
@@ -43,7 +44,6 @@ from meshagent.api.room_server_client import (
     DatasetExpression,
     DatasetStruct,
     Image,
-    ListDataType,
     LivekitClient,
     MemoryClient,
     MemoryEntityRecord,
@@ -56,10 +56,7 @@ from meshagent.api.room_server_client import (
     SecretsClient,
     ServicesClient,
     StorageClient,
-    StructDataType,
     SyncClient,
-    TextDataType,
-    UuidDataType,
     decode_records,
     encode_records,
 )
@@ -70,6 +67,57 @@ from meshagent.api.specs.service import (
     RoomStorageMountSpec,
 )
 from meshagent.api.schema import ChildProperty, ElementType, MeshSchema, ValueProperty
+
+
+def test_required_table_round_trips_full_arrow_schema_fidelity() -> None:
+    schema = pa.schema(
+        [
+            pa.field(
+                "annotations",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field(
+                                "key",
+                                pa.string(),
+                                nullable=False,
+                                metadata={b"role": b"key"},
+                            ),
+                            pa.field(
+                                "value", pa.large_string(), metadata={b"role": b"value"}
+                            ),
+                        ]
+                    )
+                ),
+                metadata={b"field": b"annotations"},
+            ),
+            pa.field("labels", pa.dictionary(pa.int32(), pa.string())),
+            pa.field("amount", pa.decimal128(20, 4)),
+        ],
+        metadata={b"schema": b"required-table"},
+    )
+    requirement = room_server_client.RequiredTable(
+        name="records",
+        namespace=["team"],
+        schema=schema,
+        scalar_indexes=["amount"],
+        full_text_search_indexes=["annotations"],
+        vector_indexes=["embedding"],
+    )
+
+    encoded = requirement.to_json()
+    decoded = room_server_client.Requirement.from_json(encoded)
+
+    assert isinstance(decoded, room_server_client.RequiredTable)
+    assert decoded.name == "records"
+    assert decoded.namespace == ["team"]
+    assert decoded.scalar_indexes == ["amount"]
+    assert decoded.full_text_search_indexes == ["annotations"]
+    assert decoded.vector_indexes == ["embedding"]
+    assert decoded.schema.equals(schema, check_metadata=True)
+    assert room_server_client._schema_from_arrow_ipc(
+        base64.b64decode(encoded["schema"])
+    ).equals(schema, check_metadata=True)
 
 
 class _FakeProtocol:
@@ -294,13 +342,6 @@ def test_dataset_stream_decode_value_returns_typed_date_and_timestamp() -> None:
 
     assert day == date(2026, 4, 9)
     assert moment == datetime(2026, 4, 9, 12, 30, 45, tzinfo=timezone.utc)
-
-
-def test_uuid_data_type_json_schema() -> None:
-    assert UuidDataType().to_json_schema() == {
-        "type": "string",
-        "description": "a UUID string",
-    }
 
 
 class _FakeRoom:
@@ -3033,29 +3074,37 @@ async def test_datasets_client_unexpected_response_uses_error_code() -> None:
 
 @pytest.mark.asyncio
 async def test_datasets_client_uses_room_invoke_for_commands() -> None:
-    def _rows_chunk(payload: list[dict[str, object]]) -> dict[str, object]:
-        return {
-            "kind": "rows",
-            "rows": [
-                {
-                    "columns": [
-                        {
-                            "name": key,
-                            "value": encode_records([{key: value}])[0][key],
-                        }
-                        for key, value in row.items()
-                    ]
-                }
-                for row in payload
-            ],
-        }
+    inspect_schema = pa.schema(
+        [
+            pa.field(
+                "payload",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field(
+                                "key",
+                                pa.string(),
+                                nullable=False,
+                                metadata={b"role": b"key"},
+                            ),
+                            pa.field(
+                                "value", pa.large_string(), metadata={b"role": b"value"}
+                            ),
+                        ]
+                    )
+                ),
+                metadata={b"field": b"payload"},
+            ),
+        ],
+        metadata={b"schema": b"inspect"},
+    )
 
     class _StreamingDatasetsRoom:
         def __init__(self) -> None:
             self.protocol = _FakeProtocol()
             self.calls: list[dict[str, object]] = []
             self.write_starts: dict[str, dict[str, object]] = {}
-            self.write_chunks: dict[str, list[dict[str, object]]] = {
+            self.write_chunks: dict[str, list[pa.Table]] = {
                 "create_table": [],
                 "insert": [],
                 "merge": [],
@@ -3077,13 +3126,15 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
                 async def stream() -> AsyncIterator[Content]:
                     iterator = tool_input.__aiter__()
                     start_chunk = await iterator.__anext__()
-                    assert isinstance(start_chunk, JsonContent)
-                    self.write_starts[tool] = start_chunk.json
-                    yield JsonContent(json={"kind": "pull"})
+                    assert isinstance(start_chunk, BinaryContent)
+                    self.write_starts[tool] = dict(start_chunk.headers)
+                    yield BinaryContent(data=b"", headers={"kind": "pull"})
                     async for chunk in iterator:
-                        assert isinstance(chunk, JsonContent)
-                        self.write_chunks[tool].append(chunk.json)
-                        yield JsonContent(json={"kind": "pull"})
+                        assert isinstance(chunk, BinaryContent)
+                        self.write_chunks[tool].append(
+                            room_server_client._table_from_arrow_ipc(chunk.data)
+                        )
+                        yield BinaryContent(data=b"", headers={"kind": "pull"})
                     yield _ControlContent(method="close")
 
                 return stream()
@@ -3094,23 +3145,32 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
                 async def stream() -> AsyncIterator[Content]:
                     iterator = tool_input.__aiter__()
                     start_chunk = await iterator.__anext__()
-                    assert isinstance(start_chunk, JsonContent)
-                    self.read_starts[tool] = start_chunk.json
+                    assert isinstance(start_chunk, BinaryContent)
+                    self.read_starts[tool] = dict(start_chunk.headers)
                     pull_count = 0
                     async for chunk in iterator:
-                        assert isinstance(chunk, JsonContent)
-                        self.read_pulls[tool].append(chunk.json)
+                        assert isinstance(chunk, BinaryContent)
+                        self.read_pulls[tool].append(dict(chunk.headers))
                         pull_count += 1
                         if pull_count == 1:
                             if tool == "search":
-                                yield JsonContent(
-                                    json=_rows_chunk([{"payload": b"hello"}])
+                                yield BinaryContent(
+                                    data=room_server_client._table_to_arrow_ipc(
+                                        pa.table({"payload": [b"hello"]})
+                                    ),
+                                    headers={"kind": "data"},
                                 )
                             else:
-                                yield JsonContent(
-                                    json=_rows_chunk(
-                                        [{"id": 1, "payload": b"sql-result"}]
-                                    )
+                                yield BinaryContent(
+                                    data=room_server_client._table_to_arrow_ipc(
+                                        pa.table(
+                                            {
+                                                "id": [1],
+                                                "payload": [b"sql-result"],
+                                            }
+                                        )
+                                    ),
+                                    headers={"kind": "data"},
                                 )
                             continue
                         yield _ControlContent(method="close")
@@ -3121,43 +3181,9 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
             if tool == "list_tables":
                 return JsonContent(json={"tables": ["records"]})
             if tool == "inspect":
-                return JsonContent(
-                    json={
-                        "fields": [
-                            {
-                                "name": "annotations",
-                                "data_type": {
-                                    "type": "list",
-                                    "nullable": None,
-                                    "metadata": None,
-                                    "element_type": {
-                                        "type": "struct",
-                                        "nullable": None,
-                                        "metadata": None,
-                                        "fields": [
-                                            {
-                                                "name": "key",
-                                                "data_type": {
-                                                    "type": "text",
-                                                    "nullable": None,
-                                                    "metadata": None,
-                                                },
-                                            },
-                                            {
-                                                "name": "value",
-                                                "data_type": {
-                                                    "type": "text",
-                                                    "nullable": None,
-                                                    "metadata": None,
-                                                },
-                                            },
-                                        ],
-                                    },
-                                },
-                            }
-                        ],
-                        "metadata": None,
-                    }
+                return BinaryContent(
+                    data=room_server_client._schema_to_arrow_ipc(inspect_schema),
+                    headers={"kind": "schema"},
                 )
             if tool == "count":
                 return JsonContent(json={"count": 1})
@@ -3207,29 +3233,20 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     await client.create_table_with_schema(
         name="records",
         namespace=["team"],
-        data=[{"payload": b"hello"}],
-        schema={
-            "annotations": ListDataType(
-                element_type=StructDataType(
-                    fields={
-                        "key": TextDataType(),
-                        "value": TextDataType(),
-                    }
-                )
-            )
-        },
+        data=pa.table({"payload": [b"hello"]}),
+        schema=pa.schema([pa.field("payload", pa.binary())]),
         metadata={"kind": "demo"},
     )
     await client.insert(
         table="records",
         namespace=["team"],
-        records=[{"payload": b"inserted"}],
+        records=pa.table({"payload": [b"inserted"]}),
     )
     await client.merge(
         table="records",
         namespace=["team"],
         on="id",
-        records=[{"id": 1, "payload": b"merged"}],
+        records=pa.table({"id": [1], "payload": [b"merged"]}),
     )
     await client.update(
         table="records",
@@ -3251,10 +3268,9 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     await client.delete_branch(branch="exp", namespace=["team"])
 
     assert tables == ["records"]
-    assert isinstance(inspected["annotations"], ListDataType)
-    assert isinstance(inspected["annotations"].element_type, StructDataType)
-    assert rows == [{"payload": b"hello"}]
-    assert sql_rows == [{"id": 1, "payload": b"sql-result"}]
+    assert inspected.equals(inspect_schema, check_metadata=True)
+    assert rows.to_pylist() == [{"payload": b"hello"}]
+    assert sql_rows.to_pylist() == [{"id": 1, "payload": b"sql-result"}]
     assert count == 1
     assert versions[0].metadata == {"kind": "demo"}
     assert indexes[0].name == "idx_records_id"
@@ -3276,27 +3292,14 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         "create_branch",
         "delete_branch",
     ]
-    assert all(call["toolkit"] == "datasets" for call in room.calls)
+    assert all(call["toolkit"] == "dataset" for call in room.calls)
 
     create_start = room.write_starts["create_table"]
     assert create_start["kind"] == "start"
     assert create_start["namespace"] == ["team"]
     assert create_start["branch"] is None
     assert create_start["metadata"] == [{"key": "kind", "value": "demo"}]
-    assert create_start["fields"][0]["name"] == "annotations"
-    assert create_start["fields"][0]["data_type"]["type"] == "list"
-    assert create_start["fields"][0]["data_type"]["element_type"]["type"] == "struct"
-    assert create_start["fields"][0]["data_type"]["element_type"]["fields"] == [
-        {
-            "name": "key",
-            "data_type": {"type": "text", "nullable": None, "metadata": None},
-        },
-        {
-            "name": "value",
-            "data_type": {"type": "text", "nullable": None, "metadata": None},
-        },
-    ]
-    assert room.write_chunks["create_table"] == [_rows_chunk([{"payload": b"hello"}])]
+    assert room.write_chunks["create_table"][0].to_pylist() == [{"payload": b"hello"}]
 
     assert room.write_starts["insert"] == {
         "kind": "start",
@@ -3304,7 +3307,7 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         "namespace": ["team"],
         "branch": None,
     }
-    assert room.write_chunks["insert"] == [_rows_chunk([{"payload": b"inserted"}])]
+    assert room.write_chunks["insert"][0].to_pylist() == [{"payload": b"inserted"}]
 
     assert room.write_starts["merge"] == {
         "kind": "start",
@@ -3313,8 +3316,8 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         "namespace": ["team"],
         "branch": None,
     }
-    assert room.write_chunks["merge"] == [
-        _rows_chunk([{"id": 1, "payload": b"merged"}])
+    assert room.write_chunks["merge"][0].to_pylist() == [
+        {"id": 1, "payload": b"merged"}
     ]
 
     update_arguments = room.calls[3]["input"]

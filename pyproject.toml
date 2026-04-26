@@ -19,6 +19,7 @@ dependencies = [
   "jinja2~=3.1.6",
   "pyyaml~=6.0.2",
   "certifi~=2026.1.4",
+  "pyarrow~=21.0.0",
 ]
 classifiers = [
   # You can add your classifiers here if needed.
@@ -54,4 +55,3 @@ include = ["meshagent.*"]
 [tool.setuptools.dynamic]
 version = {attr = "meshagent.api.version.__version__"}
 readme = { file = "README.md", content-type = "text/markdown" }
-

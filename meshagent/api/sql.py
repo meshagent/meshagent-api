@@ -3,21 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from meshagent.api.room_server_client import (
-    BinaryDataType,
-    BoolDataType,
-    DataTypeUnion,
-    DateDataType,
-    FloatDataType,
-    IntDataType,
-    JsonDataType,
-    ListDataType,
-    StructDataType,
-    TextDataType,
-    TimestampDataType,
-    UuidDataType,
-    VectorDataType,
-)
+import pyarrow as pa
 
 TABLE_SCHEMA_GRAMMAR = """
 TABLE_SCHEMA  := COLUMN_DEF ("," COLUMN_DEF)*
@@ -60,12 +46,12 @@ class SchemaParseError(ValueError):
     pass
 
 
-def parse_table_schema(source: str) -> dict[str, DataTypeUnion]:
+def parse_table_schema(source: str) -> pa.Schema:
     tokens = _tokenize(source)
     parser = _SchemaParser(tokens)
-    schema = parser.parse_schema()
+    fields = parser.parse_schema_fields()
     parser.ensure_end()
-    return schema
+    return pa.schema(fields)
 
 
 class _SchemaParser:
@@ -73,18 +59,20 @@ class _SchemaParser:
         self._tokens = list(tokens)
         self._index = 0
 
-    def parse_schema(self) -> dict[str, DataTypeUnion]:
-        schema: dict[str, DataTypeUnion] = {}
+    def parse_schema_fields(self) -> list[pa.Field]:
+        fields = list[pa.Field]()
+        names = set[str]()
         while True:
-            name, data_type = self._parse_column_def()
-            if name in schema:
-                raise SchemaParseError(f"Duplicate column name: {name}")
-            schema[name] = data_type
+            field = self._parse_column_def()
+            if field.name in names:
+                raise SchemaParseError(f"Duplicate column name: {field.name}")
+            names.add(field.name)
+            fields.append(field)
             if not self._accept("COMMA"):
                 break
-        return schema
+        return fields
 
-    def parse_type(self) -> DataTypeUnion:
+    def parse_type(self) -> pa.DataType:
         token = self._peek()
         if token is None or token.kind != "IDENT":
             raise self._error("Expected data type")
@@ -105,17 +93,18 @@ class _SchemaParser:
         self._advance()
         return _simple_type(type_name)
 
-    def parse_schema_type(self) -> DataTypeUnion:
+    def parse_schema_type(self) -> pa.DataType:
         return self.parse_type()
 
-    def parse_schema_type_with_nullability(self) -> DataTypeUnion:
+    def parse_schema_type_with_nullability(self) -> tuple[pa.DataType, bool]:
         data_type = self.parse_schema_type()
+        nullable = True
         if self._accept("IDENT", "null"):
-            data_type.nullable = True
+            nullable = True
         elif self._accept("IDENT", "not"):
             self._expect("IDENT", "null")
-            data_type.nullable = False
-        return data_type
+            nullable = False
+        return data_type, nullable
 
     def ensure_end(self) -> None:
         if self._peek() is not None:
@@ -124,42 +113,44 @@ class _SchemaParser:
                 f"Unexpected token '{token.value}' at position {token.position}"
             )
 
-    def _parse_column_def(self) -> tuple[str, DataTypeUnion]:
+    def _parse_column_def(self) -> pa.Field:
         name_token = self._expect("IDENT")
-        data_type = self.parse_schema_type_with_nullability()
-        return name_token.value, data_type
+        data_type, nullable = self.parse_schema_type_with_nullability()
+        return pa.field(name_token.value, data_type, nullable=nullable)
 
-    def _parse_vector_type(self) -> DataTypeUnion:
+    def _parse_vector_type(self) -> pa.DataType:
         self._expect("LPAREN")
         size_token = self._expect("INT")
         size = int(size_token.value)
         if size <= 0:
             raise self._error("Vector size must be a positive integer")
-        element_type = FloatDataType()
+        element_type = pa.float64()
         if self._accept("COMMA"):
             element_type = self.parse_schema_type()
         self._expect("RPAREN")
-        return VectorDataType(size=size, element_type=element_type)
+        return pa.list_(element_type, size)
 
-    def _parse_list_type(self) -> DataTypeUnion:
+    def _parse_list_type(self) -> pa.DataType:
         self._expect("LPAREN")
         element_type = self.parse_schema_type()
         self._expect("RPAREN")
-        return ListDataType(element_type=element_type)
+        return pa.list_(element_type)
 
-    def _parse_struct_type(self) -> DataTypeUnion:
+    def _parse_struct_type(self) -> pa.DataType:
         self._expect("LPAREN")
-        fields: dict[str, DataTypeUnion] = {}
+        fields = list[pa.Field]()
+        names = set[str]()
         while True:
             field_name = self._expect("IDENT").value
-            field_type = self.parse_schema_type_with_nullability()
-            if field_name in fields:
+            field_type, nullable = self.parse_schema_type_with_nullability()
+            if field_name in names:
                 raise SchemaParseError(f"Duplicate struct field name: {field_name}")
-            fields[field_name] = field_type
+            names.add(field_name)
+            fields.append(pa.field(field_name, field_type, nullable=nullable))
             if not self._accept("COMMA"):
                 break
         self._expect("RPAREN")
-        return StructDataType(fields=fields)
+        return pa.struct(fields)
 
     def _expect(self, kind: str, value: str | None = None) -> _Token:
         token = self._peek()
@@ -240,25 +231,25 @@ def _tokenize(source: str) -> list[_Token]:
     return tokens
 
 
-def _simple_type(type_name: str) -> DataTypeUnion:
+def _simple_type(type_name: str) -> pa.DataType:
     if type_name == "int":
-        return IntDataType()
+        return pa.int64()
     if type_name == "bool":
-        return BoolDataType()
+        return pa.bool_()
     if type_name == "date":
-        return DateDataType()
+        return pa.date32()
     if type_name == "timestamp":
-        return TimestampDataType()
+        return pa.timestamp("us", tz="UTC")
     if type_name == "float":
-        return FloatDataType()
+        return pa.float64()
     if type_name == "text":
-        return TextDataType()
+        return pa.string()
     if type_name == "json":
-        return JsonDataType()
+        return pa.json_()
     if type_name == "uuid":
-        return UuidDataType()
+        return pa.uuid()
     if type_name == "binary":
-        return BinaryDataType()
+        return pa.binary()
     raise SchemaParseError(
         f"Unsupported data type '{type_name}'. Allowed: {', '.join(ALLOWED_DATA_TYPES)}"
     )

@@ -1,56 +1,39 @@
+import pyarrow as pa
 import pytest
 
-from meshagent.api.room_server_client import (
-    FloatDataType,
-    IntDataType,
-    JsonDataType,
-    ListDataType,
-    StructDataType,
-    TextDataType,
-    UuidDataType,
-    VectorDataType,
-)
 from meshagent.api.sql import SchemaParseError, parse_table_schema
 
 
 def test_parse_schema_case_insensitive():
     schema = parse_table_schema("names VeCtOr(20) nUlL, test TeXT NoT NuLL, age INT")
 
-    assert isinstance(schema["names"], VectorDataType)
-    assert schema["names"].size == 20
-    assert schema["names"].nullable is True
-    assert isinstance(schema["names"].element_type, FloatDataType)
-
-    assert isinstance(schema["test"], TextDataType)
-    assert schema["test"].nullable is False
-
-    assert isinstance(schema["age"], IntDataType)
-    assert schema["age"].nullable is None
+    assert schema.field("names").type == pa.list_(pa.float64(), 20)
+    assert schema.field("names").nullable is True
+    assert schema.field("test").type == pa.string()
+    assert schema.field("test").nullable is False
+    assert schema.field("age").type == pa.int64()
+    assert schema.field("age").nullable is True
 
 
 def test_parse_schema_vector_element_type_case_insensitive():
     schema = parse_table_schema("embedding vector(3, FLOAT)")
-    column = schema["embedding"]
 
-    assert isinstance(column, VectorDataType)
-    assert column.size == 3
-    assert isinstance(column.element_type, FloatDataType)
+    assert schema.field("embedding").type == pa.list_(pa.float64(), 3)
 
 
 def test_parse_schema_uuid_type():
     schema = parse_table_schema("id uuid not null")
 
-    assert isinstance(schema["id"], UuidDataType)
-    assert schema["id"].nullable is False
+    assert schema.field("id").type == pa.uuid()
+    assert schema.field("id").nullable is False
 
 
 def test_parse_schema_json_type():
     schema = parse_table_schema("payload json not null, history list(json)")
 
-    assert isinstance(schema["payload"], JsonDataType)
-    assert schema["payload"].nullable is False
-    assert isinstance(schema["history"], ListDataType)
-    assert isinstance(schema["history"].element_type, JsonDataType)
+    assert schema.field("payload").type == pa.json_()
+    assert schema.field("payload").nullable is False
+    assert schema.field("history").type == pa.list_(pa.json_())
 
 
 def test_parse_schema_duplicate_columns():
@@ -63,14 +46,19 @@ def test_parse_schema_list_struct_type():
         "labels list(struct(key text, value text)), weights list(struct(key text, value vector(2)))"
     )
 
-    labels = schema["labels"]
-    assert isinstance(labels, ListDataType)
-    assert isinstance(labels.element_type, StructDataType)
-    assert isinstance(labels.element_type.fields["key"], TextDataType)
-    assert isinstance(labels.element_type.fields["value"], TextDataType)
-
-    weights = schema["weights"]
-    assert isinstance(weights, ListDataType)
-    assert isinstance(weights.element_type, StructDataType)
-    assert isinstance(weights.element_type.fields["key"], TextDataType)
-    assert isinstance(weights.element_type.fields["value"], VectorDataType)
+    assert schema.field("labels").type == pa.list_(
+        pa.struct(
+            [
+                pa.field("key", pa.string()),
+                pa.field("value", pa.string()),
+            ]
+        )
+    )
+    assert schema.field("weights").type == pa.list_(
+        pa.struct(
+            [
+                pa.field("key", pa.string()),
+                pa.field("value", pa.list_(pa.float64(), 2)),
+            ]
+        )
+    )

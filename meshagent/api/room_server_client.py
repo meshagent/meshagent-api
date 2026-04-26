@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import aiohttp
+import pyarrow as pa
 from meshagent.api.protocol import (
     ClientProtocol,
     Protocol,
@@ -19,7 +20,6 @@ from pydantic import (
     Field,
     JsonValue,
     ConfigDict,
-    TypeAdapter,
     ValidationError,
     field_validator,
 )
@@ -34,9 +34,7 @@ from typing import (
     TypeVar,
     AsyncIterator,
     Awaitable,
-    Annotated,
     NoReturn,
-    Union,
 )
 from collections.abc import AsyncIterable
 
@@ -76,6 +74,76 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from meshagent.api.urls import websocket_room_url
+
+
+_ARROW_IPC_STREAM_MIME_TYPE = "application/vnd.apache.arrow.stream"
+
+
+def _schema_to_arrow_ipc(schema: pa.Schema) -> bytes:
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, schema):
+        pass
+    return sink.getvalue().to_pybytes()
+
+
+def _schema_from_arrow_ipc(data: bytes) -> pa.Schema:
+    return pa.ipc.open_stream(pa.BufferReader(data)).schema
+
+
+def _schema_to_required_table_json(schema: pa.Schema) -> str:
+    return base64.b64encode(_schema_to_arrow_ipc(schema)).decode("ascii")
+
+
+def _schema_from_required_table_json(value: object) -> pa.Schema:
+    if not isinstance(value, str):
+        raise RoomException("required table schema must be a base64 Arrow IPC schema")
+    try:
+        return _schema_from_arrow_ipc(base64.b64decode(value.encode("ascii")))
+    except Exception as exc:
+        raise RoomException(
+            "required table schema must be a base64 Arrow IPC schema"
+        ) from exc
+
+
+def _table_to_arrow_ipc(table: pa.Table | pa.RecordBatch) -> bytes:
+    if isinstance(table, pa.RecordBatch):
+        table = pa.Table.from_batches([table])
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+def _table_from_arrow_ipc(data: bytes) -> pa.Table:
+    return pa.ipc.open_stream(pa.BufferReader(data)).read_all()
+
+
+type DatasetSchemaInput = pa.Schema | dict[str, pa.DataType | pa.Field]
+
+
+def _normalize_dataset_schema(schema: DatasetSchemaInput) -> pa.Schema:
+    if isinstance(schema, pa.Schema):
+        return schema
+
+    fields = list[pa.Field]()
+    for name, value in schema.items():
+        if isinstance(value, pa.Field):
+            fields.append(
+                pa.field(
+                    name,
+                    value.type,
+                    nullable=value.nullable,
+                    metadata=value.metadata,
+                )
+            )
+            continue
+        if isinstance(value, pa.DataType):
+            fields.append(pa.field(name, value))
+            continue
+        raise TypeError(
+            f"dataset schema field '{name}' must be a pyarrow.DataType or pyarrow.Field"
+        )
+    return pa.schema(fields)
 
 
 class DatasetValueEncoder(ABC):
@@ -349,21 +417,21 @@ class Requirement(ABC):
                 name=r["toolkit"], tools=r["tools"], callable=r.get("callable", None)
             )
 
+        if "table" in r:
+            return RequiredTable(
+                name=r["table"],
+                schema=_schema_from_required_table_json(r.get("schema")),
+                namespace=r.get("namespace"),
+                scalar_indexes=r.get("scalar_indexes"),
+                full_text_search_indexes=r.get("full_text_search_indexes"),
+                vector_indexes=r.get("vector_indexes"),
+            )
+
         if "schema" in r:
             json = r.get("json")
             return RequiredSchema(
                 name=r["schema"],
                 schema=MeshSchema.from_json(json) if json is not None else None,
-            )
-
-        if "table" in r:
-            return RequiredTable(
-                name=r["table"],
-                schema=r["schema"],
-                namespace=r.get("namespace"),
-                scalar_indexes=r.get("scalar_indexes"),
-                full_text_search_indexes=r.get("full_text_search_indexes"),
-                vector_indexes=r.get("vector_indexes"),
             )
 
         raise RoomException("invalid requirement json")
@@ -429,7 +497,7 @@ class RequiredTable(Requirement):
         self,
         *,
         name: str,
-        schema: dict[str, "DataType"],
+        schema: pa.Schema,
         namespace: Optional[list[str]] = None,
         scalar_indexes: Optional[list[str]] = None,
         full_text_search_indexes: Optional[list[str]] = None,
@@ -445,7 +513,7 @@ class RequiredTable(Requirement):
     def to_json(self):
         return {
             "table": self.name,
-            "schema": self.schema,
+            "schema": _schema_to_required_table_json(self.schema),
             "namespace": self.namespace,
             "scalar_indexes": self.scalar_indexes,
             "full_text_search_indexes": self.full_text_search_indexes,
@@ -4732,176 +4800,6 @@ class _DeveloperLogInputStream:
         raise StopAsyncIteration
 
 
-class DataType(BaseModel, ABC):
-    type: str
-    nullable: Optional[bool] = None
-    metadata: Optional[dict] = None
-
-    model_config = ConfigDict(extra="allow")
-
-    def _maybe_nullable_schema(self, t: str):
-        if self.nullable:
-            return [t, "null"]
-        return t
-
-    @abstractmethod
-    def to_json_schema(self):
-        pass
-
-
-class IntDataType(DataType):
-    type: Literal["int"] = "int"
-
-    def to_json_schema(self):
-        return {"type": self._maybe_nullable_schema("number")}
-
-
-class BoolDataType(DataType):
-    type: Literal["bool"] = "bool"
-
-    def to_json_schema(self):
-        return {"type": self._maybe_nullable_schema("boolean")}
-
-
-class DateDataType(DataType):
-    type: Literal["date"] = "date"
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("string"),
-            "description": "an ISO formatted date string",
-        }
-
-
-class TimestampDataType(DataType):
-    type: Literal["timestamp"] = "timestamp"
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("string"),
-            "description": "an ISO formatted timestamp string",
-        }
-
-
-class FloatDataType(DataType):
-    type: Literal["float"] = "float"
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("number"),
-        }
-
-
-class VectorDataType(DataType):
-    type: Literal["vector"] = "vector"
-    size: int
-    element_type: "DataTypeUnion"
-
-    def to_json_schema(self):
-        return {
-            "type": "array",
-            "items": {"type": self._maybe_nullable_schema("number")},
-            "description": f"a vector with length {self.size}",
-        }
-
-
-class ListDataType(DataType):
-    type: Literal["list"] = "list"
-    element_type: "DataTypeUnion"
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("array"),
-            "items": self.element_type.to_json_schema(),
-        }
-
-
-class StructDataType(DataType):
-    type: Literal["struct"] = "struct"
-    fields: Dict[str, "DataTypeUnion"]
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("object"),
-            "properties": {
-                field_name: field_type.to_json_schema()
-                for field_name, field_type in self.fields.items()
-            },
-            "additionalProperties": False,
-        }
-
-
-class TextDataType(DataType):
-    type: Literal["text"] = "text"
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("string"),
-        }
-
-
-class JsonDataType(DataType):
-    type: Literal["json"] = "json"
-
-    def to_json_schema(self):
-        value_schema: dict[str, Any] = {
-            "anyOf": [
-                {"type": "object"},
-                {"type": "array"},
-                {"type": "string"},
-                {"type": "number"},
-                {"type": "boolean"},
-                {"type": "null"},
-            ]
-        }
-        if self.nullable:
-            return {"anyOf": [value_schema, {"type": "null"}]}
-        return value_schema
-
-
-class UuidDataType(DataType):
-    type: Literal["uuid"] = "uuid"
-
-    def to_json_schema(self):
-        return {
-            "type": self._maybe_nullable_schema("string"),
-            "description": "a UUID string",
-        }
-
-
-class BinaryDataType(DataType):
-    type: Literal["binary"] = "binary"
-
-    def to_json_schema(self):
-        return {
-            "type": "array",
-            "items": {"type": self._maybe_nullable_schema("number")},
-            "description": "a byte array",
-        }
-
-
-DataTypeUnion = Annotated[
-    Union[
-        IntDataType,
-        BoolDataType,
-        DateDataType,
-        TimestampDataType,
-        FloatDataType,
-        VectorDataType,
-        ListDataType,
-        StructDataType,
-        TextDataType,
-        JsonDataType,
-        UuidDataType,
-        BinaryDataType,
-    ],
-    Field(discriminator="type"),
-]
-_data_type_adapter = TypeAdapter(DataTypeUnion)
-VectorDataType.model_rebuild()
-ListDataType.model_rebuild()
-StructDataType.model_rebuild()
-
 CreateMode = Literal["create", "overwrite", "create_if_not_exists"]
 
 
@@ -4917,9 +4815,7 @@ class _CreateTableRequest(BaseModel):
 
     name: str
     data: Optional[Any] = None
-    table_schema: Optional[Dict[str, DataTypeUnion]] = Field(
-        default=None, alias="schema"
-    )
+    table_schema: Optional[dict[str, Any]] = Field(default=None, alias="schema")
     mode: CreateMode = "create"
     namespace: Optional[list[str]] = None
     branch: Optional[str] = None
@@ -4963,14 +4859,6 @@ class _DropTableRequest(_BranchRequest):
 
 class _DropIndexRequest(_TableRequest):
     name: str
-
-
-class _AddColumnsRequest(_TableRequest):
-    new_columns: Dict[str, str | DataTypeUnion]
-
-
-class _AlterColumnsRequest(_TableRequest):
-    columns: Dict[str, DataTypeUnion]
 
 
 class _DropColumnsRequest(_TableRequest):
@@ -5323,137 +5211,6 @@ def _dataset_metadata_dict(metadata: object) -> dict[str, str]:
     return result
 
 
-def _dataset_toolkit_data_type_json(data_type: DataType) -> dict[str, Any]:
-    metadata = _dataset_metadata_entries(data_type.metadata)
-    payload: dict[str, Any] = {
-        "type": data_type.type,
-        "nullable": data_type.nullable,
-        "metadata": metadata,
-    }
-
-    if isinstance(data_type, VectorDataType):
-        payload["size"] = data_type.size
-        payload["element_type"] = _dataset_toolkit_data_type_json(
-            data_type.element_type
-        )
-    elif isinstance(data_type, ListDataType):
-        payload["element_type"] = _dataset_toolkit_data_type_json(
-            data_type.element_type
-        )
-    elif isinstance(data_type, StructDataType):
-        payload["fields"] = [
-            {
-                "name": field_name,
-                "data_type": _dataset_toolkit_data_type_json(field_type),
-            }
-            for field_name, field_type in data_type.fields.items()
-        ]
-
-    return payload
-
-
-def _dataset_toolkit_schema_entries(
-    schema: dict[str, DataType] | None,
-) -> list[dict[str, Any]] | None:
-    if schema is None:
-        return None
-
-    return [
-        {
-            "name": name,
-            "data_type": _dataset_toolkit_data_type_json(data_type),
-        }
-        for name, data_type in schema.items()
-    ]
-
-
-def _dataset_public_data_type_json(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise RoomException(
-            "unexpected return type from datasets.inspect",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-
-    type_name = value.get("type")
-    if not isinstance(type_name, str):
-        raise RoomException(
-            "unexpected return type from datasets.inspect",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-
-    payload: dict[str, Any] = {
-        "type": type_name,
-        "nullable": value.get("nullable"),
-        "metadata": _dataset_metadata_dict(value.get("metadata")),
-    }
-
-    if type_name == "vector":
-        payload["size"] = value.get("size")
-        payload["element_type"] = _dataset_public_data_type_json(
-            value.get("element_type")
-        )
-    elif type_name == "list":
-        payload["element_type"] = _dataset_public_data_type_json(
-            value.get("element_type")
-        )
-    elif type_name == "struct":
-        raw_fields = value.get("fields")
-        if not isinstance(raw_fields, list):
-            raise RoomException(
-                "unexpected return type from datasets.inspect",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-        payload["fields"] = {
-            field_name: _dataset_public_data_type_json(field_value)
-            for field_name, field_value in (
-                (
-                    field.get("name"),
-                    field.get("data_type"),
-                )
-                for field in raw_fields
-                if isinstance(field, dict)
-            )
-            if isinstance(field_name, str)
-        }
-        if len(payload["fields"]) != len(raw_fields):
-            raise RoomException(
-                "unexpected return type from datasets.inspect",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-
-    return payload
-
-
-def _dataset_data_type_from_toolkit(value: object) -> DataType:
-    return _data_type_adapter.validate_python(_dataset_public_data_type_json(value))
-
-
-def _dataset_schema_from_toolkit(
-    value: object,
-) -> dict[str, DataType]:
-    if not isinstance(value, list):
-        raise RoomException(
-            "unexpected return type from datasets.inspect",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-
-    result = dict[str, DataType]()
-    for field in value:
-        if not isinstance(field, dict):
-            raise RoomException(
-                "unexpected return type from datasets.inspect",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-        name = field.get("name")
-        if not isinstance(name, str):
-            raise RoomException(
-                "unexpected return type from datasets.inspect",
-                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-            )
-        result[name] = _dataset_data_type_from_toolkit(field.get("data_type"))
-    return result
-
-
 def _dataset_records_json(records: object) -> str:
     if not isinstance(records, list):
         raise RoomException(
@@ -5533,6 +5290,82 @@ def _dataset_sql_literal(value: Any) -> str:
 
 def _dataset_stream_encode_value(value: Any) -> Any:
     return _encode_record_value(value)
+
+
+def _dataset_arrow_value(value: Any, data_type: pa.DataType | None = None) -> Any:
+    if isinstance(value, DatasetExpression):
+        raise RoomException(
+            "dataset Arrow writes do not support DatasetExpression values",
+            code=ErrorCode.INVALID_REQUEST,
+        )
+    if isinstance(value, DatasetJson):
+        return json.dumps(value.to_json())
+    if isinstance(value, DatasetStruct):
+        value = value.fields
+    if isinstance(value, uuid.UUID):
+        return (
+            value.bytes if data_type is not None and data_type == pa.uuid() else value
+        )
+    if isinstance(value, str) and data_type is not None:
+        if pa.types.is_date(data_type):
+            return date.fromisoformat(value)
+        if pa.types.is_timestamp(data_type):
+            normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+            return datetime.fromisoformat(normalized)
+    if isinstance(value, list):
+        item_type = (
+            data_type.value_type
+            if data_type is not None and pa.types.is_list(data_type)
+            else None
+        )
+        return [_dataset_arrow_value(item, item_type) for item in value]
+    if isinstance(value, dict):
+        field_types = dict[str, pa.DataType]()
+        if data_type is not None and pa.types.is_struct(data_type):
+            field_types = {field.name: field.type for field in data_type}
+        return {
+            str(key): _dataset_arrow_value(item, field_types.get(str(key)))
+            for key, item in value.items()
+        }
+    return value
+
+
+def _dataset_records_to_arrow_table(
+    records: DatasetRows,
+    *,
+    schema: pa.Schema | None = None,
+) -> pa.Table:
+    rows = list[dict[str, Any]]()
+    field_types = (
+        {field.name: field.type for field in schema}
+        if schema is not None
+        else dict[str, pa.DataType]()
+    )
+    for record in records:
+        rows.append(
+            {
+                str(key): _dataset_arrow_value(value, field_types.get(str(key)))
+                for key, value in record.items()
+            }
+        )
+    return pa.Table.from_pylist(rows, schema=schema)
+
+
+def _dataset_arrow_chunks(
+    chunks: Any,
+    *,
+    schema: pa.Schema | None = None,
+) -> Any:
+    if chunks is None:
+        return []
+    if isinstance(chunks, (pa.Table, pa.RecordBatch)):
+        return chunks
+    if isinstance(chunks, list):
+        if all(isinstance(item, dict) for item in chunks):
+            return _dataset_records_to_arrow_table(chunks, schema=schema)
+        if all(isinstance(item, (pa.Table, pa.RecordBatch)) for item in chunks):
+            return chunks
+    return chunks
 
 
 def _dataset_stream_decode_value(
@@ -5662,6 +5495,115 @@ async def _dataset_async_row_chunks(
         yield chunk
 
 
+async def _dataset_async_arrow_chunks(
+    chunks: Any,
+) -> AsyncIterator[pa.Table | pa.RecordBatch]:
+    if isinstance(chunks, (pa.Table, pa.RecordBatch)):
+        yield chunks
+        return
+    if isinstance(chunks, AsyncIterable):
+        async for chunk in chunks:
+            yield chunk
+        return
+    for chunk in chunks:
+        yield chunk
+
+
+class _DatasetArrowWriteInputStream:
+    def __init__(
+        self,
+        *,
+        start: dict[str, Any],
+        schema: pa.Schema | None = None,
+        chunks: Any = (),
+    ) -> None:
+        self._start = start
+        self._schema = schema
+        self._source = _dataset_async_arrow_chunks(chunks).__aiter__()
+        self._closed = asyncio.Event()
+        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+        self._sent_start = False
+
+    def request_next(self) -> None:
+        if self._closed.is_set():
+            return
+        self._pulls.put_nowait(object())
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._pulls.put_nowait(object())
+
+    def __aiter__(self) -> "_DatasetArrowWriteInputStream":
+        return self
+
+    async def __anext__(self) -> Content:
+        if not self._sent_start:
+            self._sent_start = True
+            return BinaryContent(
+                data=_schema_to_arrow_ipc(self._schema)
+                if self._schema is not None
+                else b"",
+                headers=self._start,
+            )
+
+        await self._pulls.get()
+        if self._closed.is_set():
+            raise StopAsyncIteration
+
+        try:
+            next_chunk = await self._source.__anext__()
+        except StopAsyncIteration as exc:
+            raise StopAsyncIteration from exc
+
+        if not isinstance(next_chunk, (pa.Table, pa.RecordBatch)):
+            raise RoomException(
+                "dataset Arrow streams must yield pyarrow.Table or pyarrow.RecordBatch",
+                code=ErrorCode.INVALID_REQUEST,
+            )
+        return BinaryContent(
+            data=_table_to_arrow_ipc(next_chunk),
+            headers={
+                "kind": "data",
+                "content_type": _ARROW_IPC_STREAM_MIME_TYPE,
+            },
+        )
+
+
+class _DatasetArrowReadInputStream:
+    def __init__(self, *, start: dict[str, Any]) -> None:
+        self._start = start
+        self._closed = asyncio.Event()
+        self._pulls: asyncio.Queue[object] = asyncio.Queue()
+        self._sent_start = False
+
+    def request_next(self) -> None:
+        if self._closed.is_set():
+            return
+        self._pulls.put_nowait(object())
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._pulls.put_nowait(object())
+
+    def __aiter__(self) -> "_DatasetArrowReadInputStream":
+        return self
+
+    async def __anext__(self) -> Content:
+        if not self._sent_start:
+            self._sent_start = True
+            return BinaryContent(data=b"", headers=self._start)
+
+        await self._pulls.get()
+        if self._closed.is_set():
+            raise StopAsyncIteration
+
+        return BinaryContent(data=b"", headers={"kind": "pull"})
+
+
 class _DatasetWriteInputStream:
     def __init__(
         self,
@@ -5764,6 +5706,16 @@ class DatasetsClient:
             raise self._unexpected_response_error(operation=operation)
         return response
 
+    async def _invoke_content(self, *, operation: str, input: Content) -> Content:
+        response = await self.room.invoke(
+            toolkit="dataset",
+            tool=operation,
+            input=input,
+        )
+        if not isinstance(response, Content):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
     async def _invoke_stream(
         self,
         *,
@@ -5783,7 +5735,7 @@ class DatasetsClient:
         self,
         *,
         operation: str,
-        input_stream: _DatasetWriteInputStream,
+        input_stream: _DatasetWriteInputStream | _DatasetArrowWriteInputStream,
     ) -> None:
         response_stream = await self._invoke_stream(
             operation=operation,
@@ -5797,6 +5749,11 @@ class DatasetsClient:
                     if chunk.method == "close":
                         return
                     raise self._unexpected_response_error(operation=operation)
+                if isinstance(chunk, BinaryContent):
+                    if chunk.headers.get("kind") != "pull":
+                        raise self._unexpected_response_error(operation=operation)
+                    input_stream.request_next()
+                    continue
                 if not isinstance(chunk, JsonContent):
                     raise self._unexpected_response_error(operation=operation)
                 if chunk.json.get("kind") != "pull":
@@ -5805,13 +5762,13 @@ class DatasetsClient:
         finally:
             input_stream.close()
 
-    async def _stream_rows(
+    async def _stream_arrow(
         self,
         *,
         operation: str,
         start: dict[str, Any],
-    ) -> AsyncIterator[list[dict[str, Any]]]:
-        input_stream = _DatasetReadInputStream(start=start)
+    ) -> AsyncIterator[pa.Table]:
+        input_stream = _DatasetArrowReadInputStream(start=start)
         response_stream = await self._invoke_stream(
             operation=operation,
             input=input_stream,
@@ -5825,12 +5782,11 @@ class DatasetsClient:
                     if chunk.method == "close":
                         return
                     raise self._unexpected_response_error(operation=operation)
-                if not isinstance(chunk, JsonContent):
+                if not isinstance(chunk, BinaryContent):
                     raise self._unexpected_response_error(operation=operation)
-                yield _dataset_stream_records_from_chunk(
-                    payload=chunk.json,
-                    operation=operation,
-                )
+                if chunk.headers.get("kind") != "data":
+                    raise self._unexpected_response_error(operation=operation)
+                yield _table_from_arrow_ipc(chunk.data)
                 input_stream.request_next()
         finally:
             input_stream.close()
@@ -5856,7 +5812,7 @@ class DatasetsClient:
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
-    ) -> dict[str, DataType]:
+    ) -> pa.Schema:
         response = await self._invoke(
             operation="inspect",
             input={
@@ -5866,43 +5822,47 @@ class DatasetsClient:
                 "version": version,
             },
         )
-        if not isinstance(response, JsonContent):
+        if not isinstance(response, BinaryContent):
             raise self._unexpected_response_error(operation="inspect")
-        return _dataset_schema_from_toolkit(response.json.get("fields"))
+        return _schema_from_arrow_ipc(response.data)
 
     async def _create_table(
         self,
         *,
         name: str,
-        data: Optional[DatasetRecord | DatasetRows] = None,
-        schema: Optional[Dict[str, DataType]] = None,
+        data: Any = None,
+        schema: Optional[DatasetSchemaInput] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
-        chunks = (
-            []
-            if data is None
-            else _dataset_row_chunk_list(
-                data if isinstance(data, list) else [data],
-            )
-        )
         normalized_name = _require_non_empty_dataset_table_name(
             value=name,
             field_name="table name",
         )
-        input_stream = _DatasetWriteInputStream(
+        arrow_schema = _normalize_dataset_schema(schema) if schema is not None else None
+        if arrow_schema is not None and metadata is not None:
+            arrow_schema = arrow_schema.with_metadata(
+                {
+                    **(arrow_schema.metadata or {}),
+                    **{
+                        str(key).encode("utf-8"): str(value).encode("utf-8")
+                        for key, value in metadata.items()
+                    },
+                }
+            )
+        input_stream = _DatasetArrowWriteInputStream(
             start={
                 "kind": "start",
                 "name": normalized_name,
-                "fields": _dataset_toolkit_schema_entries(schema),
                 "mode": mode,
                 "namespace": namespace,
                 "branch": branch,
                 "metadata": _dataset_metadata_entries(metadata),
             },
-            chunks=chunks,
+            schema=arrow_schema,
+            chunks=_dataset_arrow_chunks(data, schema=arrow_schema),
         )
         await self._drain_write_stream(
             operation="create_table",
@@ -5913,8 +5873,8 @@ class DatasetsClient:
         self,
         *,
         name: str,
-        schema: Optional[Dict[str, DataType]] = None,
-        data: Optional[DatasetRows] = None,
+        schema: Optional[DatasetSchemaInput] = None,
+        data: Any = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
@@ -5934,7 +5894,7 @@ class DatasetsClient:
         self,
         *,
         name: str,
-        data: Optional[DatasetRows] = None,
+        data: Any = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
@@ -5953,18 +5913,59 @@ class DatasetsClient:
         self,
         *,
         name: str,
-        chunks: DatasetRowChunks,
-        schema: Optional[Dict[str, DataType]] = None,
+        chunks: Any,
+        schema: Optional[DatasetSchemaInput] = None,
         mode: Optional[CreateMode] = "create",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> None:
-        input_stream = _DatasetWriteInputStream(
+        input_stream = _DatasetArrowWriteInputStream(
             start={
                 "kind": "start",
                 "name": name,
-                "fields": _dataset_toolkit_schema_entries(schema),
+                "mode": mode,
+                "namespace": namespace,
+                "branch": branch,
+                "metadata": _dataset_metadata_entries(metadata),
+            },
+            schema=_normalize_dataset_schema(schema) if schema is not None else None,
+            chunks=_dataset_arrow_chunks(
+                chunks,
+                schema=_normalize_dataset_schema(schema)
+                if schema is not None
+                else None,
+            ),
+        )
+        await self._drain_write_stream(
+            operation="create_table",
+            input_stream=input_stream,
+        )
+
+    async def create_table_from_json_data(
+        self,
+        *,
+        name: str,
+        data: Optional[DatasetRows] = None,
+        mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        chunks = (
+            []
+            if data is None
+            else _dataset_row_chunk_list(
+                data if isinstance(data, list) else [data],
+            )
+        )
+        input_stream = _DatasetWriteInputStream(
+            start={
+                "kind": "start",
+                "name": _require_non_empty_dataset_table_name(
+                    value=name,
+                    field_name="table name",
+                ),
                 "mode": mode,
                 "namespace": namespace,
                 "branch": branch,
@@ -6017,29 +6018,38 @@ class DatasetsClient:
         self,
         *,
         table: str,
-        new_columns: Dict[str, str | DataType],
+        new_columns: Dict[str, str] | DatasetSchemaInput,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
-        columns = []
-        for column_name, column_value in new_columns.items():
-            if isinstance(column_value, DataType):
-                columns.append(
-                    {
-                        "name": column_name,
-                        "value_sql": None,
-                        "data_type": _dataset_toolkit_data_type_json(column_value),
-                    }
-                )
-            else:
-                columns.append(
-                    {
-                        "name": column_name,
-                        "value_sql": column_value,
-                        "data_type": None,
-                    }
-                )
-        await self._invoke(
+        if isinstance(new_columns, pa.Schema) or all(
+            isinstance(value, (pa.DataType, pa.Field)) for value in new_columns.values()
+        ):
+            schema = _normalize_dataset_schema(new_columns)
+            response = await self._invoke_content(
+                operation="add_columns",
+                input=BinaryContent(
+                    data=_schema_to_arrow_ipc(schema),
+                    headers={
+                        "table": table,
+                        "namespace": namespace,
+                        "branch": branch,
+                        "content_type": _ARROW_IPC_STREAM_MIME_TYPE,
+                    },
+                ),
+            )
+            if not isinstance(response, EmptyContent):
+                raise self._unexpected_response_error(operation="add_columns")
+            return
+
+        columns = [
+            {
+                "name": column_name,
+                "value_sql": column_value,
+            }
+            for column_name, column_value in new_columns.items()
+        ]
+        response = await self._invoke(
             operation="add_columns",
             input={
                 "table": table,
@@ -6048,25 +6058,8 @@ class DatasetsClient:
                 "branch": branch,
             },
         )
-
-    # TODO: not ready yet on lance side
-    async def _alter_columns(
-        self,
-        *,
-        table: str,
-        columns: Dict[str, DataType],
-        namespace: Optional[list[str]] = None,
-        branch: Optional[str] = None,
-    ) -> None:
-        await self._invoke(
-            operation="alter_columns",
-            input={
-                "table": table,
-                "columns": _dataset_toolkit_schema_entries(columns),
-                "namespace": namespace,
-                "branch": branch,
-            },
-        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="add_columns")
 
     async def drop_columns(
         self,
@@ -6086,17 +6079,35 @@ class DatasetsClient:
             },
         )
 
+    async def _write_chunks_for_table(
+        self,
+        *,
+        table: str,
+        chunks: Any,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> Any:
+        if isinstance(chunks, list) and all(isinstance(item, dict) for item in chunks):
+            schema = await self.inspect(table=table, namespace=namespace, branch=branch)
+            return _dataset_arrow_chunks(chunks, schema=schema)
+        return _dataset_arrow_chunks(chunks)
+
     async def insert(
         self,
         *,
         table: str,
-        records: DatasetRows,
+        records: pa.Table | pa.RecordBatch | DatasetRows,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
         await self.insert_stream(
             table=table,
-            chunks=_dataset_row_chunk_list(records),
+            chunks=await self._write_chunks_for_table(
+                table=table,
+                chunks=records,
+                namespace=namespace,
+                branch=branch,
+            ),
             namespace=namespace,
             branch=branch,
         )
@@ -6105,18 +6116,23 @@ class DatasetsClient:
         self,
         *,
         table: str,
-        chunks: DatasetRowChunks,
+        chunks: Any,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
-        input_stream = _DatasetWriteInputStream(
+        input_stream = _DatasetArrowWriteInputStream(
             start={
                 "kind": "start",
                 "table": table,
                 "namespace": namespace,
                 "branch": branch,
             },
-            chunks=chunks,
+            chunks=await self._write_chunks_for_table(
+                table=table,
+                chunks=chunks,
+                namespace=namespace,
+                branch=branch,
+            ),
         )
         await self._drain_write_stream(operation="insert", input_stream=input_stream)
 
@@ -6169,14 +6185,19 @@ class DatasetsClient:
         *,
         table: str,
         on: str,
-        records: DatasetRows,
+        records: pa.Table | pa.RecordBatch | DatasetRows,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
         await self.merge_stream(
             table=table,
             on=on,
-            chunks=_dataset_row_chunk_list(records),
+            chunks=await self._write_chunks_for_table(
+                table=table,
+                chunks=records,
+                namespace=namespace,
+                branch=branch,
+            ),
             namespace=namespace,
             branch=branch,
         )
@@ -6186,11 +6207,11 @@ class DatasetsClient:
         *,
         table: str,
         on: str,
-        chunks: DatasetRowChunks,
+        chunks: Any,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
-        input_stream = _DatasetWriteInputStream(
+        input_stream = _DatasetArrowWriteInputStream(
             start={
                 "kind": "start",
                 "table": table,
@@ -6198,7 +6219,12 @@ class DatasetsClient:
                 "namespace": namespace,
                 "branch": branch,
             },
-            chunks=chunks,
+            chunks=await self._write_chunks_for_table(
+                table=table,
+                chunks=chunks,
+                namespace=namespace,
+                branch=branch,
+            ),
         )
         await self._drain_write_stream(operation="merge", input_stream=input_stream)
 
@@ -6208,15 +6234,17 @@ class DatasetsClient:
         query: str,
         tables: List[SqlTableReference | str],
         params: Optional[Dict[str, Any]] = None,
-    ) -> list[Dict[str, Any]]:
-        results = list[dict[str, Any]]()
+    ) -> pa.Table:
+        batches = list[pa.Table]()
         async for batch in self.sql_stream(
             query=query,
             tables=tables,
             params=params,
         ):
-            results.extend(batch)
-        return results
+            batches.append(batch)
+        if len(batches) == 0:
+            return pa.table({})
+        return pa.concat_tables(batches, promote_options="default")
 
     async def sql_stream(
         self,
@@ -6224,12 +6252,12 @@ class DatasetsClient:
         query: str,
         tables: List[SqlTableReference | str],
         params: Optional[Dict[str, Any]] = None,
-    ) -> AsyncIterator[list[Dict[str, Any]]]:
+    ) -> AsyncIterator[pa.Table]:
         table_refs = [
             SqlTableReference(name=table) if isinstance(table, str) else table
             for table in tables
         ]
-        async for batch in self._stream_rows(
+        async for batch in self._stream_arrow(
             operation="sql",
             start={
                 "kind": "start",
@@ -6257,8 +6285,8 @@ class DatasetsClient:
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
-    ) -> list[Dict[str, Any]]:
-        results = list[dict[str, Any]]()
+    ) -> pa.Table:
+        batches = list[pa.Table]()
         async for batch in self.search_stream(
             table=table,
             text=text,
@@ -6271,8 +6299,10 @@ class DatasetsClient:
             branch=branch,
             version=version,
         ):
-            results.extend(batch)
-        return results
+            batches.append(batch)
+        if len(batches) == 0:
+            return pa.table({})
+        return pa.concat_tables(batches, promote_options="default")
 
     async def search_stream(
         self,
@@ -6287,13 +6317,13 @@ class DatasetsClient:
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
-    ) -> AsyncIterator[list[Dict[str, Any]]]:
+    ) -> AsyncIterator[pa.Table]:
         if isinstance(where, dict):
             where = " AND ".join(
                 f"{column} = {_dataset_sql_literal(value)}"
                 for column, value in where.items()
             )
-        async for batch in self._stream_rows(
+        async for batch in self._stream_arrow(
             operation="search",
             start={
                 "kind": "start",
