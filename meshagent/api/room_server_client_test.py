@@ -3112,7 +3112,7 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
             self.read_starts: dict[str, dict[str, object]] = {}
             self.read_pulls: dict[str, list[dict[str, object]]] = {
                 "search": [],
-                "sql": [],
+                "read_sql_query": [],
             }
 
         async def invoke(self, **kwargs) -> Content | AsyncIterator[Content]:
@@ -3178,6 +3178,28 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
 
                 return stream()
 
+            if tool in {"open_sql_query", "execute_sql"}:
+                assert isinstance(tool_input, BinaryContent)
+                return BinaryContent(
+                    data=room_server_client._schema_to_arrow_ipc(
+                        pa.table(
+                            {
+                                "id": [1],
+                                "payload": [b"sql-result"],
+                            }
+                        ).schema
+                    ),
+                    headers={"kind": "query", "query_id": "sql-query-1"},
+                )
+            if tool == "execute_sql_statement":
+                assert isinstance(tool_input, BinaryContent)
+                return JsonContent(json={"rows_affected": 3})
+            if tool == "close_sql_query":
+                assert isinstance(tool_input, dict)
+                return EmptyContent()
+            if tool == "cancel_sql_query":
+                assert isinstance(tool_input, dict)
+                return JsonContent(json={"status": "cancelling"})
             if tool == "list_tables":
                 return JsonContent(json={"tables": ["records"]})
             if tool == "inspect":
@@ -3258,8 +3280,14 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     rows = await client.search(table="records", namespace=["team"])
     sql_rows = await client.sql(
         query="SELECT * FROM records",
-        tables=["records"],
+        namespace=["team"],
     )
+    rows_affected = await client.execute_sql_statement(
+        query="DELETE FROM records WHERE id = $id",
+        namespace=["team"],
+        params=pa.table({"id": [1]}),
+    )
+    cancel_result = await client.cancel_sql_query(query_id="sql-query-1")
     count = await client.count(table="records", namespace=["team"])
     versions = await client.list_versions(table="records", namespace=["team"])
     indexes = await client.list_indexes(table="records", namespace=["team"])
@@ -3271,6 +3299,8 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     assert inspected.equals(inspect_schema, check_metadata=True)
     assert rows.to_pylist() == [{"payload": b"hello"}]
     assert sql_rows.to_pylist() == [{"id": 1, "payload": b"sql-result"}]
+    assert rows_affected == 3
+    assert cancel_result.status == "cancelling"
     assert count == 1
     assert versions[0].metadata == {"kind": "demo"}
     assert indexes[0].name == "idx_records_id"
@@ -3284,7 +3314,11 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         "list_tables",
         "inspect",
         "search",
-        "sql",
+        "execute_sql",
+        "read_sql_query",
+        "close_sql_query",
+        "execute_sql_statement",
+        "cancel_sql_query",
         "count",
         "list_versions",
         "list_indexes",
@@ -3337,9 +3371,9 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     assert room.read_starts["search"]["branch"] is None
     assert room.read_starts["search"]["version"] is None
     assert room.read_pulls["search"] == [{"kind": "pull"}, {"kind": "pull"}]
-    assert room.read_starts["sql"]["kind"] == "start"
-    assert room.read_starts["sql"]["query"] == "SELECT * FROM records"
-    assert room.read_pulls["sql"] == [{"kind": "pull"}, {"kind": "pull"}]
+    assert room.read_starts["read_sql_query"]["kind"] == "start"
+    assert room.read_starts["read_sql_query"]["query_id"] == "sql-query-1"
+    assert room.read_pulls["read_sql_query"] == [{"kind": "pull"}, {"kind": "pull"}]
 
 
 @pytest.mark.asyncio

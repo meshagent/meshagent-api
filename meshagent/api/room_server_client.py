@@ -5165,10 +5165,23 @@ class SqlTableReference(BaseModel):
     version: Optional[int] = None
 
 
-class _SqlRequest(BaseModel):
-    query: str
-    tables: List[SqlTableReference]
-    params: Optional[Dict[str, Any]] = None
+@dataclass(frozen=True, slots=True)
+class DatasetSqlQuery:
+    schema: pa.Schema
+    query_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetSqlStatement:
+    rows_affected: int
+
+
+DatasetSqlExecution = DatasetSqlQuery | DatasetSqlStatement
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetSqlCancelResult:
+    status: Literal["cancelled", "cancelling", "not_cancellable"]
 
 
 def _dataset_metadata_entries(metadata: dict | None) -> list[dict[str, str]] | None:
@@ -6232,45 +6245,192 @@ class DatasetsClient:
         self,
         *,
         query: str,
-        tables: List[SqlTableReference | str],
-        params: Optional[Dict[str, Any]] = None,
+        tables: Optional[List[SqlTableReference | str]] = None,
+        params: pa.Table | pa.RecordBatch | None = None,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> pa.Table:
         batches = list[pa.Table]()
         async for batch in self.sql_stream(
             query=query,
             tables=tables,
             params=params,
+            namespace=namespace,
+            branch=branch,
         ):
             batches.append(batch)
         if len(batches) == 0:
             return pa.table({})
         return pa.concat_tables(batches, promote_options="default")
 
+    async def open_sql_query(
+        self,
+        *,
+        query: str,
+        tables: Optional[List[SqlTableReference | str]] = None,
+        params: pa.Table | pa.RecordBatch | None = None,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> DatasetSqlQuery:
+        table_refs = [
+            SqlTableReference(name=table) if isinstance(table, str) else table
+            for table in (tables or [])
+        ]
+        response = await self._invoke_content(
+            operation="open_sql_query",
+            input=BinaryContent(
+                data=b"" if params is None else _table_to_arrow_ipc(params),
+                headers={
+                    "query": query,
+                    "tables": [table.model_dump() for table in table_refs],
+                    "namespace": namespace,
+                    "branch": branch,
+                },
+            ),
+        )
+        if not isinstance(response, BinaryContent):
+            raise self._unexpected_response_error(operation="open_sql_query")
+        query_id = response.headers.get("query_id")
+        if not isinstance(query_id, str) or query_id == "":
+            raise self._unexpected_response_error(operation="open_sql_query")
+        return DatasetSqlQuery(
+            schema=_schema_from_arrow_ipc(response.data),
+            query_id=query_id,
+        )
+
+    async def execute_sql(
+        self,
+        *,
+        query: str,
+        tables: Optional[List[SqlTableReference | str]] = None,
+        params: pa.Table | pa.RecordBatch | None = None,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> DatasetSqlExecution:
+        table_refs = [
+            SqlTableReference(name=table) if isinstance(table, str) else table
+            for table in (tables or [])
+        ]
+        response = await self._invoke_content(
+            operation="execute_sql",
+            input=BinaryContent(
+                data=b"" if params is None else _table_to_arrow_ipc(params),
+                headers={
+                    "query": query,
+                    "tables": [table.model_dump() for table in table_refs],
+                    "namespace": namespace,
+                    "branch": branch,
+                },
+            ),
+        )
+        if isinstance(response, BinaryContent):
+            if response.headers.get("kind") != "query":
+                raise self._unexpected_response_error(operation="execute_sql")
+            query_id = response.headers.get("query_id")
+            if not isinstance(query_id, str) or query_id == "":
+                raise self._unexpected_response_error(operation="execute_sql")
+            return DatasetSqlQuery(
+                schema=_schema_from_arrow_ipc(response.data),
+                query_id=query_id,
+            )
+        if isinstance(response, JsonContent):
+            if response.json.get("kind") != "statement":
+                raise self._unexpected_response_error(operation="execute_sql")
+            rows_affected = response.json.get("rows_affected")
+            if not isinstance(rows_affected, int):
+                raise self._unexpected_response_error(operation="execute_sql")
+            return DatasetSqlStatement(rows_affected=rows_affected)
+        raise self._unexpected_response_error(operation="execute_sql")
+
     async def sql_stream(
         self,
         *,
         query: str,
-        tables: List[SqlTableReference | str],
-        params: Optional[Dict[str, Any]] = None,
+        tables: Optional[List[SqlTableReference | str]] = None,
+        params: pa.Table | pa.RecordBatch | None = None,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
     ) -> AsyncIterator[pa.Table]:
-        table_refs = [
-            SqlTableReference(name=table) if isinstance(table, str) else table
-            for table in tables
-        ]
+        result = await self.execute_sql(
+            query=query,
+            tables=tables,
+            params=params,
+            namespace=namespace,
+            branch=branch,
+        )
+        if isinstance(result, DatasetSqlStatement):
+            raise RoomException(
+                f"SQL statement did not return rows; rows_affected={result.rows_affected}",
+                code=ErrorCode.INVALID_REQUEST,
+            )
+        opened = result
+        try:
+            async for batch in self.read_sql_query(query_id=opened.query_id):
+                yield batch
+        finally:
+            await self.close_sql_query(query_id=opened.query_id)
+
+    async def read_sql_query(self, *, query_id: str) -> AsyncIterator[pa.Table]:
         async for batch in self._stream_arrow(
-            operation="sql",
+            operation="read_sql_query",
             start={
                 "kind": "start",
-                "query": query,
-                "tables": [table.model_dump() for table in table_refs],
-                "params_json": (
-                    json.dumps(encode_records([params])[0])
-                    if params is not None
-                    else None
-                ),
+                "query_id": query_id,
             },
         ):
             yield batch
+
+    async def close_sql_query(self, *, query_id: str) -> None:
+        response = await self._invoke(
+            operation="close_sql_query",
+            input={"query_id": query_id},
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="close_sql_query")
+
+    async def cancel_sql_query(self, *, query_id: str) -> DatasetSqlCancelResult:
+        response = await self._invoke(
+            operation="cancel_sql_query",
+            input={"query_id": query_id},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="cancel_sql_query")
+        status = response.json.get("status")
+        if status not in {"cancelled", "cancelling", "not_cancellable"}:
+            raise self._unexpected_response_error(operation="cancel_sql_query")
+        return DatasetSqlCancelResult(status=status)
+
+    async def execute_sql_statement(
+        self,
+        *,
+        query: str,
+        tables: Optional[List[SqlTableReference | str]] = None,
+        params: pa.Table | pa.RecordBatch | None = None,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> int:
+        table_refs = [
+            SqlTableReference(name=table) if isinstance(table, str) else table
+            for table in (tables or [])
+        ]
+        response = await self._invoke_content(
+            operation="execute_sql_statement",
+            input=BinaryContent(
+                data=b"" if params is None else _table_to_arrow_ipc(params),
+                headers={
+                    "query": query,
+                    "tables": [table.model_dump() for table in table_refs],
+                    "namespace": namespace,
+                    "branch": branch,
+                },
+            ),
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="execute_sql_statement")
+        rows_affected = response.json.get("rows_affected")
+        if not isinstance(rows_affected, int):
+            raise self._unexpected_response_error(operation="execute_sql_statement")
+        return rows_affected
 
     async def search(
         self,
