@@ -63,6 +63,15 @@ class OAuthClient(BaseModel):
     official: bool
 
 
+class OAuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: Optional[int] = None
+    refresh_token: Optional[str] = None
+    scope: Optional[str] = None
+    id_token: Optional[str] = None
+
+
 class RoomConnectionInfo(BaseModel):
     jwt: str
     room_name: str
@@ -3346,6 +3355,26 @@ class Meshagent:
             for item in items:
                 out.append(ProjectUserGrantCount.model_validate(item))
             return out
+
+    async def exchange_oauth_token(
+        self,
+        *,
+        form: Dict[str, str],
+    ) -> OAuthTokenResponse:
+        """
+        POST /oauth/token with application/x-www-form-urlencoded OAuth parameters.
+        """
+        url = f"{self.base_url}/oauth/token"
+        headers = {"Accept": "application/json"}
+        async with self._session.post(url, headers=headers, data=form) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RoomException(f"Token endpoint error {resp.status}: {body}")
+            raw = await resp.json()
+            try:
+                return OAuthTokenResponse.model_validate(raw)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid oauth-token payload: {exc}") from exc
 
     async def create_oauth_client(
         self,

@@ -31,8 +31,8 @@ class _FakeSession:
         self.closed = False
         self.calls: list[tuple[str, str, dict | None]] = []
 
-    def post(self, url: str, *, headers=None, json=None):
-        self.calls.append(("post", url, json))
+    def post(self, url: str, *, headers=None, json=None, data=None):
+        self.calls.append(("post", url, data if data is not None else json))
         return self._responses.pop(0)
 
     def put(self, url: str, *, headers=None, json=None):
@@ -81,6 +81,47 @@ async def test_render_template_accepts_decoded_json_response():
             {
                 "template": "version: v1\nkind: ServiceTemplate\nmetadata:\n  name: eli\n",
                 "values": {},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exchange_oauth_token_posts_form_encoded_token_request():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                    "scope": "admin",
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="", session=session)
+
+    token_response = await client.exchange_oauth_token(
+        form={
+            "grant_type": "authorization_code",
+            "code": "auth-code",
+            "client_id": "client-id",
+        }
+    )
+
+    assert token_response.access_token == "access-token"
+    assert token_response.refresh_token == "refresh-token"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/oauth/token",
+            {
+                "grant_type": "authorization_code",
+                "code": "auth-code",
+                "client_id": "client-id",
             },
         )
     ]
