@@ -4913,21 +4913,6 @@ class _ListVersionsRequest(_TableRequest):
     pass
 
 
-class _CreateVectorIndexRequest(_TableRequest):
-    column: str
-    replace: Optional[bool] = None
-
-
-class _CreateScalarIndexRequest(_TableRequest):
-    column: str
-    replace: Optional[bool] = None
-
-
-class _CreateFullTextSearchIndexRequest(_TableRequest):
-    column: str
-    replace: Optional[bool] = None
-
-
 class _ListIndexesRequest(_VersionedTableRequest):
     pass
 
@@ -6543,15 +6528,47 @@ class DatasetsClient:
         table: str,
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
-    ) -> None:
-        await self._invoke(
+        config: Optional["DatasetOptimizeConfig"] = None,
+    ) -> "DatasetOptimizeResult":
+        response = await self._invoke(
             operation="optimize",
             input={
                 "table": table,
                 "namespace": namespace,
                 "branch": branch,
+                "config": (
+                    config.model_dump(mode="json", exclude_none=True)
+                    if config is not None
+                    else None
+                ),
             },
         )
+        if isinstance(response, JsonContent):
+            return DatasetOptimizeResult._from_tool_response(response.json)
+        raise self._unexpected_response_error(operation="optimize")
+
+    async def stats(
+        self,
+        *,
+        table: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
+        max_rows_per_group: Optional[int] = None,
+    ) -> "DatasetTableStats":
+        response = await self._invoke(
+            operation="stats",
+            input={
+                "table": table,
+                "namespace": namespace,
+                "branch": branch,
+                "version": version,
+                "max_rows_per_group": max_rows_per_group,
+            },
+        )
+        if isinstance(response, JsonContent):
+            return DatasetTableStats._from_tool_response(response.json)
+        raise self._unexpected_response_error(operation="stats")
 
     async def restore(
         self,
@@ -6615,61 +6632,19 @@ class DatasetsClient:
             )
         return parsed_versions
 
-    async def create_vector_index(
+    async def create_index(
         self,
         *,
         table: str,
-        column: str,
-        replace: Optional[bool] = None,
+        config: "DatasetIndexConfig",
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
     ) -> None:
         await self._invoke(
-            operation="create_vector_index",
+            operation="create_index",
             input={
                 "table": table,
-                "column": column,
-                "replace": replace,
-                "namespace": namespace,
-                "branch": branch,
-            },
-        )
-
-    async def create_scalar_index(
-        self,
-        *,
-        table: str,
-        column: str,
-        replace: Optional[bool] = None,
-        namespace: Optional[list[str]] = None,
-        branch: Optional[str] = None,
-    ) -> None:
-        await self._invoke(
-            operation="create_scalar_index",
-            input={
-                "table": table,
-                "column": column,
-                "replace": replace,
-                "namespace": namespace,
-                "branch": branch,
-            },
-        )
-
-    async def create_full_text_search_index(
-        self,
-        *,
-        table: str,
-        column: str,
-        replace: Optional[bool] = None,
-        namespace: Optional[list[str]] = None,
-        branch: Optional[str] = None,
-    ) -> None:
-        await self._invoke(
-            operation="create_full_text_search_index",
-            input={
-                "table": table,
-                "column": column,
-                "replace": replace,
+                "config": config.model_dump(mode="json", exclude_none=True),
                 "namespace": namespace,
                 "branch": branch,
             },
@@ -6697,7 +6672,7 @@ class DatasetsClient:
         indexes = response.json.get("indexes")
         if not isinstance(indexes, list):
             raise self._unexpected_response_error(operation="list_indexes")
-        return [TableIndex.model_validate(index_data) for index_data in indexes]
+        return [TableIndex._from_tool_response(index_data) for index_data in indexes]
 
     async def list_branches(
         self, *, namespace: Optional[list[str]] = None
@@ -7201,6 +7176,141 @@ class TableIndex(BaseModel):
     name: str
     columns: list[str]
     type: str
+    fields: list[int] = Field(default_factory=list)
+    type_url: Optional[str] = None
+    num_rows_indexed: Optional[int] = None
+    num_segments: Optional[int] = None
+    total_size_bytes: Optional[int] = None
+    details: dict[str, JsonValue] = Field(default_factory=dict)
+    statistics: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @classmethod
+    def _from_tool_response(cls, value: dict[str, Any]) -> "TableIndex":
+        data = dict(value)
+        details_json = data.pop("details_json", None)
+        statistics_json = data.pop("statistics_json", None)
+        if isinstance(details_json, str):
+            data["details"] = json.loads(details_json)
+        if isinstance(statistics_json, str):
+            data["statistics"] = json.loads(statistics_json)
+        return cls.model_validate(data)
+
+
+class DatasetOptimizeConfig(BaseModel):
+    compact_files: Optional[bool] = True
+    optimize_indices: Optional[bool] = True
+    cleanup_old_versions: Optional[bool] = True
+    target_rows_per_fragment: Optional[int] = None
+    max_rows_per_group: Optional[int] = None
+    max_bytes_per_file: Optional[int] = None
+    materialize_deletions: Optional[bool] = None
+    materialize_deletions_threshold: Optional[float] = None
+    defer_index_remap: Optional[bool] = None
+    num_threads: Optional[int] = None
+    batch_size: Optional[int] = None
+    compaction_mode: Optional[
+        Literal["reencode", "try_binary_copy", "force_binary_copy"]
+    ] = None
+    binary_copy_read_batch_bytes: Optional[int] = None
+    num_indices_to_merge: Optional[int] = None
+    index_names: Optional[list[str]] = None
+    retrain: Optional[bool] = None
+    older_than_seconds: Optional[float] = 604800
+    retain_versions: Optional[int] = None
+    delete_unverified: Optional[bool] = None
+    error_if_tagged_old_versions: Optional[bool] = None
+    delete_rate_limit: Optional[int] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DatasetOptimizeResult(BaseModel):
+    compaction: Optional[dict[str, JsonValue]] = None
+    optimized_indices: bool = False
+    cleanup: Optional[dict[str, JsonValue]] = None
+
+    @classmethod
+    def _from_tool_response(cls, value: dict[str, Any]) -> "DatasetOptimizeResult":
+        data = dict(value)
+        compaction_json = data.pop("compaction_json", None)
+        cleanup_json = data.pop("cleanup_json", None)
+        if isinstance(compaction_json, str):
+            data["compaction"] = json.loads(compaction_json)
+        if isinstance(cleanup_json, str):
+            data["cleanup"] = json.loads(cleanup_json)
+        return cls.model_validate(data)
+
+
+class DatasetTableStats(BaseModel):
+    dataset: dict[str, JsonValue]
+    data: dict[str, JsonValue]
+
+    @classmethod
+    def _from_tool_response(cls, value: dict[str, Any]) -> "DatasetTableStats":
+        data = dict(value)
+        dataset_json = data.pop("dataset_json", None)
+        data_json = data.pop("data_json", None)
+        if isinstance(dataset_json, str):
+            data["dataset"] = json.loads(dataset_json)
+        if isinstance(data_json, str):
+            data["data"] = json.loads(data_json)
+        return cls.model_validate(data)
+
+
+VectorIndexType = Literal["IVF_PQ", "IVF_HNSW_PQ", "IVF_HNSW_SQ", "IVF_RQ"]
+ScalarIndexType = Literal[
+    "BTREE",
+    "BITMAP",
+    "LABEL_LIST",
+    "NGRAM",
+    "ZONEMAP",
+    "INVERTED",
+    "FTS",
+    "BLOOMFILTER",
+    "RTREE",
+]
+IndexType = VectorIndexType | ScalarIndexType
+
+
+class DatasetIndexConfig(BaseModel):
+    column: str | list[str]
+    index_type: IndexType
+    name: Optional[str] = None
+    metric: Optional[str] = None
+    replace: Optional[bool] = None
+    num_partitions: Optional[int] = None
+    ivf_centroids: Optional[list[list[float]]] = None
+    pq_codebook: Optional[list[list[float]]] = None
+    num_sub_vectors: Optional[int] = None
+    accelerator: Optional[str] = None
+    index_cache_size: Optional[int] = None
+    shuffle_partition_batches: Optional[int] = None
+    shuffle_partition_concurrency: Optional[int] = None
+    ivf_centroids_file: Optional[str] = None
+    precomputed_partition_dataset: Optional[str] = None
+    filter_nan: Optional[bool] = None
+    train: Optional[bool] = None
+    fragment_ids: Optional[list[int]] = None
+    index_uuid: Optional[str] = None
+    target_partition_size: Optional[int] = None
+    skip_transpose: Optional[bool] = None
+    num_bits: Optional[int] = None
+    index_file_version: Optional[str] = None
+    max_level: Optional[int] = None
+    m: Optional[int] = None
+    ef_construction: Optional[int] = None
+    with_position: Optional[bool] = None
+    memory_limit: Optional[int] = None
+    num_workers: Optional[int] = None
+    skip_merge: Optional[bool] = None
+    base_tokenizer: Optional[str] = None
+    language: Optional[str] = None
+    max_token_length: Optional[int] = None
+    lower_case: Optional[bool] = None
+    stem: Optional[bool] = None
+    remove_stop_words: Optional[bool] = None
+    custom_stop_words: Optional[list[str]] = None
+    ascii_folding: Optional[bool] = None
 
 
 class ProgressDetail(BaseModel):

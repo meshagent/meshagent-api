@@ -3209,6 +3209,26 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
                 )
             if tool == "count":
                 return JsonContent(json={"count": 1})
+            if tool == "optimize":
+                return JsonContent(
+                    json={
+                        "compaction": {
+                            "fragments_removed": 0,
+                            "fragments_added": 0,
+                            "files_removed": 0,
+                            "files_added": 0,
+                        },
+                        "optimized_indices": True,
+                        "cleanup": {"bytes_removed": 0},
+                    }
+                )
+            if tool == "stats":
+                return JsonContent(
+                    json={
+                        "dataset": {"num_fragments": 1},
+                        "data": {"fields": []},
+                    }
+                )
             if tool == "list_versions":
                 return JsonContent(
                     json={
@@ -3290,9 +3310,22 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     cancel_result = await client.cancel_sql_query(query_id="sql-query-1")
     count = await client.count(table="records", namespace=["team"])
     versions = await client.list_versions(table="records", namespace=["team"])
+    optimize_result = await client.optimize(table="records", namespace=["team"])
+    stats = await client.stats(table="records", namespace=["team"])
     indexes = await client.list_indexes(table="records", namespace=["team"])
     branches = await client.list_branches(namespace=["team"])
     await client.create_branch(branch="exp", namespace=["team"])
+    await client.create_index(
+        table="records",
+        config=room_server_client.DatasetIndexConfig(
+            column="embedding",
+            index_type="IVF_PQ",
+            num_partitions=32,
+            num_sub_vectors=8,
+        ),
+        namespace=["team"],
+        branch="exp",
+    )
     await client.delete_branch(branch="exp", namespace=["team"])
 
     assert tables == ["records"]
@@ -3303,6 +3336,8 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     assert cancel_result.status == "cancelling"
     assert count == 1
     assert versions[0].metadata == {"kind": "demo"}
+    assert optimize_result.optimized_indices is True
+    assert stats.dataset["num_fragments"] == 1
     assert indexes[0].name == "idx_records_id"
     assert branches[0].name == "main"
 
@@ -3321,9 +3356,12 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         "cancel_sql_query",
         "count",
         "list_versions",
+        "optimize",
+        "stats",
         "list_indexes",
         "list_branches",
         "create_branch",
+        "create_index",
         "delete_branch",
     ]
     assert all(call["toolkit"] == "dataset" for call in room.calls)
