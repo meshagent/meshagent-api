@@ -119,10 +119,55 @@ class Room(BaseModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
+class RoomsPage(BaseModel):
+    rooms: list[Room]
+    total: int = 0
+
+
 class ProjectRoomGrant(BaseModel):
     room: Room
     user_id: str
     permissions: ApiScope
+
+
+class RoomGrantsPage(BaseModel):
+    room_grants: list[ProjectRoomGrant]
+    total: int = 0
+
+
+class ProjectMembersPage(BaseModel):
+    users: list[dict[str, Any]]
+    total: int = 0
+
+
+class ProjectUserGrantCountsPage(BaseModel):
+    users: list["ProjectUserGrantCount"]
+    total: int = 0
+
+
+class MailboxesPage(BaseModel):
+    mailboxes: list["Mailbox"]
+    total: int = 0
+
+
+class RoutesPage(BaseModel):
+    routes: list["Route"]
+    total: int = 0
+
+
+class FeedsPage(BaseModel):
+    feeds: list["Feed"]
+    total: int = 0
+
+
+class OAuthClientsPage(BaseModel):
+    clients: list["OAuthClient"]
+    total: int = 0
+
+
+class ScheduledTasksPage(BaseModel):
+    tasks: list["ScheduledTask"]
+    total: int = 0
 
 
 class User(BaseModel):
@@ -1021,16 +1066,40 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
-    async def get_users_in_project(self, project_id: str) -> Dict[str, Any]:
+    async def get_users_in_project_page(
+        self,
+        project_id: str,
+        *,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> ProjectMembersPage:
         """
         Corresponds to: GET /accounts/projects/:id/users
         Returns a JSON dict with { "users": [...] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
 
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            data = await resp.json()
+            users = data.get("users", [])
+            if not isinstance(users, list):
+                raise RoomException(
+                    "Invalid project users payload: expected users list"
+                )
+            return ProjectMembersPage(
+                users=users, total=int(data.get("total", len(users)))
+            )
+
+    async def get_users_in_project(self, project_id: str) -> Dict[str, Any]:
+        page = await self.get_users_in_project_page(project_id)
+        return {"users": page.users, "total": page.total}
 
     async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """
@@ -1565,32 +1634,92 @@ class Meshagent:
             return Mailbox.model_validate((await resp.json())["mailbox"])
 
     async def list_room_mailboxes(
-        self, *, project_id: str, room_name: str
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
     ) -> List[Mailbox]:
+        page = await self.list_room_mailboxes_page(
+            project_id=project_id,
+            room_name=room_name,
+            count=count,
+            offset=offset,
+            filter=filter,
+        )
+        return page.mailboxes
+
+    async def list_room_mailboxes_page(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> MailboxesPage:
         """
         GET /accounts/projects/{project_id}/mailboxes
         Returns a list[Mailbox].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/mailboxes"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Mailbox.model_validate(item) for item in data["mailboxes"]]
+                mailboxes = [Mailbox.model_validate(item) for item in data["mailboxes"]]
+                return MailboxesPage(
+                    mailboxes=mailboxes, total=int(data.get("total", len(mailboxes)))
+                )
             except ValidationError as exc:
                 raise RoomException(f"Invalid mailboxes payload: {exc}") from exc
 
-    async def list_mailboxes(self, *, project_id: str) -> List[Mailbox]:
+    async def list_mailboxes(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> List[Mailbox]:
+        page = await self.list_mailboxes_page(
+            project_id=project_id, count=count, offset=offset, filter=filter
+        )
+        return page.mailboxes
+
+    async def list_mailboxes_page(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> MailboxesPage:
         """
         GET /accounts/projects/{project_id}/mailboxes
         Returns a list[Mailbox].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Mailbox.model_validate(item) for item in data["mailboxes"]]
+                mailboxes = [Mailbox.model_validate(item) for item in data["mailboxes"]]
+                return MailboxesPage(
+                    mailboxes=mailboxes, total=int(data.get("total", len(mailboxes)))
+                )
             except ValidationError as exc:
                 raise RoomException(f"Invalid mailboxes payload: {exc}") from exc
 
@@ -1661,31 +1790,93 @@ class Meshagent:
             await self._raise_for_status(resp)
             return Route.model_validate((await resp.json())["route"])
 
-    async def list_room_routes(self, *, project_id: str, room_name: str) -> List[Route]:
+    async def list_room_routes(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> List[Route]:
+        page = await self.list_room_routes_page(
+            project_id=project_id,
+            room_name=room_name,
+            count=count,
+            offset=offset,
+            filter=filter,
+        )
+        return page.routes
+
+    async def list_room_routes_page(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> RoutesPage:
         """
         GET /accounts/projects/{project_id}/rooms/{room_name}/routes
         Returns a list[Route].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/routes"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Route.model_validate(item) for item in data["routes"]]
+                routes = [Route.model_validate(item) for item in data["routes"]]
+                return RoutesPage(
+                    routes=routes, total=int(data.get("total", len(routes)))
+                )
             except ValidationError as exc:
                 raise RoomException(f"Invalid routes payload: {exc}") from exc
 
-    async def list_routes(self, *, project_id: str) -> List[Route]:
+    async def list_routes(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> List[Route]:
+        page = await self.list_routes_page(
+            project_id=project_id, count=count, offset=offset, filter=filter
+        )
+        return page.routes
+
+    async def list_routes_page(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> RoutesPage:
         """
         GET /accounts/projects/{project_id}/routes
         Returns a list[Route].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/routes"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Route.model_validate(item) for item in data["routes"]]
+                routes = [Route.model_validate(item) for item in data["routes"]]
+                return RoutesPage(
+                    routes=routes, total=int(data.get("total", len(routes)))
+                )
             except ValidationError as exc:
                 raise RoomException(f"Invalid routes payload: {exc}") from exc
 
@@ -1758,23 +1949,81 @@ class Meshagent:
             await self._raise_for_status(resp)
             return Feed.model_validate((await resp.json())["feed"])
 
-    async def list_feeds(self, *, project_id: str) -> List[Feed]:
+    async def list_feeds(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> List[Feed]:
+        page = await self.list_feeds_page(
+            project_id=project_id, count=count, offset=offset, filter=filter
+        )
+        return page.feeds
+
+    async def list_feeds_page(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> FeedsPage:
         url = f"{self.base_url}/accounts/projects/{project_id}/feeds"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Feed.model_validate(item) for item in data["feeds"]]
+                feeds = [Feed.model_validate(item) for item in data["feeds"]]
+                return FeedsPage(feeds=feeds, total=int(data.get("total", len(feeds))))
             except ValidationError as exc:
                 raise RoomException(f"Invalid feeds payload: {exc}") from exc
 
-    async def list_room_feeds(self, *, project_id: str, room_name: str) -> List[Feed]:
+    async def list_room_feeds(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> List[Feed]:
+        page = await self.list_room_feeds_page(
+            project_id=project_id,
+            room_name=room_name,
+            count=count,
+            offset=offset,
+            filter=filter,
+        )
+        return page.feeds
+
+    async def list_room_feeds_page(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> FeedsPage:
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/feeds"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Feed.model_validate(item) for item in data["feeds"]]
+                feeds = [Feed.model_validate(item) for item in data["feeds"]]
+                return FeedsPage(feeds=feeds, total=int(data.get("total", len(feeds))))
             except ValidationError as exc:
                 raise RoomException(f"Invalid feeds payload: {exc}") from exc
 
@@ -3192,15 +3441,40 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        limit: int = 50,
+        limit: int = 100,
         offset: int = 0,
         order_by: str = "room_name",
-    ) -> List[ProjectRoomGrant]:
+        filter: Optional[str] = None,
+    ) -> List[Room]:
         """
         GET /accounts/projects/{project_id}/rooms?limit=&offset=&order_by=
         Returns [Rooms]
         """
+        page = await self.list_rooms_page(
+            project_id=project_id,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            filter=filter,
+        )
+        return page.rooms
+
+    async def list_rooms_page(
+        self,
+        *,
+        project_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "room_name",
+        filter: Optional[str] = None,
+    ) -> RoomsPage:
+        """
+        GET /accounts/projects/{project_id}/rooms?limit=&offset=&order_by=&filter=
+        Returns paged rooms with total.
+        """
         params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        if filter is not None:
+            params["filter"] = filter
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms"
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -3208,7 +3482,7 @@ class Meshagent:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [Room.model_validate(item) for item in data["rooms"]]
+                return RoomsPage.model_validate(data)
             except ValidationError as exc:
                 raise RoomException(f"Invalid rooms list payload: {exc}") from exc
 
@@ -3244,16 +3518,44 @@ class Meshagent:
         *,
         project_id: str,
         user_id: str,
-        limit: int = 50,
+        limit: int = 100,
         offset: int = 0,
+        order_by: str = "room_name",
+        filter: Optional[str] = None,
     ) -> List[ProjectRoomGrant]:
         """
         GET /accounts/projects/{project_id}/room-grants/by-user/{user_id}?limit=&offset=&order_by=
         Returns [ProjectRoomGrant]
         """
+        page = await self.list_room_grants_by_user_page(
+            project_id=project_id,
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            filter=filter,
+        )
+        return page.room_grants
+
+    async def list_room_grants_by_user_page(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "room_name",
+        filter: Optional[str] = None,
+    ) -> RoomGrantsPage:
+        """
+        GET /accounts/projects/{project_id}/room-grants/by-user/{user_id}?limit=&offset=&order_by=&filter=
+        Returns paged room grants with total.
+        """
         from urllib.parse import quote
 
-        params = {"limit": str(limit), "offset": str(offset)}
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        if filter is not None:
+            params["filter"] = filter
         url = (
             f"{self.base_url}/accounts/projects/{project_id}"
             f"/room-grants/by-user/{quote(user_id, safe='')}"
@@ -3264,10 +3566,7 @@ class Meshagent:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [
-                    ProjectRoomGrant.model_validate(item)
-                    for item in data["room_grants"]
-                ]
+                return RoomGrantsPage.model_validate(data)
             except ValidationError as exc:
                 raise RoomException(
                     f"Invalid room grants-by-user payload: {exc}"
@@ -3336,14 +3635,33 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        limit: int = 50,
+        limit: int = 100,
         offset: int = 0,
+        filter: str | None = None,
     ) -> List[ProjectUserGrantCount]:
+        page = await self.list_unique_users_with_grants_page(
+            project_id=project_id,
+            limit=limit,
+            offset=offset,
+            filter=filter,
+        )
+        return page.users
+
+    async def list_unique_users_with_grants_page(
+        self,
+        *,
+        project_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> ProjectUserGrantCountsPage:
         """
         GET /accounts/projects/{project_id}/room-grants/by-user?limit=&offset=
         Returns [ProjectUserGrantCount]
         """
         params = {"limit": str(limit), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
         url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-user"
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -3354,7 +3672,9 @@ class Meshagent:
             out: List[ProjectUserGrantCount] = []
             for item in items:
                 out.append(ProjectUserGrantCount.model_validate(item))
-            return out
+            return ProjectUserGrantCountsPage(
+                users=out, total=int(data.get("total", len(out)))
+            )
 
     async def exchange_oauth_token(
         self,
@@ -3453,19 +3773,47 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
-    async def list_oauth_clients(self, *, project_id: str) -> List[OAuthClient]:
+    async def list_oauth_clients(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> List[OAuthClient]:
+        page = await self.list_oauth_clients_page(
+            project_id=project_id, count=count, offset=offset, filter=filter
+        )
+        return page.clients
+
+    async def list_oauth_clients_page(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> OAuthClientsPage:
         """
         GET /accounts/projects/{project_id}/oauth/clients
         Returns a list of OAuthClient (no secrets).
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/oauth/clients"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             raw = await resp.json()
             try:
-                return [
+                clients = [
                     OAuthClient.model_validate(item) for item in raw.get("clients", [])
                 ]
+                return OAuthClientsPage(
+                    clients=clients, total=int(raw.get("total", len(clients)))
+                )
             except ValidationError as exc:
                 raise RoomException(
                     f"Invalid oauth-clients list payload: {exc}"
@@ -3611,9 +3959,32 @@ class Meshagent:
         room_name: Optional[str] = None,
         task_id: Optional[str] = None,
         active: Optional[bool] = None,
-        limit: int = 200,
+        limit: int = 100,
         offset: int = 0,
+        filter: str | None = None,
     ) -> List[ScheduledTask]:
+        page = await self.list_scheduled_tasks_page(
+            project_id=project_id,
+            room_name=room_name,
+            task_id=task_id,
+            active=active,
+            limit=limit,
+            offset=offset,
+            filter=filter,
+        )
+        return page.tasks
+
+    async def list_scheduled_tasks_page(
+        self,
+        *,
+        project_id: str,
+        room_name: Optional[str] = None,
+        task_id: Optional[str] = None,
+        active: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+        filter: str | None = None,
+    ) -> ScheduledTasksPage:
         """
         GET /accounts/projects/{project_id}/scheduled-tasks?room_name=&task_id=&active=&limit=&offset=
         Returns a list[ScheduledTask].
@@ -3629,6 +4000,8 @@ class Meshagent:
             params["task_id"] = task_id
         if active is not None:
             params["active"] = "true" if active else "false"
+        if filter is not None and filter.strip() != "":
+            params["filter"] = filter
 
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -3643,6 +4016,9 @@ class Meshagent:
             )
 
         try:
-            return [ScheduledTask.model_validate(item) for item in tasks_raw]
+            tasks = [ScheduledTask.model_validate(item) for item in tasks_raw]
+            return ScheduledTasksPage(
+                tasks=tasks, total=int(data.get("total", len(tasks)))
+            )
         except ValidationError as exc:
             raise RoomException(f"Invalid scheduled-tasks payload: {exc}") from exc
