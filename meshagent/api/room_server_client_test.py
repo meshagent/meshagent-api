@@ -1719,7 +1719,7 @@ async def test_room_client_enter_does_not_include_last_room_status_when_connecti
     None
 ):
     protocol = _StatusClosingProtocol()
-    client = RoomClient(protocol_factory=protocol.create_factory())
+    client = RoomClient(protocol_factory=protocol.create_factory(), reconnect_timeout=0)
 
     with pytest.raises(
         RoomException,
@@ -1729,6 +1729,33 @@ async def test_room_client_enter_does_not_include_last_room_status_when_connecti
         ),
     ):
         await client.__aenter__()
+
+
+@pytest.mark.asyncio
+async def test_room_client_enter_retries_1013_server_close_before_ready() -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    protocol_factory_calls = 0
+
+    def protocol_factory():
+        nonlocal protocol_factory_calls
+        protocol_factory_calls += 1
+        if protocol_factory_calls == 1:
+            return _StatusClosingProtocol()
+        return controller.protocol_factory()
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=0.1,
+    )
+
+    try:
+        await room.__aenter__()
+        assert protocol_factory_calls == 2
+        assert len(controller.protocols) == 1
+        assert room.is_connected is True
+    finally:
+        if room._entered:
+            await room.__aexit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -2308,6 +2335,8 @@ async def test_room_client_unexpected_disconnect_warns_once_before_retrying_reco
         return controller.protocol_factory()
 
     room = RoomClient(protocol_factory=protocol_factory)
+    room._reconnect_retry_base_delay_seconds = 0.01
+    room._reconnect_retry_max_delay_seconds = 0.01
     await room.__aenter__()
 
     try:
