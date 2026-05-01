@@ -208,6 +208,7 @@ class _CreateRoomGrantRequest(BaseModel):
     user_id: Optional[str] = None
     email: Optional[str] = None
     permissions: ApiScope
+    invite_redirect_url: Optional[str] = None
 
 
 class _UpdateRoomGrantRequest(BaseModel):
@@ -3373,6 +3374,7 @@ class Meshagent:
         room_id: str,
         email: str,
         permissions: ApiScope,
+        invite_redirect_url: str | None = None,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/room-grants
@@ -3384,6 +3386,7 @@ class Meshagent:
             room_id=room_id,
             email=email,
             permissions=permissions,
+            invite_redirect_url=invite_redirect_url,
         ).model_dump(mode="json")
 
         async with self._session.post(
