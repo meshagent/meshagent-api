@@ -1,8 +1,10 @@
+import contextlib
 import urllib.parse
 from aiohttp import ClientSession, WSMsgType, web, ClientWebSocketResponse
 import asyncio
 import logging
 import os
+import sys
 import urllib
 from meshagent.api.version import __version__
 from meshagent.api.http import new_client_session
@@ -92,6 +94,11 @@ class WebSocketClientProtocol(ClientProtocol):
         self._heartbeat = resolve_websocket_heartbeat(heartbeat)
         self._session = session
         self._session_external = session is not None
+        self._session_entered = False
+        self._ws_ctx = None
+        self._ws = None
+        self._ws_recv_task = None
+        self._ws_entered = False
 
     @property
     def url(self):
@@ -111,41 +118,49 @@ class WebSocketClientProtocol(ClientProtocol):
         return factory
 
     async def __aenter__(self):
-        if self._session is None:
-            self._session = new_client_session()
-            self._session_external = False
+        try:
+            if self._session is None:
+                self._session = new_client_session()
+                self._session_external = False
 
-        if not self._session_external:
-            await self._session.__aenter__()
+            if not self._session_external:
+                await self._session.__aenter__()
+                self._session_entered = True
 
-        url_parts = urllib.parse.urlparse(self._url)
-        query_dict = urllib.parse.parse_qs(url_parts.query)
-        query_dict.update({"token": self.token})
-        query_dict.update({"v": __version__})
-        new_query_string = urllib.parse.urlencode(query_dict, doseq=True)
-        url_with_params = urllib.parse.urlunparse(
-            (
-                url_parts.scheme,
-                url_parts.netloc,
-                url_parts.path,
-                url_parts.params,
-                new_query_string,
-                url_parts.fragment,
+            url_parts = urllib.parse.urlparse(self._url)
+            query_dict = urllib.parse.parse_qs(url_parts.query)
+            query_dict.update({"token": self.token})
+            query_dict.update({"v": __version__})
+            new_query_string = urllib.parse.urlencode(query_dict, doseq=True)
+            url_with_params = urllib.parse.urlunparse(
+                (
+                    url_parts.scheme,
+                    url_parts.netloc,
+                    url_parts.path,
+                    url_parts.params,
+                    new_query_string,
+                    url_parts.fragment,
+                )
             )
-        )
 
-        self._ws_ctx = self._session.ws_connect(
-            url_with_params, heartbeat=self._heartbeat
-        )
-        self._ws = await self._ws_ctx.__aenter__()
+            self._ws_ctx = self._session.ws_connect(
+                url_with_params, heartbeat=self._heartbeat
+            )
+            self._ws = await self._ws_ctx.__aenter__()
+            self._ws_entered = True
 
-        self._ws_recv_task = asyncio.create_task(self._ws_recv())
+            self._ws_recv_task = asyncio.create_task(self._ws_recv())
 
-        await super().__aenter__()
-        return self
+            await super().__aenter__()
+            return self
+        except BaseException:
+            await self.__aexit__(*sys.exc_info())
+            raise
 
     async def _ws_recv(self):
         close_event: WSMsgType | None = None
+        if self._ws is None:
+            return
         async for msg in self._ws:
             if msg.type == WSMsgType.BINARY:
                 self.receive_packet(msg.data)
@@ -185,12 +200,23 @@ class WebSocketClientProtocol(ClientProtocol):
             super()._shutdown()
 
     async def __aexit__(self, exc_type, exc, tb):
-        if not self._ws.closed:
-            await self._ws.close()
-        await self._ws_recv_task
-        await self._ws_ctx.__aexit__(exc_type, exc, tb)
-        if not self._session_external:
+        if self._ws is not None and not self._ws.closed:
+            with contextlib.suppress(Exception):
+                await self._ws.close()
+        if self._ws_recv_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ws_recv_task
+        if self._ws_ctx is not None and self._ws_entered:
+            with contextlib.suppress(Exception):
+                await self._ws_ctx.__aexit__(exc_type, exc, tb)
+            self._ws_entered = False
+        if (
+            self._session is not None
+            and not self._session_external
+            and self._session_entered
+        ):
             await self._session.__aexit__(exc_type, exc, tb)
+            self._session_entered = False
         await super().__aexit__(exc_type, exc, tb)
 
     async def send_packet(self, data: bytes) -> None:

@@ -7231,7 +7231,7 @@ class TableIndex(BaseModel):
 class DatasetOptimizeConfig(BaseModel):
     compact_files: Optional[bool] = True
     optimize_indices: Optional[bool] = True
-    cleanup_old_versions: Optional[bool] = True
+    cleanup_old_versions: Optional[bool] = False
     target_rows_per_fragment: Optional[int] = None
     max_rows_per_group: Optional[int] = None
     max_bytes_per_file: Optional[int] = None
