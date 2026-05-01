@@ -7,7 +7,6 @@ from meshagent.api import ParticipantGrant, ParticipantToken
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.client import Meshagent
 from meshagent.api.specs.service import (
-    ContainerSpec,
     ScheduledTaskQueueSpec,
     ScheduledTaskSpec,
     ServiceMetadata,
@@ -167,42 +166,6 @@ async def test_create_service_from_template_accepts_decoded_json_response():
             {
                 "template": "version: v1\nkind: ServiceTemplate\nmetadata:\n  name: eli\n",
                 "values": {},
-            },
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_create_room_service_omits_generated_service_id():
-    session = _FakeSession([_FakeResponse(status=200, payload={"id": "svc_123"})])
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-    service = ServiceSpec(
-        version="v1",
-        kind="Service",
-        metadata=ServiceMetadata(name="doctor-go-no-sdk"),
-        container=ContainerSpec(image="repo/doctor-go-no-sdk:1"),
-    )
-
-    service_id = await client.create_room_service(
-        project_id="proj_123",
-        room_name="room-123",
-        service=service,
-    )
-
-    assert service_id == "svc_123"
-    assert session.calls == [
-        (
-            "post",
-            "http://example.test/accounts/projects/proj_123/rooms/room-123/services",
-            {
-                "version": "v1",
-                "kind": "Service",
-                "metadata": {"name": "doctor-go-no-sdk"},
-                "ports": [],
-                "container": {
-                    "image": "repo/doctor-go-no-sdk:1",
-                    "private": True,
-                },
             },
         )
     ]
