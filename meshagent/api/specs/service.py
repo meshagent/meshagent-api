@@ -6,12 +6,59 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing import Optional, Literal
+from typing import Any, Optional, Literal
+from datetime import datetime, timezone
+import re
+from croniter import CroniterBadCronError, croniter
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.oauth import OAuthClientConfig
 from meshagent.api.agent_content import AgentInputContent
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 import json
+
+
+MIN_SCHEDULED_TASK_INTERVAL_SECONDS = 15 * 60
+_SCHEDULE_INTERVAL_RE = re.compile(
+    r"^\s*(?P<count>\d+)\s+(?P<unit>second|seconds|minute|minutes|hour|hours|day|days)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _scheduled_task_interval_seconds(schedule: str) -> float:
+    interval_match = _SCHEDULE_INTERVAL_RE.match(schedule)
+    if interval_match is not None:
+        count = int(interval_match.group("count"))
+        unit = interval_match.group("unit").lower()
+        multipliers = {
+            "second": 1,
+            "seconds": 1,
+            "minute": 60,
+            "minutes": 60,
+            "hour": 60 * 60,
+            "hours": 60 * 60,
+            "day": 24 * 60 * 60,
+            "days": 24 * 60 * 60,
+        }
+        return count * multipliers[unit]
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    try:
+        iterator = croniter(schedule, base)
+        previous = iterator.get_next(datetime)
+        min_interval: float | None = None
+        for _ in range(100):
+            current = iterator.get_next(datetime)
+            interval = (current - previous).total_seconds()
+            min_interval = (
+                interval if min_interval is None else min(min_interval, interval)
+            )
+            previous = current
+    except CroniterBadCronError as exc:
+        raise ValueError(f"unsupported schedule: {schedule}") from exc
+
+    if min_interval is None:
+        raise ValueError(f"unsupported schedule: {schedule}")
+    return min_interval
 
 
 def _yaml_support():
@@ -312,6 +359,58 @@ class ContainerSpec(BaseModel):
     on_demand: Optional[bool] = Field(None, description="an on demand service")
     writable_root_fs: Optional[bool] = None
     private: bool = True
+
+
+class ScheduledTaskMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = None
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
+class ScheduledTaskQueueSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    storage_write_path: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_name(self) -> "ScheduledTaskQueueSpec":
+        if self.name.strip() == "":
+            raise ValueError("queue.name must not be empty")
+        return self
+
+
+class ScheduledTaskSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: Literal["v1"] = "v1"
+    kind: Literal["ScheduledTask"] = "ScheduledTask"
+    metadata: ScheduledTaskMetadata = Field(default_factory=ScheduledTaskMetadata)
+    schedule: str
+    active: bool = True
+    once: bool = False
+    queue: Optional[ScheduledTaskQueueSpec] = None
+    container: Optional[ContainerSpec] = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "ScheduledTaskSpec":
+        if self.schedule.strip() == "":
+            raise ValueError("schedule must not be empty")
+        interval_seconds = _scheduled_task_interval_seconds(self.schedule)
+        if interval_seconds < MIN_SCHEDULED_TASK_INTERVAL_SECONDS:
+            raise ValueError(
+                "ScheduledTaskSpec schedule must run no more frequently than every 15 minutes"
+            )
+        if (self.queue is None) == (self.container is None):
+            raise ValueError(
+                "ScheduledTaskSpec requires exactly one of queue or container"
+            )
+        return self
+
+    @staticmethod
+    def from_yaml(yaml: str):
+        YAML, SafeLoader = _yaml_support()
+        obj = YAML.load(yaml, Loader=SafeLoader)
+        return ScheduledTaskSpec.model_validate(obj)
 
 
 class ExternalServiceSpec(BaseModel):

@@ -689,6 +689,18 @@ class _ProtocolRetryResult:
     close_reason: str | None = None
 
 
+def _is_retryable_startup_close(
+    *,
+    kind: ProtocolCloseKind,
+    reason: str | None,
+) -> bool:
+    if kind == ProtocolCloseKind.ERROR:
+        return True
+
+    normalized_reason = (reason or "").lower()
+    return "1013" in normalized_reason
+
+
 class _RoomProtocolProxy:
     def __init__(self, *, room: "RoomClient") -> None:
         self._room = room
@@ -828,7 +840,8 @@ class RoomClient:
 
         self._protocol_factory = protocol_factory
         self._reconnect_timeout = reconnect_timeout
-        self._reconnect_retry_interval_seconds = 0.25
+        self._reconnect_retry_base_delay_seconds = 0.5
+        self._reconnect_retry_max_delay_seconds = 30.0
         self._protocol_instance = self._protocol_factory()
         self.protocol = _RoomProtocolProxy(room=self)
         self.protocol.register_handler("room_ready", self._handle_ready)
@@ -909,7 +922,10 @@ class RoomClient:
             try:
                 await self._open_protocol(initial=True)
             except _ProtocolStartupFailure as ex:
-                if ex.kind != ProtocolCloseKind.ERROR or self._reconnect_timeout == 0:
+                if (
+                    not _is_retryable_startup_close(kind=ex.kind, reason=ex.reason)
+                    or self._reconnect_timeout == 0
+                ):
                     self._set_startup_terminal_state(
                         close_kind=ex.kind,
                         close_reason=ex.reason,
@@ -1195,11 +1211,15 @@ class RoomClient:
             deadline = time.monotonic() + self._reconnect_timeout
 
         first_attempt = True
+        retry_count = 0
         while not self._closing:
             if first_attempt:
                 first_attempt = False
                 if self._reconnect_timeout is None:
-                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
+                    await asyncio.sleep(
+                        self._reconnect_retry_delay(retry_count=retry_count)
+                    )
+                    retry_count += 1
             else:
                 remaining = self._remaining_reconnect_timeout(deadline=deadline)
                 if remaining is not None and remaining <= 0:
@@ -1208,11 +1228,17 @@ class RoomClient:
                     )
 
                 if remaining is None:
-                    await asyncio.sleep(self._reconnect_retry_interval_seconds)
+                    await asyncio.sleep(
+                        self._reconnect_retry_delay(retry_count=retry_count)
+                    )
                 else:
                     await asyncio.sleep(
-                        min(self._reconnect_retry_interval_seconds, remaining)
+                        min(
+                            self._reconnect_retry_delay(retry_count=retry_count),
+                            remaining,
+                        )
                     )
+                retry_count += 1
 
             remaining = self._remaining_reconnect_timeout(deadline=deadline)
             if remaining is not None and remaining <= 0:
@@ -1244,7 +1270,7 @@ class RoomClient:
             except _ProtocolStartupFailure as ex:
                 record_failure_reason(ex.reason)
                 await self._close_protocol(next_protocol)
-                if ex.kind != ProtocolCloseKind.ERROR:
+                if not _is_retryable_startup_close(kind=ex.kind, reason=ex.reason):
                     return _ProtocolRetryResult(
                         connected=False,
                         close_kind=ex.kind,
@@ -1272,6 +1298,12 @@ class RoomClient:
         if deadline is None:
             return None
         return max(0.0, deadline - time.monotonic())
+
+    def _reconnect_retry_delay(self, *, retry_count: int) -> float:
+        return min(
+            self._reconnect_retry_max_delay_seconds,
+            self._reconnect_retry_base_delay_seconds * (2**retry_count),
+        )
 
     def _timed_out_retry_result(
         self, *, disconnect_reason: str | None
@@ -7199,7 +7231,7 @@ class TableIndex(BaseModel):
 class DatasetOptimizeConfig(BaseModel):
     compact_files: Optional[bool] = True
     optimize_indices: Optional[bool] = True
-    cleanup_old_versions: Optional[bool] = True
+    cleanup_old_versions: Optional[bool] = False
     target_rows_per_fragment: Optional[int] = None
     max_rows_per_group: Optional[int] = None
     max_bytes_per_file: Optional[int] = None

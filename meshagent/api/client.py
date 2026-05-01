@@ -18,6 +18,8 @@ from meshagent.api.http import new_client_session
 from meshagent.api.oauth import ConnectorRef, OAuthClientConfig
 from datetime import datetime
 from meshagent.api.specs.service import (
+    ContainerSpec,
+    ScheduledTaskSpec,
     ServiceSpec,
     ServiceTemplateSpec,
 )
@@ -170,6 +172,11 @@ class ScheduledTasksPage(BaseModel):
     total: int = 0
 
 
+class ScheduledTaskRunsPage(BaseModel):
+    runs: list["ScheduledTaskRun"]
+    total: int = 0
+
+
 class User(BaseModel):
     id: str
     first_name: Optional[str] = None
@@ -201,6 +208,7 @@ class _CreateRoomGrantRequest(BaseModel):
     user_id: Optional[str] = None
     email: Optional[str] = None
     permissions: ApiScope
+    invite_redirect_url: Optional[str] = None
 
 
 class _UpdateRoomGrantRequest(BaseModel):
@@ -664,16 +672,18 @@ class Transaction(BaseModel):
 class ScheduledTask(BaseModel):
     id: str
     project_id: str
+    room_id: str
     room_name: str
-    queue_name: str
-    payload: dict
+    spec: ScheduledTaskSpec
+    queue_name: Optional[str] = None
+    payload: dict = Field(default_factory=dict)
+    container: Optional[ContainerSpec] = None
     schedule: str
     active: bool
     once: bool
     annotations: dict[str, str]
     storage_write_path: Optional[str] = None
 
-    room_id: Optional[str] = None
     last_run_id: Optional[int] = None
     last_start_time: Optional[datetime] = None
     last_end_time: Optional[datetime] = None
@@ -681,30 +691,39 @@ class ScheduledTask(BaseModel):
     last_return_message: Optional[str] = None
 
 
-class _CreateScheduledTaskRequest(BaseModel):
-    id: Optional[str] = None
+class ScheduledTaskRun(BaseModel):
+    id: str
+    task_id: str
+    project_id: str
+    room_id: str
     room_name: str
-    queue_name: str
-    payload: dict  # dict or json-string
-    schedule: str
-    active: bool = True
-    once: bool = False
-    annotations: dict[str, str]
-    storage_write_path: Optional[str] = None
+    queued_message_id: Optional[str] = None
+    target: Literal["queue", "container"]
+    status: Literal["pending", "submitting", "retrying", "submitted", "failed"]
+    attempt_count: int = 0
+    error: Optional[str] = None
+    container_id: Optional[str] = None
+    scheduled_time: datetime
+    timeout_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    lease_expires_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class _CreateScheduledTaskRequest(BaseModel):
+    spec: ScheduledTaskSpec
 
 
 class _UpdateScheduledTaskRequest(BaseModel):
-    room_name: Optional[str] = None
-    queue_name: Optional[str] = None
-    payload: Optional[dict] = None  # dict or json-string
-    schedule: Optional[str] = None
-    active: Optional[bool] = None
-    annotations: Optional[dict[str, str]] = None
-    storage_write_path: Optional[str] = None
+    spec: ScheduledTaskSpec
 
 
 class _ListScheduledTasksResponse(BaseModel):
     tasks: List[ScheduledTask]
+
+
+class _ListScheduledTaskRunsResponse(BaseModel):
+    runs: List[ScheduledTaskRun]
 
 
 class Meshagent:
@@ -2349,7 +2368,7 @@ class Meshagent:
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json=service.model_dump(mode="json"),
+            json=service.model_dump(mode="json", exclude_none=True, exclude={"id"}),
         ) as resp:
             await self._raise_for_status(resp)
             return await self._read_model(resp, ServiceSpec)
@@ -2499,7 +2518,7 @@ class Meshagent:
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json=service.model_dump(mode="json", exclude_none=True),
+            json=service.model_dump(mode="json", exclude_none=True, exclude={"id"}),
         ) as resp:
             await self._raise_for_status(resp)
             return (await resp.json())["id"]
@@ -3355,6 +3374,7 @@ class Meshagent:
         room_id: str,
         email: str,
         permissions: ApiScope,
+        invite_redirect_url: str | None = None,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/room-grants
@@ -3366,6 +3386,7 @@ class Meshagent:
             room_id=room_id,
             email=email,
             permissions=permissions,
+            invite_redirect_url=invite_redirect_url,
         ).model_dump(mode="json")
 
         async with self._session.post(
@@ -3860,33 +3881,28 @@ class Meshagent:
         *,
         project_id: str,
         room_name: str,
-        queue_name: str,
-        payload: Any,
-        schedule: str,
-        active: bool = True,
-        task_id: Optional[str] = None,
-        once: bool = False,
-        annotations: Optional[dict[str, str]] = None,
-        storage_write_path: Optional[str] = None,
+        spec: ScheduledTaskSpec | dict[str, Any],
     ) -> str:
         """
-        POST /accounts/projects/{project_id}/scheduled-tasks
+        POST /accounts/projects/{project_id}/rooms/{room_name}/scheduled-tasks
 
-        payload can be dict (preferred) or json-string.
+        spec can be a ScheduledTaskSpec or dict.
         Returns the created ScheduledTask when the server returns it.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks"
+        scheduled_task_spec = (
+            ScheduledTaskSpec.model_validate(spec)
+            if not isinstance(spec, ScheduledTaskSpec)
+            else spec
+        )
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/"
+            f"{quote(room_name, safe='')}/scheduled-tasks"
+        )
 
         body = _CreateScheduledTaskRequest(
-            id=task_id,
-            room_name=room_name,
-            queue_name=queue_name,
-            payload=payload,
-            schedule=schedule,
-            active=active,
-            once=once,
-            annotations=annotations,
-            storage_write_path=storage_write_path,
+            spec=scheduled_task_spec,
         ).model_dump(mode="json", exclude_none=True)
 
         async with self._session.post(
@@ -3901,38 +3917,25 @@ class Meshagent:
         *,
         project_id: str,
         task_id: str,
-        room_name: Optional[str] = None,
-        queue_name: Optional[str] = None,
-        payload: Optional[Any] = None,
-        schedule: Optional[str] = None,
-        active: Optional[bool] = None,
-        annotations: Optional[dict[str, str]] = None,
-        storage_write_path: Optional[str] = None,
-        clear_storage_write_path: bool = False,
+        spec: ScheduledTaskSpec | dict[str, Any],
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/scheduled-tasks/{task_id}
 
-        Patch-like update. Any omitted fields are left unchanged.
-        Returns the updated ScheduledTask when the server returns it; otherwise fetches it.
+        Replaces the scheduled task spec.
         """
-        if clear_storage_write_path and storage_write_path is not None:
-            raise ValueError(
-                "clear_storage_write_path cannot be combined with storage_write_path"
-            )
+        scheduled_task_spec = (
+            ScheduledTaskSpec.model_validate(spec)
+            if not isinstance(spec, ScheduledTaskSpec)
+            else spec
+        )
 
         url = (
             f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/{task_id}"
         )
 
         body = _UpdateScheduledTaskRequest(
-            room_name=room_name,
-            queue_name=queue_name,
-            payload=payload,
-            schedule=schedule,
-            active=active,
-            annotations=annotations,
-            storage_write_path="" if clear_storage_write_path else storage_write_path,
+            spec=scheduled_task_spec,
         ).model_dump(mode="json", exclude_none=True)
 
         async with self._session.put(
@@ -3956,7 +3959,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        room_name: Optional[str] = None,
+        room_id: Optional[str] = None,
         task_id: Optional[str] = None,
         active: Optional[bool] = None,
         limit: int = 100,
@@ -3965,7 +3968,7 @@ class Meshagent:
     ) -> List[ScheduledTask]:
         page = await self.list_scheduled_tasks_page(
             project_id=project_id,
-            room_name=room_name,
+            room_id=room_id,
             task_id=task_id,
             active=active,
             limit=limit,
@@ -3978,7 +3981,7 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        room_name: Optional[str] = None,
+        room_id: Optional[str] = None,
         task_id: Optional[str] = None,
         active: Optional[bool] = None,
         limit: int = 100,
@@ -3986,7 +3989,7 @@ class Meshagent:
         filter: str | None = None,
     ) -> ScheduledTasksPage:
         """
-        GET /accounts/projects/{project_id}/scheduled-tasks?room_name=&task_id=&active=&limit=&offset=
+        GET /accounts/projects/{project_id}/scheduled-tasks?room_id=&task_id=&active=&limit=&offset=
         Returns a list[ScheduledTask].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks"
@@ -3994,8 +3997,8 @@ class Meshagent:
             "limit": str(limit),
             "offset": str(offset),
         }
-        if room_name is not None:
-            params["room_name"] = room_name
+        if room_id is not None:
+            params["room_id"] = room_id
         if task_id is not None:
             params["task_id"] = task_id
         if active is not None:
@@ -4022,3 +4025,55 @@ class Meshagent:
             )
         except ValidationError as exc:
             raise RoomException(f"Invalid scheduled-tasks payload: {exc}") from exc
+
+    async def list_scheduled_task_runs(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ScheduledTaskRun]:
+        page = await self.list_scheduled_task_runs_page(
+            project_id=project_id,
+            task_id=task_id,
+            limit=limit,
+            offset=offset,
+        )
+        return page.runs
+
+    async def list_scheduled_task_runs_page(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> ScheduledTaskRunsPage:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks/"
+            f"{task_id}/runs"
+        )
+        params: Dict[str, str] = {
+            "limit": str(limit),
+            "offset": str(offset),
+        }
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+
+        runs_raw = data.get("runs", [])
+        if not isinstance(runs_raw, list):
+            raise RoomException(
+                "Invalid scheduled-task-runs payload: expected 'runs' to be a list"
+            )
+
+        try:
+            runs = [ScheduledTaskRun.model_validate(item) for item in runs_raw]
+            return ScheduledTaskRunsPage(
+                runs=runs, total=int(data.get("total", len(runs)))
+            )
+        except ValidationError as exc:
+            raise RoomException(f"Invalid scheduled-task-runs payload: {exc}") from exc

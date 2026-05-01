@@ -1,11 +1,18 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from meshagent.api import ParticipantGrant, ParticipantToken
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.client import Meshagent
-from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
+from meshagent.api.specs.service import (
+    ContainerSpec,
+    ScheduledTaskQueueSpec,
+    ScheduledTaskSpec,
+    ServiceMetadata,
+    ServiceSpec,
+)
 
 
 class _FakeResponse:
@@ -202,36 +209,95 @@ async def test_create_room_service_omits_generated_service_id():
 
 
 @pytest.mark.asyncio
-async def test_update_scheduled_task_allows_partial_update_without_annotations():
-    session = _FakeSession([_FakeResponse(status=200, payload={})])
+async def test_create_service_omits_client_supplied_id():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "version": "v1",
+                    "kind": "Service",
+                    "id": "server-service-id",
+                    "metadata": {"name": "worker"},
+                },
+            )
+        ]
+    )
     client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    await client.update_scheduled_task(
-        project_id="proj_123",
-        task_id="task_123",
-        schedule="0 * * * *",
+    service_spec = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="client-service-id",
+        metadata=ServiceMetadata(name="worker"),
     )
 
+    service = await client.create_service(
+        project_id="proj_123",
+        service=service_spec,
+    )
+
+    assert service.id == "server-service-id"
     assert session.calls == [
         (
-            "put",
-            "http://example.test/accounts/projects/proj_123/scheduled-tasks/task_123",
+            "post",
+            "http://example.test/accounts/projects/proj_123/services",
             {
-                "schedule": "0 * * * *",
+                "version": "v1",
+                "kind": "Service",
+                "metadata": {"name": "worker"},
+                "ports": [],
             },
         )
     ]
 
 
 @pytest.mark.asyncio
-async def test_update_scheduled_task_can_clear_storage_write_path():
+async def test_create_room_service_omits_client_supplied_id():
+    session = _FakeSession(
+        [_FakeResponse(status=200, payload={"id": "server-service-id"})]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    service_spec = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="client-service-id",
+        metadata=ServiceMetadata(name="worker"),
+    )
+
+    service_id = await client.create_room_service(
+        project_id="proj_123",
+        room_name="room-1",
+        service=service_spec,
+    )
+
+    assert service_id == "server-service-id"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/rooms/room-1/services",
+            {
+                "version": "v1",
+                "kind": "Service",
+                "metadata": {"name": "worker"},
+                "ports": [],
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_scheduled_task_replaces_spec():
     session = _FakeSession([_FakeResponse(status=200, payload={})])
     client = Meshagent(base_url="http://example.test", token="token", session=session)
+    spec = ScheduledTaskSpec(
+        schedule="0 * * * *",
+        queue=ScheduledTaskQueueSpec(name="jobs", payload={"action": "sync"}),
+    )
 
     await client.update_scheduled_task(
         project_id="proj_123",
         task_id="task_123",
-        clear_storage_write_path=True,
+        spec=spec,
     )
 
     assert session.calls == [
@@ -239,10 +305,79 @@ async def test_update_scheduled_task_can_clear_storage_write_path():
             "put",
             "http://example.test/accounts/projects/proj_123/scheduled-tasks/task_123",
             {
-                "storage_write_path": "",
+                "spec": {
+                    "version": "v1",
+                    "kind": "ScheduledTask",
+                    "metadata": {"annotations": {}},
+                    "schedule": "0 * * * *",
+                    "active": True,
+                    "once": False,
+                    "queue": {"name": "jobs", "payload": {"action": "sync"}},
+                },
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_task_uses_room_scoped_route():
+    session = _FakeSession([_FakeResponse(status=200, payload={"task_id": "task_123"})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    spec = ScheduledTaskSpec(
+        schedule="0 * * * *",
+        queue=ScheduledTaskQueueSpec(
+            name="jobs",
+            storage_write_path="scheduled/outbox",
+        ),
+    )
+
+    task_id = await client.create_scheduled_task(
+        project_id="proj_123",
+        room_name="room a/b",
+        spec=spec,
+    )
+
+    assert task_id == "task_123"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/rooms/room%20a%2Fb/scheduled-tasks",
+            {
+                "spec": {
+                    "version": "v1",
+                    "kind": "ScheduledTask",
+                    "metadata": {"annotations": {}},
+                    "schedule": "0 * * * *",
+                    "active": True,
+                    "once": False,
+                    "queue": {
+                        "name": "jobs",
+                        "payload": {},
+                        "storage_write_path": "scheduled/outbox",
+                    },
+                },
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("schedule", ["*/15 * * * *", "15 minutes", "0 * * * *"])
+def test_scheduled_task_spec_accepts_minimum_interval(schedule: str) -> None:
+    spec = ScheduledTaskSpec(
+        schedule=schedule,
+        queue=ScheduledTaskQueueSpec(name="jobs"),
+    )
+
+    assert spec.schedule == schedule
+
+
+@pytest.mark.parametrize("schedule", ["* * * * *", "*/5 * * * *", "5 minutes"])
+def test_scheduled_task_spec_rejects_too_frequent_schedules(schedule: str) -> None:
+    with pytest.raises(ValidationError, match="every 15 minutes"):
+        ScheduledTaskSpec(
+            schedule=schedule,
+            queue=ScheduledTaskQueueSpec(name="jobs"),
+        )
 
 
 @pytest.mark.asyncio

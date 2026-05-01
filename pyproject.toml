@@ -20,6 +20,7 @@ dependencies = [
   "pyyaml~=6.0.2",
   "certifi~=2026.1.4",
   "pyarrow~=21.0.0",
+  "croniter~=6.0",
 ]
 classifiers = [
   # You can add your classifiers here if needed.
