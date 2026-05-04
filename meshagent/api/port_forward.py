@@ -142,9 +142,14 @@ async def port_forward(
                 with contextlib.suppress(Exception):
                     await ws.close()
 
-    server = await asyncio.start_server(
-        handle_client, host=listen_host, port=listen_port
-    )
+    try:
+        server = await asyncio.start_server(
+            handle_client, host=listen_host, port=listen_port
+        )
+    except Exception:
+        await session.close()
+        raise
+
     sock = (server.sockets or [None])[0]
     if sock is None:
         await session.close()
