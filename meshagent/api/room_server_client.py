@@ -5201,6 +5201,31 @@ class DatasetSqlCancelResult:
     status: Literal["cancelled", "cancelling", "not_cancellable"]
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetWatchEvent:
+    kind: Literal["data", "ready"]
+    phase: str | None = None
+    table: pa.Table | None = None
+    version: int | None = None
+    change_type: str | None = None
+    begin_version: int | None = None
+    end_version: int | None = None
+    watch_event: str | None = None
+
+
+def _dataset_optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _dataset_metadata_entries(metadata: dict | None) -> list[dict[str, str]] | None:
     if metadata is None:
         return None
@@ -6518,6 +6543,69 @@ class DatasetsClient:
             },
         ):
             yield batch
+
+    async def watch_table(
+        self,
+        *,
+        table: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+        poll_interval_seconds: float = 0.5,
+    ) -> AsyncIterator[DatasetWatchEvent]:
+        input_stream = _DatasetArrowReadInputStream(
+            start={
+                "kind": "start",
+                "table": table,
+                "namespace": namespace,
+                "branch": branch,
+                "poll_interval_seconds": poll_interval_seconds,
+            },
+        )
+        response_stream = await self._invoke_stream(
+            operation="watch_table",
+            input=input_stream,
+        )
+        input_stream.request_next()
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation="watch_table")
+                if isinstance(chunk, BinaryContent):
+                    if chunk.headers.get("kind") != "data":
+                        raise self._unexpected_response_error(operation="watch_table")
+                    yield DatasetWatchEvent(
+                        kind="data",
+                        phase=chunk.headers.get("phase"),
+                        table=_table_from_arrow_ipc(chunk.data),
+                        version=_dataset_optional_int(chunk.headers.get("version")),
+                        change_type=chunk.headers.get("change_type"),
+                        begin_version=_dataset_optional_int(
+                            chunk.headers.get("begin_version")
+                        ),
+                        end_version=_dataset_optional_int(
+                            chunk.headers.get("end_version")
+                        ),
+                        watch_event=chunk.headers.get("watch_event"),
+                    )
+                    input_stream.request_next()
+                    continue
+                if isinstance(chunk, JsonContent):
+                    if chunk.json.get("kind") != "ready":
+                        raise self._unexpected_response_error(operation="watch_table")
+                    yield DatasetWatchEvent(
+                        kind="ready",
+                        phase=chunk.json.get("phase"),
+                        version=_dataset_optional_int(chunk.json.get("version")),
+                    )
+                    input_stream.request_next()
+                    continue
+                raise self._unexpected_response_error(operation="watch_table")
+        finally:
+            input_stream.close()
 
     async def count(
         self,

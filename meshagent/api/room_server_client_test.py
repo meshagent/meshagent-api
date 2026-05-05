@@ -3142,6 +3142,7 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
             self.read_pulls: dict[str, list[dict[str, object]]] = {
                 "search": [],
                 "read_sql_query": [],
+                "watch_table": [],
             }
 
         async def invoke(self, **kwargs) -> Content | AsyncIterator[Content]:
@@ -3182,7 +3183,18 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
                         self.read_pulls[tool].append(dict(chunk.headers))
                         pull_count += 1
                         if pull_count == 1:
-                            if tool == "search":
+                            if tool == "watch_table":
+                                yield BinaryContent(
+                                    data=room_server_client._table_to_arrow_ipc(
+                                        pa.table({"id": [1]})
+                                    ),
+                                    headers={
+                                        "kind": "data",
+                                        "phase": "initial",
+                                        "version": "4",
+                                    },
+                                )
+                            elif tool == "search":
                                 yield BinaryContent(
                                     data=room_server_client._table_to_arrow_ipc(
                                         pa.table({"payload": [b"hello"]})
@@ -3201,6 +3213,29 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
                                     ),
                                     headers={"kind": "data"},
                                 )
+                            continue
+                        if tool == "watch_table" and pull_count == 2:
+                            yield JsonContent(
+                                json={
+                                    "kind": "ready",
+                                    "phase": "initial",
+                                    "version": 4,
+                                }
+                            )
+                            continue
+                        if tool == "watch_table" and pull_count == 3:
+                            yield BinaryContent(
+                                data=room_server_client._table_to_arrow_ipc(
+                                    pa.table({"id": [2]})
+                                ),
+                                headers={
+                                    "kind": "data",
+                                    "phase": "delta",
+                                    "change_type": "inserted",
+                                    "begin_version": "4",
+                                    "end_version": "5",
+                                },
+                            )
                             continue
                         yield _ControlContent(method="close")
                         return
@@ -3327,6 +3362,9 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     tables = await client.list_tables(namespace=["team"])
     inspected = await client.inspect(table="records", namespace=["team"])
     rows = await client.search(table="records", namespace=["team"])
+    watch_events = []
+    async for event in client.watch_table(table="records", namespace=["team"]):
+        watch_events.append(event)
     sql_rows = await client.sql(
         query="SELECT * FROM records",
         namespace=["team"],
@@ -3360,6 +3398,17 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     assert tables == ["records"]
     assert inspected.equals(inspect_schema, check_metadata=True)
     assert rows.to_pylist() == [{"payload": b"hello"}]
+    assert [event.kind for event in watch_events] == ["data", "ready", "data"]
+    assert watch_events[0].phase == "initial"
+    assert watch_events[0].version == 4
+    assert watch_events[0].table.to_pylist() == [{"id": 1}]
+    assert watch_events[1].phase == "initial"
+    assert watch_events[1].version == 4
+    assert watch_events[2].phase == "delta"
+    assert watch_events[2].change_type == "inserted"
+    assert watch_events[2].begin_version == 4
+    assert watch_events[2].end_version == 5
+    assert watch_events[2].table.to_pylist() == [{"id": 2}]
     assert sql_rows.to_pylist() == [{"id": 1, "payload": b"sql-result"}]
     assert rows_affected == 3
     assert cancel_result.status == "cancelling"
@@ -3378,6 +3427,7 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         "list_tables",
         "inspect",
         "search",
+        "watch_table",
         "execute_sql",
         "read_sql_query",
         "close_sql_query",
@@ -3438,6 +3488,19 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
     assert room.read_starts["search"]["branch"] is None
     assert room.read_starts["search"]["version"] is None
     assert room.read_pulls["search"] == [{"kind": "pull"}, {"kind": "pull"}]
+    assert room.read_starts["watch_table"] == {
+        "kind": "start",
+        "table": "records",
+        "namespace": ["team"],
+        "branch": None,
+        "poll_interval_seconds": 0.5,
+    }
+    assert room.read_pulls["watch_table"] == [
+        {"kind": "pull"},
+        {"kind": "pull"},
+        {"kind": "pull"},
+        {"kind": "pull"},
+    ]
     assert room.read_starts["read_sql_query"]["kind"] == "start"
     assert room.read_starts["read_sql_query"]["query_id"] == "sql-query-1"
     assert room.read_pulls["read_sql_query"] == [{"kind": "pull"}, {"kind": "pull"}]
