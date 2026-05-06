@@ -6051,6 +6051,24 @@ class DatasetsClient:
             },
         )
 
+    async def rename_table(
+        self,
+        *,
+        name: str,
+        new_name: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> None:
+        await self._invoke(
+            operation="rename_table",
+            input={
+                "name": name,
+                "new_name": new_name,
+                "namespace": namespace,
+                "branch": branch,
+            },
+        )
+
     async def drop_index(
         self,
         *,
