@@ -3308,6 +3308,11 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         schema=pa.schema([pa.field("payload", pa.binary())]),
         metadata={"kind": "demo"},
     )
+    await client.rename_table(
+        name="records",
+        new_name="renamed_records",
+        namespace=["team"],
+    )
     await client.insert(
         table="records",
         namespace=["team"],
@@ -3372,6 +3377,7 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
 
     assert [call["tool"] for call in room.calls] == [
         "create_table",
+        "rename_table",
         "insert",
         "merge",
         "update",
@@ -3421,7 +3427,15 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
         {"id": 1, "payload": b"merged"}
     ]
 
-    update_arguments = room.calls[3]["input"]
+    rename_arguments = room.calls[1]["input"]
+    assert rename_arguments == {
+        "name": "records",
+        "new_name": "renamed_records",
+        "namespace": ["team"],
+        "branch": None,
+    }
+
+    update_arguments = room.calls[4]["input"]
     assert update_arguments["values"] == [
         {
             "column": "payload",
