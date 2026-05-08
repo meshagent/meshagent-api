@@ -4277,7 +4277,13 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
     room = _FakeContainersRoom()
     client = ContainersClient(room=room)  # type: ignore[arg-type]
 
-    session = await client.exec(container_id="container-1", command="echo hi")
+    loop = asyncio.get_running_loop()
+    previous_task_factory = loop.get_task_factory()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    try:
+        session = await client.exec(container_id="container-1", command="echo hi")
+    finally:
+        loop.set_task_factory(previous_task_factory)
     await session.wait_for_ready()
     await session.write(b"ping")
     stdout = [chunk async for chunk in session.stdout()]

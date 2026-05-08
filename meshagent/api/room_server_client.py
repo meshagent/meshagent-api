@@ -8355,8 +8355,12 @@ class ContainersClient:
         tty: Optional[bool] = None,
     ) -> ExecSession:
         request_id = str(uuid.uuid4())
+        container_future: asyncio.Future[ExecSession] = (
+            asyncio.get_running_loop().create_future()
+        )
 
         async def run():
+            container = await container_future
             try:
                 response = await self.room.invoke(
                     toolkit="containers",
@@ -8421,6 +8425,7 @@ class ContainersClient:
             command=command,
             tty=tty,
         )
+        container_future.set_result(container)
 
         return container
 
