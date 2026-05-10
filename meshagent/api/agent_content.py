@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 AGENT_CONTENT_TYPE_TEXT = "text"
 AGENT_CONTENT_TYPE_FILE = "file"
+AGENT_CONTENT_TYPE_AUDIO = "audio"
 
 
 class AgentContent(BaseModel):
@@ -22,7 +23,12 @@ class AgentFileContent(AgentContent):
     url: str
 
 
+class AgentAudioContent(AgentContent):
+    type: Literal[AGENT_CONTENT_TYPE_AUDIO]
+    url: str
+
+
 AgentInputContent: TypeAlias = Annotated[
-    AgentTextContent | AgentFileContent,
+    AgentTextContent | AgentFileContent | AgentAudioContent,
     Field(discriminator="type"),
 ]

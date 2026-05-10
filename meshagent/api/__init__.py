@@ -66,6 +66,7 @@ from .messaging import (
     EmptyContent,
 )
 from .agent_content import (
+    AgentAudioContent,
     AgentContent,
     AgentFileContent,
     AgentInputContent,
@@ -143,6 +144,7 @@ __all__ = [
     ErrorContent,
     RawOutputsContent,
     EmptyContent,
+    AgentAudioContent,
     AgentContent,
     AgentFileContent,
     AgentInputContent,
