@@ -83,6 +83,7 @@ from .oauth_scopes import FULL_OAUTH_SCOPE, FULL_OAUTH_SCOPES
 from .webhooks import WebhookServer, RoomStartedEvent, RoomEndedEvent, CallEvent
 from .version import __version__
 from .error_codes import ErrorCode
+from .dataset_schema import LANCE_COMPRESSION_METADATA_KEY, LANCE_ZSTD_FIELD_METADATA
 
 __all__ = [
     Meshagent,
@@ -160,5 +161,7 @@ __all__ = [
     RoomEndedEvent,
     CallEvent,
     ErrorCode,
+    LANCE_COMPRESSION_METADATA_KEY,
+    LANCE_ZSTD_FIELD_METADATA,
     __version__,
 ]
