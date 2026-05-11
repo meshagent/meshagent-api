@@ -144,7 +144,7 @@ class WebSocketClientProtocol(ClientProtocol):
             )
 
             self._ws_ctx = self._session.ws_connect(
-                url_with_params, heartbeat=self._heartbeat
+                url_with_params, heartbeat=self._heartbeat, compress=15
             )
             self._ws = await self._ws_ctx.__aenter__()
             self._ws_entered = True

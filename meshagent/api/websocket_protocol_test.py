@@ -24,7 +24,7 @@ class _FakeSession:
     def __init__(self) -> None:
         self.entered = False
         self.exited = False
-        self.ws_connect_calls: list[tuple[str, float | None]] = []
+        self.ws_connect_calls: list[tuple[str, float | None, int | None]] = []
 
     async def __aenter__(self):
         self.entered = True
@@ -33,8 +33,10 @@ class _FakeSession:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self.exited = True
 
-    def ws_connect(self, url: str, *, heartbeat: float | None = None):
-        self.ws_connect_calls.append((url, heartbeat))
+    def ws_connect(
+        self, url: str, *, heartbeat: float | None = None, compress: int | None = None
+    ):
+        self.ws_connect_calls.append((url, heartbeat, compress))
         return _FailingWebsocketContext()
 
 
@@ -105,3 +107,4 @@ async def test_websocket_client_protocol_keeps_external_session_open_when_enter_
     assert session.entered is False
     assert session.exited is False
     assert len(session.ws_connect_calls) == 1
+    assert session.ws_connect_calls[0][2] == 15
