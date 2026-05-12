@@ -3717,7 +3717,7 @@ async def test_containers_client_build_streams_tar_chunks() -> None:
         yield b"world"
 
     build_id = await client.build(
-        tag="repo/example:latest",
+        tags=["repo/example:latest"],
         mount_path="/context",
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
@@ -3733,7 +3733,7 @@ async def test_containers_client_build_streams_tar_chunks() -> None:
     assert room.start_chunk is not None
     assert room.start_chunk.headers == {
         "kind": "start",
-        "tag": "repo/example:latest",
+        "tags": ["repo/example:latest"],
         "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
@@ -4078,7 +4078,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
         ),
     )
     await client.build(
-        tag="example:latest",
+        tags=["example:latest"],
         mount_path="/context",
         context_path="/workspace",
         chunks=_bytes_chunks([b"hello ", b"world"]),
@@ -4145,7 +4145,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert room.build_start_chunk is not None
     assert room.build_start_chunk.headers == {
         "kind": "start",
-        "tag": "example:latest",
+        "tags": ["example:latest"],
         "mount_path": "/context",
         "context_path": "/workspace",
         "dockerfile_path": "/workspace/Dockerfile",
@@ -4348,7 +4348,7 @@ async def test_containers_client_build_unexpected_response_uses_error_code() -> 
         RoomException, match="unexpected return type from containers.build"
     ) as ex:
         await client.build(
-            tag="example:latest",
+            tags=["example:latest"],
             mount_path="/context",
             context_path="/workspace",
             chunks=_bytes_chunks([b"hello"]),

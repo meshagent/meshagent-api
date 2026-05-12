@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import warnings
 import aiohttp
 import pyarrow as pa
 from meshagent.api.protocol import (
@@ -7790,7 +7791,7 @@ class _BuildContextInputStream:
     def __init__(
         self,
         *,
-        tag: str,
+        tags: list[str],
         mount_path: str,
         context_path: str,
         dockerfile_path: str | None,
@@ -7805,7 +7806,7 @@ class _BuildContextInputStream:
             data=b"",
             headers={
                 "kind": "start",
-                "tag": tag,
+                "tags": list(tags),
                 "mount_path": mount_path,
                 "context_path": context_path,
                 "dockerfile_path": dockerfile_path,
@@ -8268,7 +8269,8 @@ class ContainersClient:
     async def build(
         self,
         *,
-        tag: str,
+        tags: List[str] | None = None,
+        tag: str | None = None,
         mount_path: str,
         context_path: str,
         chunks: AsyncIterable[bytes],
@@ -8279,11 +8281,22 @@ class ContainersClient:
         builder_name: str | None = None,
         size: int | None = None,
     ) -> str:
+        if tags is None:
+            if tag is None:
+                raise ValueError("containers.build requires tags")
+            warnings.warn(
+                "ContainersClient.build(tag=...) is deprecated; use tags=[...]",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            tags = [tag]
+        if len(tags) == 0:
+            raise ValueError("containers.build requires at least one tag")
         response = await self.room.invoke(
             toolkit="containers",
             tool="build",
             input=_BuildContextInputStream(
-                tag=tag,
+                tags=tags,
                 mount_path=mount_path,
                 context_path=context_path,
                 dockerfile_path=dockerfile_path,
