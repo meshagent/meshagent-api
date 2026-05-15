@@ -8698,6 +8698,7 @@ class SecretInfo(BaseModel):
     type: str
     name: str
     delegated_to: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 class _ListUserSecretsResponse(BaseModel):

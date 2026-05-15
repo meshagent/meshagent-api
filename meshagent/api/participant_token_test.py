@@ -329,6 +329,26 @@ def test_token_jwt_round_trip() -> None:
     assert recovered.name == "dave"
 
 
+def test_token_from_json_rejects_missing_required_fields() -> None:
+    with pytest.raises(ValueError, match="missing required field: name"):
+        ParticipantToken.from_json({"grants": []})
+
+    with pytest.raises(ValueError, match="missing required field: grants"):
+        ParticipantToken.from_json({"name": "dave"})
+
+
+def test_token_from_jwt_rejects_malformed_payload_as_invalid_token() -> None:
+    secret = "malformed-payload-secret-32-bytes"
+    jwt_str = jwt.encode(
+        payload={"sub": "project-1", "grants": []},
+        key=secret,
+        algorithm="HS256",
+    )
+
+    with pytest.raises(jwt.InvalidTokenError, match="valid participant token"):
+        ParticipantToken.from_jwt(jwt_str, token=secret)
+
+
 def test_token_expiration() -> None:
     secret = "expire‑secret"
     pt = ParticipantToken(name="eve")

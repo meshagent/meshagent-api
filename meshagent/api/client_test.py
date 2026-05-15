@@ -4,8 +4,13 @@ import pytest
 from pydantic import ValidationError
 
 from meshagent.api import ParticipantGrant, ParticipantToken
+from meshagent.api.managed_agents import (
+    AllowedOpenAIModel,
+    ManagedAgentMetadata,
+    ManagedAgentSpec,
+)
 from meshagent.api.participant_token import ApiScope
-from meshagent.api.client import Meshagent
+from meshagent.api.client import ManagedAgentGrant, Meshagent
 from meshagent.api.specs.service import (
     ScheduledTaskQueueSpec,
     ScheduledTaskSpec,
@@ -562,6 +567,101 @@ async def test_room_secret_and_external_oauth_methods_pass_query_parameters():
 
 
 @pytest.mark.asyncio
+async def test_agent_secret_methods_use_agent_secret_routes():
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={"id": "secret-1"}),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secrets": [
+                        {
+                            "id": "secret-1",
+                            "name": "api-key",
+                            "type": "keys",
+                            "agent_id": "agent-1",
+                        }
+                    ]
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "secret-1",
+                    "name": "api-key",
+                    "type": "keys",
+                    "agent_id": "agent-1",
+                    "data_base64": "c2VjcmV0",
+                },
+            ),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    created_id = await client.create_agent_secret(
+        project_id="proj_123",
+        agent_id="agent-1",
+        secret_id="secret-1",
+        name="api-key",
+        type="keys",
+        data=b"secret",
+    )
+    listed = await client.list_agent_secrets(project_id="proj_123", agent_id="agent-1")
+    fetched = await client.get_agent_secret(
+        project_id="proj_123", agent_id="agent-1", secret_id="secret-1"
+    )
+    await client.update_agent_secret(
+        project_id="proj_123",
+        agent_id="agent-1",
+        secret_id="secret-1",
+        name="api-key",
+        type="keys",
+        data=b"new",
+    )
+    await client.delete_agent_secret(
+        project_id="proj_123", agent_id="agent-1", secret_id="secret-1"
+    )
+
+    assert created_id == "secret-1"
+    assert listed[0].agent_id == "agent-1"
+    assert fetched.data == b"secret"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets",
+            {
+                "data_base64": "c2VjcmV0",
+                "secret_id": "secret-1",
+                "name": "api-key",
+                "type": "keys",
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets",
+            None,
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets/secret-1",
+            None,
+        ),
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets/secret-1",
+            {"data_base64": "bmV3", "name": "api-key", "type": "keys"},
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets/secret-1",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_validate_participant_token_fetches_validated_token():
     payload = ParticipantToken(
         name="assistant",
@@ -585,4 +685,243 @@ async def test_validate_participant_token_fetches_validated_token():
             "http://example.test/api/participant-token/validate",
             {"token": "jwt-token"},
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_crud_methods_use_agent_routes():
+    configuration = ManagedAgentSpec(
+        id="agent-1",
+        metadata=ManagedAgentMetadata(name="planner"),
+        allowed_models=[AllowedOpenAIModel(model="gpt-4.1")],
+    )
+    agent_payload = {
+        "id": "agent-1",
+        "name": "planner",
+        "configuration": configuration.model_dump(mode="json"),
+    }
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload=agent_payload),
+            _FakeResponse(status=200, payload=agent_payload),
+            _FakeResponse(status=200, payload={"agents": [agent_payload], "total": 1}),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    created = await client.create_agent(
+        project_id="proj_123",
+        configuration=configuration,
+        if_not_exists=True,
+        permissions={"user-1": ManagedAgentGrant()},
+    )
+    fetched = await client.get_agent(project_id="proj_123", name="planner")
+    page = await client.list_agents_page(
+        project_id="proj_123", limit=10, offset=5, filter="plan"
+    )
+    await client.update_agent(
+        project_id="proj_123",
+        agent_id="agent-1",
+        configuration=configuration,
+    )
+    await client.delete_agent(project_id="proj_123", agent_id="agent-1")
+
+    assert created.name == "planner"
+    assert fetched.id == "agent-1"
+    assert page.total == 1
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/agents",
+            {
+                "configuration": configuration.model_dump(mode="json"),
+                "if_not_exists": True,
+                "permissions": {"user-1": {"admin": False}},
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agents/planner",
+            None,
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agents",
+            {
+                "limit": "10",
+                "offset": "5",
+                "order_by": "agent_name",
+                "filter": "plan",
+            },
+        ),
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1",
+            {"configuration": configuration.model_dump(mode="json")},
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/agents/agent-1",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_grant_methods_use_agent_grant_routes():
+    configuration = {
+        "id": "agent-1",
+        "name": "planner",
+        "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+    }
+    grant_payload = {
+        "agent": {
+            "id": "agent-1",
+            "name": "planner",
+            "configuration": configuration,
+            "metadata": {},
+            "annotations": {},
+        },
+        "user_id": "user-1",
+        "permissions": {"admin": False},
+    }
+    user_grant_payload = {
+        **grant_payload,
+        "user": {
+            "id": "user-1",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.test",
+        },
+    }
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload=grant_payload),
+            _FakeResponse(
+                status=200, payload={"agent_grants": [grant_payload], "total": 1}
+            ),
+            _FakeResponse(status=200, payload={"agent_grants": [grant_payload]}),
+            _FakeResponse(status=200, payload={"agent_grants": [user_grant_payload]}),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "agents": [
+                        {
+                            "agent": grant_payload["agent"],
+                            "count": 1,
+                        }
+                    ]
+                },
+            ),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.create_agent_grant(
+        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    )
+    await client.create_agent_grant_by_email(
+        project_id="proj_123",
+        agent_id="agent-1",
+        email="ada@example.test",
+        invite_redirect_url="https://studio.example.test",
+    )
+    await client.update_agent_grant(
+        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    )
+    grant = await client.get_agent_grant(
+        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    )
+    page = await client.list_agent_grants_by_user_page(
+        project_id="proj_123", user_id="me", filter="plan"
+    )
+    grants = await client.list_agent_grants_by_agent(
+        project_id="proj_123", agent_name="planner"
+    )
+    members = await client.list_agent_members_by_agent(
+        project_id="proj_123", agent_name="planner"
+    )
+    counts = await client.list_unique_agents_with_grants(project_id="proj_123")
+    await client.delete_agent_grant(
+        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    )
+
+    assert grant.agent.name == "planner"
+    assert page.total == 1
+    assert grants[0].user_id == "user-1"
+    assert members[0].user.email == "ada@example.test"
+    assert counts[0].count == 1
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/agent-grants",
+            {
+                "agent_id": "agent-1",
+                "user_id": "user-1",
+                "email": None,
+                "permissions": {"admin": False},
+                "invite_redirect_url": None,
+            },
+        ),
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/agent-grants",
+            {
+                "agent_id": "agent-1",
+                "user_id": None,
+                "email": "ada@example.test",
+                "permissions": {"admin": False},
+                "invite_redirect_url": "https://studio.example.test",
+            },
+        ),
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/agent-grants/unused",
+            {
+                "agent_id": "agent-1",
+                "user_id": "user-1",
+                "permissions": {"admin": False},
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agent-grants/agent-1/user-1",
+            None,
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agent-grants/by-user/me",
+            {
+                "limit": "100",
+                "offset": "0",
+                "order_by": "agent_name",
+                "filter": "plan",
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agent-grants/by-agent/planner",
+            {"limit": "50", "offset": "0"},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/members/by-agent/planner",
+            {"limit": "50", "offset": "0"},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/agent-grants/by-agent",
+            {"limit": "50", "offset": "0"},
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/agent-grants/agent-1/user-1",
+            None,
+        ),
     ]

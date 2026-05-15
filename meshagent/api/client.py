@@ -23,6 +23,7 @@ from meshagent.api.specs.service import (
     ServiceSpec,
     ServiceTemplateSpec,
 )
+from meshagent.api.managed_agents import ManagedAgentSpec
 import os
 
 
@@ -81,6 +82,13 @@ class RoomConnectionInfo(BaseModel):
     room_url: str
 
 
+class AgentConnectionInfo(BaseModel):
+    jwt: str
+    agent_name: str
+    project_id: str
+    agent_url: str
+
+
 class MeshagentDomains(BaseModel):
     studio: str | None = None
     accounts: str | None = None
@@ -108,6 +116,9 @@ class RoomSession(BaseModel):
     created_at: datetime
     is_active: bool
     participants: Optional[dict[str, int]] = None
+    kind: str = "room"
+    agent_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class _ListRoomSessionsResponse(BaseModel):
@@ -130,6 +141,51 @@ class ProjectRoomGrant(BaseModel):
     room: Room
     user_id: str
     permissions: ApiScope
+
+
+class ManagedAgent(BaseModel):
+    id: str
+    name: str
+    configuration: ManagedAgentSpec
+
+
+Agent = ManagedAgent
+
+
+class AgentsPage(BaseModel):
+    agents: list[ManagedAgent]
+    total: int = 0
+
+
+class ManagedAgentGrant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    admin: bool = False
+
+
+class ProjectAgentGrant(BaseModel):
+    agent: ManagedAgent
+    user_id: str
+    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
+
+
+class AgentRoomGrant(ApiScope):
+    pass
+
+
+class ProjectAgentRoomGrant(BaseModel):
+    agent: ManagedAgent
+    room: Room
+    permissions: AgentRoomGrant = Field(default_factory=AgentRoomGrant)
+
+
+class AgentGrantsPage(BaseModel):
+    agent_grants: list[ProjectAgentGrant]
+    total: int = 0
+
+
+class AgentRoomGrantsPage(BaseModel):
+    agent_room_grants: list[ProjectAgentRoomGrant]
+    total: int = 0
 
 
 class RoomGrantsPage(BaseModel):
@@ -190,8 +246,19 @@ class UserRoomGrant(BaseModel):
     permissions: ApiScope
 
 
+class UserAgentGrant(BaseModel):
+    agent: ManagedAgent
+    user: User
+    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
+
+
 class ProjectRoomGrantCount(BaseModel):
     room: Room
+    count: int
+
+
+class ProjectAgentGrantCount(BaseModel):
+    agent: ManagedAgent
     count: int
 
 
@@ -215,6 +282,32 @@ class _UpdateRoomGrantRequest(BaseModel):
     room_id: str
     user_id: str
     permissions: ApiScope
+
+
+class _CreateAgentGrantRequest(BaseModel):
+    agent_id: str
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
+    invite_redirect_url: Optional[str] = None
+
+
+class _UpdateAgentGrantRequest(BaseModel):
+    agent_id: str
+    user_id: str
+    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
+
+
+class _CreateAgentRoomGrantRequest(BaseModel):
+    agent_id: str
+    room_id: str
+    permissions: AgentRoomGrant = Field(default_factory=AgentRoomGrant)
+
+
+class _UpdateAgentRoomGrantRequest(BaseModel):
+    agent_id: str
+    room_id: str
+    permissions: AgentRoomGrant = Field(default_factory=AgentRoomGrant)
 
 
 class _BaseSecret(BaseModel):
@@ -280,6 +373,7 @@ class ManagedSecretInfo(BaseModel):
     type: str
     name: str
     delegated_to: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 class ManagedSecret(ManagedSecretInfo):
@@ -1000,6 +1094,7 @@ class Meshagent:
         is_admin: bool | None = None,
         is_developer: bool | None = None,
         can_create_rooms: bool | None = None,
+        can_create_agents: bool | None = None,
         can_use_llm_proxy: bool | None = None,
     ) -> Dict[str, Any]:
         """
@@ -1016,6 +1111,11 @@ class Meshagent:
             **(
                 {"can_create_rooms": can_create_rooms}
                 if can_create_rooms is not None
+                else {}
+            ),
+            **(
+                {"can_create_agents": can_create_agents}
+                if can_create_agents is not None
                 else {}
             ),
             **(
@@ -1052,10 +1152,11 @@ class Meshagent:
         is_developer: bool,
         can_create_rooms: bool,
         can_use_llm_proxy: bool,
+        can_create_agents: bool | None = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/:project_id/users/:user_id
-        Body: { "is_admin", "is_developer", "can_create_rooms", "can_use_llm_proxy" }
+        Body: { "is_admin", "is_developer", "can_create_rooms", "can_create_agents", "can_use_llm_proxy" }
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
@@ -1065,6 +1166,8 @@ class Meshagent:
             "can_create_rooms": can_create_rooms,
             "can_use_llm_proxy": can_use_llm_proxy,
         }
+        if can_create_agents is not None:
+            body["can_create_agents"] = can_create_agents
         async with self._session.put(
             url, headers=self._get_headers(), json=body
         ) as resp:
@@ -1406,6 +1509,21 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
+    async def get_session_participant_counts(
+        self, project_id: str, session_id: str
+    ) -> dict[str, int]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/participants"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            participants = data.get("participants", {})
+            return {
+                str(role): int(count)
+                for role, count in participants.items()
+                if isinstance(count, int | float)
+            }
+
     async def list_active_sessions(self, project_id: str) -> list[RoomSession]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/sessions
@@ -1434,6 +1552,43 @@ class Meshagent:
         params: dict[str, str] = {"limit": str(limit)}
         if room_id is not None:
             params["room_id"] = room_id
+
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            sessions = data.get("sessions", [])
+            return [RoomSession.model_validate(session) for session in sessions]
+
+    async def list_active_agent_sessions(self, project_id: str) -> list[RoomSession]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/agents/sessions/active
+        Returns a JSON dict: { "sessions": [...] }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/sessions/active"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            sessions = data.get("sessions", [])
+            return [RoomSession.model_validate(session) for session in sessions]
+
+    async def list_recent_agent_sessions(
+        self,
+        project_id: str,
+        *,
+        limit: int = 25,
+        agent_id: Optional[str] = None,
+    ) -> list[RoomSession]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/agents/sessions
+        Returns a JSON dict: { "sessions": [...] }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/sessions"
+        params: dict[str, str] = {"limit": str(limit)}
+        if agent_id is not None:
+            params["agent_id"] = agent_id
 
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -2985,6 +3140,127 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
 
+    async def create_agent_secret(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        data: bytes,
+        secret_id: str | None = None,
+        name: str | None = None,
+        type: str | None = None,
+        delegated_to: str | None = None,
+    ) -> str:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets"
+        )
+        payload: dict[str, Any] = {
+            "data_base64": _encode_secret_bytes(data),
+        }
+        if secret_id is not None:
+            payload["secret_id"] = secret_id
+        if name is not None:
+            payload["name"] = name
+        if type is not None:
+            payload["type"] = type
+        if delegated_to is not None:
+            payload["delegated_to"] = delegated_to
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return (await resp.json())["id"]
+
+    async def update_agent_secret(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        secret_id: str,
+        data: bytes,
+        name: str | None = None,
+        type: str | None = None,
+        delegated_to: str | None = None,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets/{secret_id}"
+        payload: dict[str, Any] = {
+            "data_base64": _encode_secret_bytes(data),
+        }
+        if name is not None:
+            payload["name"] = name
+        if type is not None:
+            payload["type"] = type
+        if delegated_to is not None:
+            payload["delegated_to"] = delegated_to
+        async with self._session.put(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_agent_secret(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        secret_id: str,
+        delegated_to: str | None = None,
+    ) -> ManagedSecret:
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets/{secret_id}"
+        params: dict[str, str] = {}
+        if delegated_to is not None:
+            params["delegated_to"] = delegated_to
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params or None,
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return ManagedSecret.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agent secret payload: {exc}") from exc
+
+    async def list_agent_secrets(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+    ) -> list[ManagedSecretInfo]:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return _ListManagedSecretsResponse.model_validate(
+                    await resp.json()
+                ).secrets
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agent secrets payload: {exc}") from exc
+
+    async def delete_agent_secret(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        secret_id: str,
+        delegated_to: str | None = None,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets/{secret_id}"
+        params: dict[str, str] = {}
+        if delegated_to is not None:
+            params["delegated_to"] = delegated_to
+        async with self._session.delete(
+            url,
+            headers=self._get_headers(),
+            params=params or None,
+        ) as resp:
+            await self._raise_for_status(resp)
+
     async def create_secret(
         self,
         *,
@@ -3330,6 +3606,81 @@ class Meshagent:
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
+    async def create_agent(
+        self,
+        *,
+        project_id: str,
+        configuration: ManagedAgentSpec,
+        if_not_exists: bool = False,
+        permissions: Optional[dict[str, ManagedAgentGrant]] = None,
+    ) -> ManagedAgent:
+        """
+        POST /accounts/projects/{project_id}/agents
+        Body: { "configuration": ManagedAgentSpec, "if_not_exists?": bool, "permissions?": dict }
+        Returns Agent.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents"
+        payload = {
+            "configuration": configuration.model_dump(mode="json"),
+            "if_not_exists": bool(if_not_exists),
+            "permissions": {
+                user_id: grant.model_dump(mode="json")
+                for user_id, grant in (permissions or {}).items()
+            },
+        }
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return ManagedAgent.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agent payload: {exc}") from exc
+
+    async def get_agent(self, *, project_id: str, name: str) -> ManagedAgent:
+        """
+        GET /accounts/projects/{project_id}/agents/{agent_name}
+        Returns Agent.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{name}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            if resp.status == 404:
+                raise RoomException("agent not found")
+            await self._raise_for_status(resp)
+            try:
+                return ManagedAgent.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agent payload: {exc}") from exc
+
+    async def update_agent(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        configuration: ManagedAgentSpec,
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/agents/{agent_id}
+        Body: { "configuration": ManagedAgentSpec }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}"
+        payload: dict[str, Any] = {
+            "configuration": configuration.model_dump(mode="json")
+        }
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def delete_agent(self, *, project_id: str, agent_id: str) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/agents/{agent_id}
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
     async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
         """
         POST /accounts/projects/{project_id}/rooms/{room_name}/connect
@@ -3341,6 +3692,20 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
             return RoomConnectionInfo.model_validate(await resp.json())
+
+    async def connect_agent(
+        self, *, project_id: str, agent: str
+    ) -> AgentConnectionInfo:
+        """
+        POST /accounts/projects/{project_id}/agents/{agent_name}/connect
+        Returns: { "jwt", "agent_name", "project_id", "agent_url" }
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent}/connect"
+        async with self._session.post(
+            url, headers=self._get_headers(), json={}
+        ) as resp:
+            await self._raise_for_status(resp)
+            return AgentConnectionInfo.model_validate(await resp.json())
 
     async def create_room_grant(
         self,
@@ -3458,6 +3823,251 @@ class Meshagent:
             except ValidationError as exc:
                 raise RoomException(f"Invalid room grant payload: {exc}") from exc
 
+    async def create_agent_grant(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        user_id: str,
+        permissions: ManagedAgentGrant | None = None,
+    ) -> None:
+        """
+        POST /accounts/projects/{project_id}/agent-grants
+        Body: { "agent_id", "user_id", "permissions" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants"
+        payload = _CreateAgentGrantRequest(
+            agent_id=agent_id,
+            user_id=user_id,
+            permissions=permissions or ManagedAgentGrant(),
+        ).model_dump(mode="json")
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_agent_grant_by_email(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        email: str,
+        permissions: ManagedAgentGrant | None = None,
+        invite_redirect_url: str | None = None,
+    ) -> None:
+        """
+        POST /accounts/projects/{project_id}/agent-grants
+        Body: { "agent_id", "email", "permissions" }
+        Returns {} on success.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants"
+        payload = _CreateAgentGrantRequest(
+            agent_id=agent_id,
+            email=email,
+            permissions=permissions or ManagedAgentGrant(),
+            invite_redirect_url=invite_redirect_url,
+        ).model_dump(mode="json")
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def update_agent_grant(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        user_id: str,
+        permissions: ManagedAgentGrant | None = None,
+        grant_id: Optional[str] = None,
+    ) -> None:
+        """
+        PUT /accounts/projects/{project_id}/agent-grants/{grant_id}
+        Body: { "agent_id", "user_id", "permissions" }
+        NOTE: The server handler currently ignores grant_id and updates by (project_id, agent_id, user_id).
+        """
+        gid = grant_id or "unused"
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants/{gid}"
+        payload = _UpdateAgentGrantRequest(
+            agent_id=agent_id,
+            user_id=user_id,
+            permissions=permissions or ManagedAgentGrant(),
+        ).model_dump(mode="json")
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def delete_agent_grant(
+        self, *, project_id: str, agent_id: str, user_id: str
+    ) -> None:
+        """
+        DELETE /accounts/projects/{project_id}/agent-grants/{agent_id}/{user_id}
+        Returns {} on success.
+        """
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-grants/{quote(agent_id, safe='')}/{quote(user_id, safe='')}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_agent_grant(
+        self, *, project_id: str, agent_id: str, user_id: str
+    ) -> ProjectAgentGrant:
+        """
+        GET /accounts/projects/{project_id}/agent-grants/{agent_id}/{user_id}
+        Returns ProjectAgentGrant
+        """
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-grants/{quote(agent_id, safe='')}/{quote(user_id, safe='')}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return ProjectAgentGrant.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agent grant payload: {exc}") from exc
+
+    async def create_agent_room_grant(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        room_id: str,
+        permissions: AgentRoomGrant | None = None,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-room-grants"
+        payload = _CreateAgentRoomGrantRequest(
+            agent_id=agent_id,
+            room_id=room_id,
+            permissions=permissions or AgentRoomGrant(),
+        ).model_dump(mode="json")
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def update_agent_room_grant(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        room_id: str,
+        permissions: AgentRoomGrant | None = None,
+        grant_id: Optional[str] = None,
+    ) -> None:
+        gid = grant_id or "unused"
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-room-grants/{gid}"
+        payload = _UpdateAgentRoomGrantRequest(
+            agent_id=agent_id,
+            room_id=room_id,
+            permissions=permissions or AgentRoomGrant(),
+        ).model_dump(mode="json")
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def delete_agent_room_grant(
+        self, *, project_id: str, agent_id: str, room_id: str
+    ) -> None:
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-room-grants/{quote(agent_id, safe='')}/{quote(room_id, safe='')}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def get_agent_room_grant(
+        self, *, project_id: str, agent_id: str, room_id: str
+    ) -> ProjectAgentRoomGrant:
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-room-grants/{quote(agent_id, safe='')}/{quote(room_id, safe='')}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return ProjectAgentRoomGrant.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agent room grant payload: {exc}") from exc
+
+    async def list_agent_room_grants_by_agent(
+        self,
+        *,
+        project_id: str,
+        agent_name: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ProjectAgentRoomGrant]:
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-room-grants/by-agent/{quote(agent_name, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    ProjectAgentRoomGrant.model_validate(item)
+                    for item in data["agent_room_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid agent room grants-by-agent payload: {exc}"
+                ) from exc
+
+    async def list_agent_room_grants_by_room(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ProjectAgentRoomGrant]:
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-room-grants/by-room/{quote(room_name, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    ProjectAgentRoomGrant.model_validate(item)
+                    for item in data["agent_room_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid agent room grants-by-room payload: {exc}"
+                ) from exc
+
     async def list_rooms(
         self,
         *,
@@ -3507,6 +4117,55 @@ class Meshagent:
             except ValidationError as exc:
                 raise RoomException(f"Invalid rooms list payload: {exc}") from exc
 
+    async def list_agents(
+        self,
+        *,
+        project_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "agent_name",
+        filter: Optional[str] = None,
+    ) -> List[ManagedAgent]:
+        """
+        GET /accounts/projects/{project_id}/agents?limit=&offset=&order_by=
+        Returns [Agents]
+        """
+        page = await self.list_agents_page(
+            project_id=project_id,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            filter=filter,
+        )
+        return page.agents
+
+    async def list_agents_page(
+        self,
+        *,
+        project_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "agent_name",
+        filter: Optional[str] = None,
+    ) -> AgentsPage:
+        """
+        GET /accounts/projects/{project_id}/agents?limit=&offset=&order_by=&filter=
+        Returns paged agents with total.
+        """
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        if filter is not None:
+            params["filter"] = filter
+        url = f"{self.base_url}/accounts/projects/{project_id}/agents"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return AgentsPage.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid agents list payload: {exc}") from exc
+
     async def list_room_grants(
         self,
         *,
@@ -3533,6 +4192,35 @@ class Meshagent:
                 ]
             except ValidationError as exc:
                 raise RoomException(f"Invalid room grants list payload: {exc}") from exc
+
+    async def list_agent_grants(
+        self,
+        *,
+        project_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: str = "agent_name",
+    ) -> List[ProjectAgentGrant]:
+        """
+        GET /accounts/projects/{project_id}/agent-grants?limit=&offset=&order_by=
+        Returns [ProjectAgentGrant]
+        """
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    ProjectAgentGrant.model_validate(item)
+                    for item in data["agent_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid agent grants list payload: {exc}"
+                ) from exc
 
     async def list_room_grants_by_user(
         self,
@@ -3593,6 +4281,65 @@ class Meshagent:
                     f"Invalid room grants-by-user payload: {exc}"
                 ) from exc
 
+    async def list_agent_grants_by_user(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "agent_name",
+        filter: Optional[str] = None,
+    ) -> List[ProjectAgentGrant]:
+        """
+        GET /accounts/projects/{project_id}/agent-grants/by-user/{user_id}?limit=&offset=&order_by=
+        Returns [ProjectAgentGrant]
+        """
+        page = await self.list_agent_grants_by_user_page(
+            project_id=project_id,
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            filter=filter,
+        )
+        return page.agent_grants
+
+    async def list_agent_grants_by_user_page(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        order_by: str = "agent_name",
+        filter: Optional[str] = None,
+    ) -> AgentGrantsPage:
+        """
+        GET /accounts/projects/{project_id}/agent-grants/by-user/{user_id}?limit=&offset=&order_by=&filter=
+        Returns paged agent grants with total.
+        """
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        if filter is not None:
+            params["filter"] = filter
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-grants/by-user/{quote(user_id, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return AgentGrantsPage.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid agent grants-by-user payload: {exc}"
+                ) from exc
+
     async def list_room_grants_by_room(
         self,
         *,
@@ -3627,6 +4374,73 @@ class Meshagent:
                     f"Invalid room grants-by-room payload: {exc}"
                 ) from exc
 
+    async def list_agent_grants_by_agent(
+        self,
+        *,
+        project_id: str,
+        agent_name: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ProjectAgentGrant]:
+        """
+        GET /accounts/projects/{project_id}/agent-grants/by-agent/{agent_name}?limit=&offset=
+        Returns [ProjectAgentGrant]
+        """
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/agent-grants/by-agent/{quote(agent_name, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    ProjectAgentGrant.model_validate(item)
+                    for item in data["agent_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid agent grants-by-agent payload: {exc}"
+                ) from exc
+
+    async def list_agent_members_by_agent(
+        self,
+        *,
+        project_id: str,
+        agent_name: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[UserAgentGrant]:
+        """
+        GET /accounts/projects/{project_id}/members/by-agent/{agent_name}?limit=&offset=
+        Returns [UserAgentGrant]
+        """
+        from urllib.parse import quote
+
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/members/by-agent/{quote(agent_name, safe='')}"
+        )
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            try:
+                return [
+                    UserAgentGrant.model_validate(item) for item in data["agent_grants"]
+                ]
+            except ValidationError as exc:
+                raise RoomException(
+                    f"Invalid agent members-by-agent payload: {exc}"
+                ) from exc
+
     async def list_unique_rooms_with_grants(
         self,
         *,
@@ -3651,6 +4465,29 @@ class Meshagent:
                 # tolerate either key name
                 out.append(ProjectRoomGrantCount.model_validate(item))
             return out
+
+    async def list_unique_agents_with_grants(
+        self,
+        *,
+        project_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[ProjectAgentGrantCount]:
+        """
+        GET /accounts/projects/{project_id}/agent-grants/by-agent?limit=&offset=
+        Returns [ProjectAgentGrantCount].
+        """
+        params = {"limit": str(limit), "offset": str(offset)}
+        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants/by-agent"
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            return [
+                ProjectAgentGrantCount.model_validate(item)
+                for item in data.get("agents", [])
+            ]
 
     async def list_unique_users_with_grants(
         self,

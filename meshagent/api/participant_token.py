@@ -2,8 +2,7 @@ import os
 import jwt
 from typing import Optional, List, Literal
 from datetime import datetime
-import json
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 import logging
 from .keys import parse_api_key
 from .oauth import OAuthClientConfig, ConnectorRef
@@ -625,6 +624,13 @@ class ParticipantGrant:
 
     @staticmethod
     def from_json(data: dict) -> "ParticipantGrant":
+        if not isinstance(data, dict):
+            raise ValueError("participant grant must be a JSON object")
+        if "name" not in data:
+            raise ValueError("participant grant is missing required field: name")
+        if "scope" not in data:
+            raise ValueError("participant grant is missing required field: scope")
+
         if data["name"] == "api":
             scope = ApiScope.model_validate(data["scope"])
         else:
@@ -682,6 +688,9 @@ class ParticipantToken:
 
     def add_room_grant(self, room_name: str):
         self.grants.append(ParticipantGrant(name="room", scope=room_name))
+
+    def add_agent_grant(self, agent_name: str):
+        self.grants.append(ParticipantGrant(name="agent", scope=agent_name))
 
     def add_api_grant(self, grant: ApiScope):
         for g in self.grants:
@@ -770,14 +779,22 @@ class ParticipantToken:
 
     @staticmethod
     def from_json(data: dict) -> "ParticipantToken":
+        if not isinstance(data, dict):
+            raise ValueError("participant token must be a JSON object")
+
         data = data.copy()
         if "name" not in data:
-            raise Exception(
-                f"Participant token does not have a name {json.dumps(data)}"
-            )
+            raise ValueError("participant token is missing required field: name")
+        if "grants" not in data:
+            raise ValueError("participant token is missing required field: grants")
 
         name = data.pop("name")
         grants = data.pop("grants")
+        if not isinstance(name, str) or name.strip() == "":
+            raise ValueError("participant token field must be a non-empty string: name")
+        if not isinstance(grants, list):
+            raise ValueError("participant token field must be a list: grants")
+
         project_id = None
         api_key_id = None
 
@@ -813,7 +830,12 @@ class ParticipantToken:
         else:
             decoded = jwt.decode(jwt=jwt_str, options={"verify_signature": False})
 
-        return ParticipantToken.from_json(decoded)
+        try:
+            return ParticipantToken.from_json(decoded)
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise jwt.InvalidTokenError(
+                "JWT payload is not a valid participant token"
+            ) from exc
 
 
 class ParticipantTokenSpec(BaseModel):
