@@ -21,6 +21,7 @@ class AgentTextContent(AgentContent):
 class AgentFileContent(AgentContent):
     type: Literal[AGENT_CONTENT_TYPE_FILE]
     url: str
+    name: str | None = None
 
 
 class AgentAudioContent(AgentContent):

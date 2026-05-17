@@ -17,6 +17,49 @@ def test_managed_agent_spec_accepts_missing_id_with_metadata_name():
     assert spec.id is None
     assert spec.name == "planner"
     assert spec.metadata.name == "planner"
+    assert spec.thread_isolation == "global"
+    assert spec.store is True
+
+
+def test_managed_agent_spec_accepts_disabled_storage():
+    spec = ManagedAgentSpec.model_validate(
+        {
+            "version": "v1",
+            "kind": "ManagedAgent",
+            "metadata": {"name": "planner"},
+            "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+            "store": False,
+        }
+    )
+
+    assert spec.store is False
+
+
+def test_managed_agent_spec_accepts_participant_thread_isolation():
+    spec = ManagedAgentSpec.model_validate(
+        {
+            "version": "v1",
+            "kind": "ManagedAgent",
+            "metadata": {"name": "planner"},
+            "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+            "thread_isolation": "participant",
+        }
+    )
+
+    assert spec.thread_isolation == "participant"
+
+
+def test_managed_agent_spec_rejects_invalid_thread_isolation():
+    with pytest.raises(ValidationError):
+        ManagedAgentSpec.model_validate(
+            {
+                "version": "v1",
+                "kind": "ManagedAgent",
+                "metadata": {"name": "planner"},
+                "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+                "thread_isolation": "private",
+            }
+        )
 
 
 def test_managed_agent_storage_mount_accepts_agent_path():

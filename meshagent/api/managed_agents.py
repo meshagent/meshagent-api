@@ -24,6 +24,8 @@ ManagedAllowedModel = Annotated[
     Field(discriminator="provider"),
 ]
 
+ManagedAgentThreadIsolation = Literal["global", "participant"]
+
 
 class ManagedAgentStorageMount(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -206,9 +208,11 @@ class ManagedAgentSpec(BaseModel):
     id: str | None = None
     metadata: ManagedAgentMetadata
     allowed_models: list[ManagedAllowedModel]
+    thread_isolation: ManagedAgentThreadIsolation = "global"
     instructions: str | None = None
     toolkits: list[ManagedToolkit] | None = None
     output_modalities: list[str] | None = None
+    store: bool = True
 
     @model_validator(mode="before")
     @classmethod
