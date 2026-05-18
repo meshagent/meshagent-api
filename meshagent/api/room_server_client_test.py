@@ -422,7 +422,6 @@ class _FakeRoom:
         input: str | dict | Content | None = None,
         participant_id: str | None = None,
         on_behalf_of_id: str | None = None,
-        caller_context: dict | None = None,
     ) -> None:
         if input is None:
             arguments: dict[str, object] = {"type": "empty"}
@@ -445,8 +444,6 @@ class _FakeRoom:
             "arguments": arguments,
             "tool_call_id": uuid.uuid4().hex,
         }
-        if caller_context is not None:
-            request["caller_context"] = caller_context
         self.requests.append(("room.invoke_tool", request, data))
 
     async def send_request(
@@ -2665,7 +2662,6 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
             input: str | dict | Content | None = None,
             participant_id: str | None = None,
             on_behalf_of_id: str | None = None,
-            caller_context: dict | None = None,
         ) -> None:
             super().invoke_nowait(
                 toolkit=toolkit,
@@ -2673,7 +2669,6 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
                 input=input,
                 participant_id=participant_id,
                 on_behalf_of_id=on_behalf_of_id,
-                caller_context=caller_context,
             )
             if tool == "enable":
                 assert self.messaging_client is not None
@@ -3612,7 +3607,6 @@ async def test_storage_client_move_uses_room_invoke() -> None:
             "destination_path": "folder/destination.txt",
             "overwrite": True,
         },
-        "caller_context": None,
     }
 
 

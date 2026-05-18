@@ -1753,7 +1753,6 @@ class RoomClient:
         input: str | dict | Content | None = None,
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
-        caller_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         if input is None:
             input = EmptyContent()
@@ -1771,9 +1770,6 @@ class RoomClient:
             "arguments": request_header,
             "tool_call_id": uuid.uuid4().hex,
         }
-        if caller_context is not None:
-            request_payload["caller_context"] = caller_context
-
         self._send_room_request_nowait(
             "room.invoke_tool",
             request_payload,
@@ -2193,7 +2189,6 @@ class RoomClient:
         input: str | dict | Content | AsyncIterable[Content] | None = None,
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
-        caller_context: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Content | AsyncIterator[Content]:
         if "arguments" in kwargs and input is None:
@@ -2239,9 +2234,6 @@ class RoomClient:
             raise RoomException(
                 "invoke_tool input must be str, dict, Content, or an async iterable of Content values"
             )
-
-        if caller_context is not None:
-            request_payload["caller_context"] = caller_context
 
         request_payload["tool_call_id"] = resolved_tool_call_id
 
@@ -2327,7 +2319,6 @@ class RoomClient:
             # Parse top-level toolkit properties
             title = tk_json.get("title", "")
             description = tk_json.get("description", "")
-            thumbnail_url = tk_json.get("thumbnail_url", None)
             participant_id = tk_json.get("participant_id", None)
 
             # Tools are usually a dict keyed by tool name
@@ -2380,9 +2371,7 @@ class RoomClient:
                         description=tool_json.get("description", ""),
                         input_spec=input_spec,
                         output_spec=output_spec,
-                        thumbnail_url=tool_json.get("thumbnail_url", None),
                         defs=tool_json.get("defs", None),
-                        pricing=tool_json.get("pricing", None),
                         strict=strict if isinstance(strict, bool) else None,
                     )
                 )
@@ -2393,7 +2382,6 @@ class RoomClient:
                     title=title,
                     description=description,
                     tools=tools,
-                    thumbnail_url=thumbnail_url,
                     participant_id=participant_id,
                 )
             )
@@ -3037,9 +3025,7 @@ class ToolDescription:
         description: str,
         input_spec: ToolContentSpec | None = None,
         output_spec: ToolContentSpec | None = None,
-        thumbnail_url: Optional[str] = None,
         defs: Optional[dict] = None,
-        pricing: Optional[str] = None,
         strict: Optional[bool] = None,
     ):
         self.name = name
@@ -3048,9 +3034,7 @@ class ToolDescription:
         self.input_spec = input_spec
         self.output_spec = output_spec
 
-        self.thumbnail_url = thumbnail_url
         self.defs = defs
-        self.pricing = pricing
         self.strict = strict
 
     @property
@@ -3070,7 +3054,6 @@ class ToolDescription:
             "name": self.name,
             "description": self.description,
             "title": self.title,
-            "thumbnail_url": self.thumbnail_url,
             "input_spec": None
             if self.input_spec is None
             else self.input_spec.to_json(),
@@ -3078,7 +3061,6 @@ class ToolDescription:
             if self.output_spec is None
             else self.output_spec.to_json(),
             "defs": self.defs,
-            "pricing": self.pricing,
             "strict": self.strict,
         }
 
@@ -3091,14 +3073,12 @@ class ToolkitDescription:
         title: str,
         description: str,
         tools: List[ToolDescription],
-        thumbnail_url: Optional[str] = None,
         participant_id: Optional[str] = None,
     ):
         self.name = name
         self.title = title
         self.description = description
         self.tools = tools
-        self.thumbnail_url = thumbnail_url
         self.participant_id = participant_id
 
     def get_tool(self, name: str) -> ToolDescription | None:
@@ -3113,7 +3093,6 @@ class ToolkitDescription:
             "name": self.name,
             "description": self.description,
             "title": self.title,
-            "thumbnail_url": self.thumbnail_url,
             "tools": list(map(lambda x: x.to_json(), self.tools)),
             "participant_id": self.participant_id,
         }
@@ -3469,7 +3448,6 @@ class AgentsClient:
         input: str | dict | Content | AsyncIterable[Content] | None = None,
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
-        caller_context: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Content | AsyncIterator[Content]:
         return await self.room.invoke(
@@ -3478,7 +3456,6 @@ class AgentsClient:
             input=input,
             participant_id=participant_id,
             on_behalf_of_id=on_behalf_of_id,
-            caller_context=caller_context,
             **kwargs,
         )
 
@@ -3611,13 +3588,11 @@ class StorageClient:
         *,
         operation: str,
         input: dict | Content,
-        caller_context: Optional[dict[str, Any]] = None,
     ) -> Content:
         response = await self.room.invoke(
             toolkit="storage",
             tool=operation,
             input=input,
-            caller_context=caller_context,
         )
         if not isinstance(response, Content):
             raise self._unexpected_response_error(operation=operation)
