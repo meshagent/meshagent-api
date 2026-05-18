@@ -62,26 +62,22 @@ def test_managed_agent_spec_rejects_invalid_thread_isolation():
         )
 
 
-def test_managed_agent_storage_mount_accepts_agent_path():
-    spec = ManagedAgentSpec.model_validate(
-        {
-            "version": "v1",
-            "kind": "ManagedAgent",
-            "metadata": {"name": "planner"},
-            "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
-            "toolkits": [
-                {
-                    "type": "storage",
-                    "mounts": [{"type": "agent", "path": "/agent2"}],
-                }
-            ],
-        }
-    )
-
-    assert spec.toolkits is not None
-    storage_toolkit = spec.toolkits[0]
-    assert storage_toolkit.type == "storage"
-    assert storage_toolkit.mounts[0].path == "/agent2"
+def test_managed_agent_spec_rejects_storage_toolkit():
+    with pytest.raises(ValidationError):
+        ManagedAgentSpec.model_validate(
+            {
+                "version": "v1",
+                "kind": "ManagedAgent",
+                "metadata": {"name": "planner"},
+                "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+                "toolkits": [
+                    {
+                        "type": "storage",
+                        "mounts": [{"type": "agent", "path": "/agent2"}],
+                    }
+                ],
+            }
+        )
 
 
 def test_managed_agent_spec_accepts_image_generation_toolkit():
@@ -110,7 +106,7 @@ def test_managed_agent_spec_accepts_image_generation_toolkit():
     assert toolkit.quality == "high"
 
 
-def test_managed_agent_storage_mount_requires_path():
+def test_managed_agent_spec_rejects_shell_toolkit():
     with pytest.raises(ValidationError):
         ManagedAgentSpec.model_validate(
             {
@@ -120,50 +116,8 @@ def test_managed_agent_storage_mount_requires_path():
                 "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
                 "toolkits": [
                     {
-                        "type": "storage",
-                        "mounts": [{"type": "agent"}],
-                    }
-                ],
-            }
-        )
-
-
-def test_managed_agent_storage_mount_forbids_unknown_fields():
-    with pytest.raises(ValidationError):
-        ManagedAgentSpec.model_validate(
-            {
-                "version": "v1",
-                "kind": "ManagedAgent",
-                "metadata": {"name": "planner"},
-                "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
-                "toolkits": [
-                    {
-                        "type": "storage",
-                        "mounts": [
-                            {
-                                "type": "agent",
-                                "path": "/agent",
-                                "unexpected": "value",
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-
-
-def test_managed_agent_room_mount_requires_room_name():
-    with pytest.raises(ValidationError):
-        ManagedAgentSpec.model_validate(
-            {
-                "version": "v1",
-                "kind": "ManagedAgent",
-                "metadata": {"name": "planner"},
-                "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
-                "toolkits": [
-                    {
-                        "type": "storage",
-                        "mounts": [{"type": "room", "path": "/jesse"}],
+                        "type": "shell",
+                        "room_name": "workspace",
                     }
                 ],
             }

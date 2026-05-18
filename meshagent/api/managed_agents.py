@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AllowedModel(BaseModel):
@@ -27,51 +27,10 @@ ManagedAllowedModel = Annotated[
 ManagedAgentThreadIsolation = Literal["global", "participant"]
 
 
-class ManagedAgentStorageMount(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: str
-    path: str
-    read_only: bool = False
-    subpath: str | None = None
-
-    @field_validator("path")
-    @classmethod
-    def validate_path(cls, path: str) -> str:
-        if path == "" or not path.startswith("/"):
-            raise ValueError("path must be an absolute storage path")
-        return path
-
-
-class ManagedAgentRoomMount(ManagedAgentStorageMount):
-    type: Literal["room"] = "room"
-    room_name: str
-
-
-class ManagedAgentProjectMount(ManagedAgentStorageMount):
-    type: Literal["project"] = "project"
-    room_name: str
-
-
-class ManagedAgentAgentMount(ManagedAgentStorageMount):
-    type: Literal["agent"] = "agent"
-
-
-ManagedStorageMount = Annotated[
-    ManagedAgentRoomMount | ManagedAgentProjectMount | ManagedAgentAgentMount,
-    Field(discriminator="type"),
-]
-
-
 class ManagedAgentToolkit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: str
-
-
-class ManagedAgentStorageToolkit(ManagedAgentToolkit):
-    type: Literal["storage"] = "storage"
-    mounts: list[ManagedStorageMount]
 
 
 class ManagedAgentWebSearch(ManagedAgentToolkit):
@@ -93,12 +52,6 @@ class ManagedAgentImageGeneration(ManagedAgentToolkit):
     partial_images: int | None = 1
     quality: Literal["auto", "low", "medium", "high"] | None = None
     size: Literal["1024x1024", "1024x1536", "1536x1024", "auto"] | None = None
-
-
-class ManagedAgentShell(ManagedAgentToolkit):
-    type: Literal["shell"] = "shell"
-    room_name: str
-    image: str = "meshagent/python:default"
 
 
 class AgentSecretRef(BaseModel):
@@ -185,11 +138,9 @@ class ManagedAgentMCPToolkit(ManagedAgentToolkit):
 
 
 ManagedToolkit = Annotated[
-    ManagedAgentStorageToolkit
-    | ManagedAgentWebSearch
+    ManagedAgentWebSearch
     | ManagedAgentWebFetch
     | ManagedAgentImageGeneration
-    | ManagedAgentShell
     | ManagedAgentMCPToolkit,
     Field(discriminator="type"),
 ]
