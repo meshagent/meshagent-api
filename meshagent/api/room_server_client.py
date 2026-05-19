@@ -3209,6 +3209,7 @@ class _ToolCallChunkStream:
         self._queue = asyncio.Queue[Optional[Content]]()
         self._error: Optional[BaseException] = None
         self._closed = False
+        self._closed_with_result = False
         self._opened = False
         self._request_stream_task: Optional[asyncio.Task[None]] = None
         self._request_stream_drain_task: Optional[asyncio.Task[None]] = None
@@ -3261,6 +3262,7 @@ class _ToolCallChunkStream:
             return
 
         self._closed = True
+        self._closed_with_result = result is not None
 
         if error is not None:
             self._error = error
@@ -3271,6 +3273,7 @@ class _ToolCallChunkStream:
         if (
             self._request_stream_task is not None
             and not self._request_stream_task.done()
+            and not self._closed_with_result
         ):
             self._request_stream_task.cancel()
             if (
@@ -3299,7 +3302,15 @@ class _ToolCallChunkStream:
 
         awaitables: list[asyncio.Future[Any] | asyncio.Task[Any]] = []
         if request_stream_task is not None and not request_stream_task.done():
-            awaitables.append(request_stream_task)
+            if self._closed_with_result:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        asyncio.shield(request_stream_task),
+                        timeout=0.5,
+                    )
+            if not request_stream_task.done():
+                request_stream_task.cancel()
+                awaitables.append(request_stream_task)
         if not task.done():
             awaitables.append(task)
         if awaitables:
