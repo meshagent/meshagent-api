@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     ConfigDict,
     field_validator,
+    model_validator,
 )
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
@@ -19,6 +20,11 @@ from meshagent.api.oauth import ConnectorRef, OAuthClientConfig
 from datetime import datetime
 from meshagent.api.specs.service import (
     ContainerSpec,
+    RouteBackendSpec,
+    RouteMetadata,
+    RoutePathSpec,
+    RouteRoomBackendSpec,
+    RouteSpec,
     ScheduledTaskSpec,
     ServiceSpec,
     ServiceTemplateSpec,
@@ -467,23 +473,55 @@ class Mailbox(BaseModel):
 
 
 class _CreateRouteRequest(BaseModel):
-    domain: str
-    room_name: str
-    port: str
-    annotations: Optional[dict[str, str]] = None
+    spec: RouteSpec
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_request(cls, value: object) -> object:
+        if not isinstance(value, dict) or "spec" in value:
+            return value
+        return {"spec": RouteSpec.model_validate(value)}
 
 
 class _UpdateRouteRequest(BaseModel):
-    room_name: str
-    port: str
-    annotations: Optional[dict[str, str]] = None
+    spec: RouteSpec
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_request(cls, value: object) -> object:
+        if not isinstance(value, dict) or "spec" in value:
+            return value
+        return {"spec": RouteSpec.model_validate(value)}
 
 
 class Route(BaseModel):
     domain: str
-    room_name: str
-    port: str
-    annotations: dict[str, str]
+    spec: RouteSpec
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_route(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if "spec" in value:
+            return value
+        spec = RouteSpec.model_validate(value)
+        return {"domain": spec.domain, "spec": spec}
+
+    @property
+    def room_name(self) -> str:
+        room_name = self.spec.room_name
+        return room_name or ""
+
+    @property
+    def port(self) -> str:
+        if len(self.spec.paths) == 0:
+            return ""
+        return str(self.spec.paths[0].targetPort)
+
+    @property
+    def annotations(self) -> dict[str, str]:
+        return self.spec.annotations
 
 
 FeedVisibility = Literal["public", "project", "private"]
@@ -1910,20 +1948,30 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        domain: str,
-        room_name: str,
-        port: str,
+        spec: RouteSpec | None = None,
+        domain: str | None = None,
+        room_name: str | None = None,
+        port: str | None = None,
         annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         POST /accounts/projects/{project_id}/routes
-        Body: { "domain", "room_name" }
+        Body: { "spec": RouteSpec }
         Returns {} on success.
         """
+        if spec is None:
+            if domain is None or room_name is None or port is None:
+                raise ValueError(
+                    "create_route requires spec or domain, room_name, and port"
+                )
+            spec = RouteSpec(
+                metadata=RouteMetadata(name=domain, annotations=annotations or {}),
+                domain=domain,
+                backend=RouteBackendSpec(room=RouteRoomBackendSpec(name=room_name)),
+                paths=[RoutePathSpec(path="/", targetPort=port)],
+            )
         url = f"{self.base_url}/accounts/projects/{project_id}/routes"
-        payload = _CreateRouteRequest(
-            domain=domain, room_name=room_name, port=port, annotations=annotations
-        ).model_dump(mode="json")
+        payload = _CreateRouteRequest(spec=spec).model_dump(mode="json")
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
@@ -1934,21 +1982,27 @@ class Meshagent:
         *,
         project_id: str,
         domain: str,
-        room_name: str,
-        port: str,
+        spec: RouteSpec | None = None,
+        room_name: str | None = None,
+        port: str | None = None,
         annotations: Optional[dict[str, str]] = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/routes/{domain}
-        Body: { "room_name" }
+        Body: { "spec": RouteSpec }
         Returns {} on success.
         """
+        if spec is None:
+            if room_name is None or port is None:
+                raise ValueError("update_route requires spec or room_name and port")
+            spec = RouteSpec(
+                metadata=RouteMetadata(name=domain, annotations=annotations or {}),
+                domain=domain,
+                backend=RouteBackendSpec(room=RouteRoomBackendSpec(name=room_name)),
+                paths=[RoutePathSpec(path="/", targetPort=port)],
+            )
         url = f"{self.base_url}/accounts/projects/{project_id}/routes/{domain}"
-        payload = _UpdateRouteRequest(
-            room_name=room_name,
-            port=port,
-            annotations=annotations,
-        ).model_dump(mode="json")
+        payload = _UpdateRouteRequest(spec=spec).model_dump(mode="json")
         async with self._session.put(
             url, headers=self._get_headers(), json=payload
         ) as resp:

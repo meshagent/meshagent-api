@@ -413,6 +413,123 @@ class ScheduledTaskSpec(BaseModel):
         return ScheduledTaskSpec.model_validate(obj)
 
 
+class RouteMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
+class RouteRoomBackendSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class RouteAgentBackendSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class RouteBackendSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    room: RouteRoomBackendSpec | None = None
+    agent: RouteAgentBackendSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "RouteBackendSpec":
+        targets = [self.room is not None, self.agent is not None]
+        if sum(targets) != 1:
+            raise ValueError("RouteSpec backend requires exactly one of room or agent")
+        return self
+
+
+class RoutePathSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = "/"
+    pathType: Literal["prefix", "exact"] = "prefix"
+    targetPort: str | int
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("RouteSpec paths must start with /")
+        return value
+
+    @field_validator("targetPort")
+    @classmethod
+    def validate_target_port(cls, value: str | int) -> str | int:
+        if isinstance(value, str) and value.strip() == "":
+            raise ValueError("RouteSpec targetPort must not be empty")
+        return value
+
+
+class RouteSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["v1"] = "v1"
+    kind: Literal["Route"] = "Route"
+    metadata: RouteMetadata
+    domain: str
+    backend: RouteBackendSpec
+    paths: list[RoutePathSpec] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_route(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if "backend" in value:
+            return value
+        if "room_name" not in value:
+            return value
+        domain = value.get("domain")
+        room_name = value.get("room_name")
+        port = value.get("port")
+        annotations = value.get("annotations") or {}
+        return {
+            "version": "v1",
+            "kind": "Route",
+            "metadata": {"name": str(domain or ""), "annotations": annotations},
+            "domain": domain,
+            "backend": {"room": {"name": room_name}},
+            "paths": [{"path": "/", "pathType": "prefix", "targetPort": port}],
+        }
+
+    @model_validator(mode="after")
+    def validate_paths(self) -> "RouteSpec":
+        if self.backend.room is not None and len(self.paths) == 0:
+            raise ValueError("RouteSpec room backend requires at least one path")
+        if self.backend.agent is not None and len(self.paths) != 0:
+            raise ValueError("RouteSpec agent backend does not support paths")
+        return self
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
+
+    @property
+    def annotations(self) -> dict[str, str]:
+        return self.metadata.annotations
+
+    @property
+    def room_name(self) -> str | None:
+        return self.backend.room.name if self.backend.room is not None else None
+
+    @property
+    def agent_name(self) -> str | None:
+        return self.backend.agent.name if self.backend.agent is not None else None
+
+    @staticmethod
+    def from_yaml(yaml: str) -> "RouteSpec":
+        YAML, _ = _yaml_support()
+        return RouteSpec.model_validate(YAML.safe_load(yaml))
+
+
 class ExternalServiceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: Optional[str] = None
