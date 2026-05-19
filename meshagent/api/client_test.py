@@ -411,6 +411,35 @@ async def test_can_use_llm_proxy_reads_role_capability_flag():
 
 
 @pytest.mark.asyncio
+async def test_can_create_rooms_reads_current_user_role_capability_flag():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "role": "member",
+                    "can_create_rooms": True,
+                    "can_use_llm_proxy": False,
+                    "is_developer": False,
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    can_create_rooms = await client.can_create_rooms("proj_123")
+
+    assert can_create_rooms is True
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/role",
+            None,
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_project_secret_sends_base64_payload():
     session = _FakeSession([_FakeResponse(status=200, payload={"id": "secret-1"})])
     client = Meshagent(base_url="http://example.test", token="token", session=session)

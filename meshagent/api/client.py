@@ -2,7 +2,7 @@ import aiohttp
 import base64
 import json
 import re
-from typing import Any, Dict, List, Optional, Literal, TypeVar, cast
+from typing import Any, Dict, List, Optional, Literal, TypeVar
 from pydantic import (
     BaseModel,
     ValidationError,
@@ -441,6 +441,15 @@ def _parse_secret_payload(*, secret: ManagedSecretInfo, raw_data: bytes) -> Secr
 
 
 ProjectRole = Literal["member", "admin", "developer", "none"]
+
+
+class ProjectRoleInfo(BaseModel):
+    role: ProjectRole
+    can_create_rooms: bool = False
+    can_create_agents: bool = False
+    can_use_llm_proxy: bool = False
+    is_admin: bool = False
+    is_developer: bool = False
 
 
 class _CreateMailboxRequest(BaseModel):
@@ -1012,30 +1021,38 @@ class Meshagent:
         Corresponds to: GET /accounts/projects/{id}/role
         Returns a JSON dict with { "role" : "member" | "admin" } on success.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/role"
+        return (await self.get_project_role_info(project_id)).role
 
+    async def get_project_role_info(self, project_id: str) -> ProjectRoleInfo:
+        """
+        Corresponds to: GET /accounts/projects/{id}/role
+        Returns role and current-user project permission metadata.
+        """
+        url = f"{self.base_url}/accounts/projects/{project_id}/role"
         async with self._session.get(
             url,
             headers=self._get_headers(),
         ) as resp:
             await self._raise_for_status(resp)
-            payload = await resp.json()
-            return cast(ProjectRole, payload["role"])
+            try:
+                return ProjectRoleInfo.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid project role payload: {exc}") from exc
 
     async def can_use_llm_proxy(self, project_id: str) -> bool:
         """
         Corresponds to: GET /accounts/projects/{id}/role
         Returns whether the current user can use the project LLM proxy.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/role"
+        return (await self.get_project_role_info(project_id)).can_use_llm_proxy
 
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-        ) as resp:
-            await self._raise_for_status(resp)
-            payload = await resp.json()
-            return bool(payload.get("can_use_llm_proxy", False))
+    async def can_create_rooms(self, project_id: str) -> bool:
+        """
+        Corresponds to: GET /accounts/projects/{id}/role
+        Returns whether the current user can create rooms in the project.
+        """
+        role_info = await self.get_project_role_info(project_id)
+        return role_info.is_developer or role_info.can_create_rooms
 
     async def create_share(
         self, project_id: str, settings: Optional[dict] = None
