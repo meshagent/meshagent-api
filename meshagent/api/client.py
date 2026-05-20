@@ -593,6 +593,7 @@ class Feed(BaseModel):
 class _FeedSubscriptionRequestBase(BaseModel):
     room: str
     path: str
+    filename_datetime_format: Optional[str] = None
     annotations: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("room")
@@ -617,6 +618,7 @@ class _CreateFeedSubscriptionRequest(_FeedSubscriptionRequestBase):
 
 
 class _UpdateFeedSubscriptionRequest(BaseModel):
+    filename_datetime_format: Optional[str] = None
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
@@ -627,6 +629,7 @@ class FeedSubscription(BaseModel):
     room: str
     room_id: Optional[str] = None
     path: str
+    filename_datetime_format: Optional[str] = None
     created_at: datetime
     annotations: dict[str, str] = Field(default_factory=dict)
 
@@ -2317,6 +2320,7 @@ class Meshagent:
         feed_id: str,
         room: str,
         path: str,
+        filename_datetime_format: Optional[str] = None,
         annotations: Optional[dict[str, str]] = None,
     ) -> FeedSubscription:
         url = (
@@ -2326,8 +2330,9 @@ class Meshagent:
         payload = _CreateFeedSubscriptionRequest(
             room=room,
             path=path,
+            filename_datetime_format=filename_datetime_format,
             annotations=annotations or {},
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude_none=True)
         async with self._session.post(
             url,
             headers=self._get_headers(),
@@ -2342,6 +2347,7 @@ class Meshagent:
         project_id: str,
         feed_id: str,
         subscription_id: str,
+        filename_datetime_format: Optional[str] = None,
         annotations: Optional[dict[str, str]] = None,
     ) -> None:
         url = (
@@ -2349,8 +2355,9 @@ class Meshagent:
             f"/subscriptions/{subscription_id}"
         )
         payload = _UpdateFeedSubscriptionRequest(
+            filename_datetime_format=filename_datetime_format,
             annotations=annotations or {},
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude_none=True)
         async with self._session.put(
             url,
             headers=self._get_headers(),
