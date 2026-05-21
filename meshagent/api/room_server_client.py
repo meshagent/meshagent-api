@@ -13,7 +13,11 @@ from meshagent.api.protocol import (
     ProtocolCloseKind,
     ProtocolReconnectUnsupportedError,
 )
-from meshagent.api.specs.service import ContainerMountSpec, ServiceSpec
+from meshagent.api.specs.service import (
+    ContainerMountSpec,
+    ContainerTemplate,
+    ServiceSpec,
+)
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api.participant_token import ApiScope
 from pydantic import (
@@ -7612,6 +7616,7 @@ class _RunRequest(BaseModel):
     name: Optional[str] = None
     annotations: Optional[Dict[str, str]] = None
     mounts: Optional[ContainerMountSpec] = None
+    template: Optional[ContainerTemplate] = "none"
     writable_root_fs: Optional[bool] = None
     private: Optional[bool] = None
 
@@ -8217,6 +8222,7 @@ class ContainersClient:
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
         mounts: Optional[ContainerMountSpec] = None,
+        template: Optional[ContainerTemplate] = "none",
         writable_root_fs: Optional[bool] = None,
         private: Optional[bool] = None,
     ) -> str:
@@ -8242,6 +8248,7 @@ class ContainersClient:
                 "mounts": mounts.model_dump(mode="json", exclude_none=True)
                 if mounts is not None
                 else None,
+                "template": template,
                 "writable_root_fs": writable_root_fs,
                 "private": private,
             },

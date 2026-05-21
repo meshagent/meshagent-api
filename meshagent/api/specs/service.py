@@ -18,6 +18,7 @@ import json
 
 
 MIN_SCHEDULED_TASK_INTERVAL_SECONDS = 15 * 60
+ContainerTemplate = Literal["agent", "none"]
 _SCHEDULE_INTERVAL_RE = re.compile(
     r"^\s*(?P<count>\d+)\s+(?P<unit>second|seconds|minute|minutes|hour|hours|day|days)\s*$",
     re.IGNORECASE,
@@ -339,6 +340,15 @@ class ServiceMetadata(BaseModel):
 class ContainerSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     image: str
+    template: Optional[ContainerTemplate] = Field(
+        "agent",
+        description=(
+            "container defaults to apply. 'agent' mounts room storage at /data "
+            "and injects MeshAgent/OpenAI/Anthropic proxy environment variables "
+            "with a token that has default agent permissions unless manually "
+            "overridden. 'none' applies no defaults."
+        ),
+    )
 
     command: Optional[str] = None
     working_dir: Optional[str] = None
@@ -717,6 +727,15 @@ class ContainerTemplateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     environment: Optional[list[TemplateEnvironmentVariable]] = None
     image: Optional[str] = None
+    template: Optional[ContainerTemplate] = Field(
+        "agent",
+        description=(
+            "container defaults to apply. 'agent' mounts room storage at /data "
+            "and injects MeshAgent/OpenAI/Anthropic proxy environment variables "
+            "with a token that has default agent permissions unless manually "
+            "overridden. 'none' applies no defaults."
+        ),
+    )
     command: Optional[str] = None
     working_dir: Optional[str] = None
     storage: Optional[ServiceTemplateContainerMountSpec] = None
@@ -816,6 +835,7 @@ class ServiceTemplateSpec(BaseModel):
                 command=self.container.command,
                 working_dir=self.container.working_dir,
                 image=self.container.image,
+                template=self.container.template,
                 environment=env,
                 storage=ContainerMountSpec(
                     room=self.container.storage.room,
