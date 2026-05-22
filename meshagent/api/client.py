@@ -2,6 +2,7 @@ import aiohttp
 import base64
 import json
 import re
+from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Literal, TypeVar
 from pydantic import (
     BaseModel,
@@ -2700,6 +2701,26 @@ class Meshagent:
             except ValidationError as exc:
                 raise RoomException(f"Invalid service payload: {exc}") from exc
 
+    async def get_service_by_name(
+        self, *, project_id: str, service_name: str
+    ) -> ServiceSpec:
+        """
+        GET /accounts/projects/{project_id}/services/by-name/{service_name}
+        Returns a `Service` instance.
+        """
+        service_name_path = quote(service_name, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/services/by-name/{service_name_path}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            raw = await resp.text()
+            try:
+                return ServiceSpec.model_validate_json(raw)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid service payload: {exc}") from exc
+
     async def list_services(self, *, project_id: str) -> List[ServiceSpec]:
         """
         GET /accounts/projects/{project_id}/services
@@ -2852,6 +2873,27 @@ class Meshagent:
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             # Handler returns a JSON string, so we read text then validate
+            raw = await resp.text()
+            try:
+                return ServiceSpec.model_validate_json(raw)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid service payload: {exc}") from exc
+
+    async def get_room_service_by_name(
+        self, *, project_id: str, room_name: str, service_name: str
+    ) -> ServiceSpec:
+        """
+        GET /accounts/projects/{project_id}/rooms/{room_name}/services/by-name/{service_name}
+        Returns a `Service` instance.
+        """
+        room_name_path = quote(room_name, safe="")
+        service_name_path = quote(service_name, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name_path}"
+            f"/services/by-name/{service_name_path}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
             raw = await resp.text()
             try:
                 return ServiceSpec.model_validate_json(raw)

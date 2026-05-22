@@ -254,6 +254,68 @@ async def test_create_room_service_omits_client_supplied_id():
 
 
 @pytest.mark.asyncio
+async def test_get_service_by_name_uses_by_name_endpoint():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "version": "v1",
+                    "kind": "Service",
+                    "id": "svc_123",
+                    "metadata": {"name": "worker"},
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    service = await client.get_service_by_name(
+        project_id="proj_123", service_name="worker/service"
+    )
+
+    assert service.id == "svc_123"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/services/by-name/worker%2Fservice",
+            None,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_room_service_by_name_uses_by_name_endpoint():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "version": "v1",
+                    "kind": "Service",
+                    "id": "svc_123",
+                    "metadata": {"name": "worker"},
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    service = await client.get_room_service_by_name(
+        project_id="proj_123", room_name="room 1", service_name="worker/service"
+    )
+
+    assert service.id == "svc_123"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/rooms/room%201/services/by-name/worker%2Fservice",
+            None,
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_update_scheduled_task_replaces_spec():
     session = _FakeSession([_FakeResponse(status=200, payload={})])
     client = Meshagent(base_url="http://example.test", token="token", session=session)
