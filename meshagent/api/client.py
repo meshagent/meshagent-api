@@ -1333,6 +1333,17 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
+    async def get_project_by_key(self, project_key: str) -> Dict[str, Any]:
+        """
+        Corresponds to: GET /accounts/projects/by-key/{project_key}
+        Returns a JSON dict with { "id", "owner_user_id", "name", "project_key" }.
+        """
+        url = f"{self.base_url}/accounts/projects/by-key/{quote(project_key, safe='')}"
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return await resp.json()
+
     async def get_project_info(self, project_id: str) -> ProjectInfo:
         url = f"{self.base_url}/accounts/projects/{project_id}"
 
