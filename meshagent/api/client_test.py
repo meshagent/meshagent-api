@@ -424,7 +424,8 @@ async def test_get_config_returns_typed_deployment_config():
                         "mail": "mail.meshagent.life",
                         "pages": "meshagent.life",
                         "registry": "registry.meshagent.life",
-                    }
+                    },
+                    "version": "0.41.5",
                 },
             )
         ]
@@ -435,6 +436,7 @@ async def test_get_config_returns_typed_deployment_config():
 
     assert config.domains.registry == "registry.meshagent.life"
     assert config.domains.api == "api.meshagent.life"
+    assert config.version == "0.41.5"
     assert session.calls == [
         (
             "get",

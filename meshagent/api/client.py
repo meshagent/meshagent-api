@@ -108,6 +108,7 @@ class MeshagentDomains(BaseModel):
 
 class MeshagentDeploymentConfig(BaseModel):
     domains: MeshagentDomains
+    version: str | None = None
 
 
 class RoomShare(BaseModel):
