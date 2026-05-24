@@ -461,6 +461,7 @@ class RoutePathSpec(BaseModel):
 
     path: str = "/"
     pathType: Literal["prefix", "exact"] = "prefix"
+    stripPrefix: bool = False
     targetPort: str | int
 
     @field_validator("path")
