@@ -4070,6 +4070,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
             configs=[ConfigMountSpec()],
             empty_dirs=[EmptyDirMountSpec(path="/cache")],
         ),
+        template="agent",
     )
     await client.build(
         tags=["example:latest"],
@@ -4130,6 +4131,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert isinstance(run_input, dict)
     assert run_input["env"] == [{"key": "KEY", "value": "VALUE"}]
     assert run_input["ports"] == [{"container_port": 8080, "host_port": 80}]
+    assert run_input["template"] == "agent"
     assert isinstance(run_input["mounts"], dict)
     assert run_input["mounts"]["configs"] == [{"path": "/var/run/meshagent"}]
     assert run_input["mounts"]["empty_dirs"] == [{"path": "/cache", "read_only": False}]

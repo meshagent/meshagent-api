@@ -7651,12 +7651,17 @@ class ContainerStartedBy(BaseModel):
     name: str
 
 
+class RoomContainerPort(BaseModel):
+    container_port: int
+    host_port: int
+
+
 class RoomContainer(BaseModel):
     id: str
     image: Optional[str] = None
     status: Optional[str] = None
     name: Optional[str] = None
-    ports: list[int] = Field(default_factory=list)
+    ports: list[RoomContainerPort] = Field(default_factory=list)
     started_by: ContainerStartedBy
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
     private: bool

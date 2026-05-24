@@ -634,6 +634,13 @@ class EndpointSpec(BaseModel):
 class PortSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     num: Literal["*"] | PositiveInt = "*"
+    host_port: Optional[PositiveInt] = Field(
+        None,
+        description=(
+            "optional room host port to publish this container port on; when set, "
+            "published defaults to true unless explicitly set"
+        ),
+    )
     type: Optional[Literal["http", "tcp"]] = "http"
     endpoints: list[EndpointSpec] = Field(
         default_factory=list, description="a list of endpoints exposed under this port"
