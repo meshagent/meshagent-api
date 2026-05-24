@@ -4,6 +4,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from typing import Any, Optional, Literal
@@ -463,6 +464,13 @@ class RoutePathSpec(BaseModel):
     pathType: Literal["prefix", "exact"] = "prefix"
     stripPrefix: bool = False
     targetPort: str | int
+
+    @model_serializer(mode="wrap")
+    def serialize_route_path(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if not self.stripPrefix:
+            data.pop("stripPrefix", None)
+        return data
 
     @field_validator("path")
     @classmethod

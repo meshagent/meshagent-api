@@ -12,6 +12,11 @@ from meshagent.api.managed_agents import (
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.client import ManagedAgentGrant, Meshagent
 from meshagent.api.specs.service import (
+    RouteBackendSpec,
+    RouteMetadata,
+    RoutePathSpec,
+    RouteRoomBackendSpec,
+    RouteSpec,
     ScheduledTaskQueueSpec,
     ScheduledTaskSpec,
     ServiceMetadata,
@@ -95,6 +100,72 @@ async def test_render_template_accepts_decoded_json_response():
                 "values": {},
             },
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_route_omits_default_strip_prefix_from_paths():
+    session = _FakeSession([_FakeResponse(status=200, payload={})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.create_route(
+        project_id="project-1",
+        spec=RouteSpec(
+            metadata=RouteMetadata(name="app.example.test"),
+            domain="app.example.test",
+            backend=RouteBackendSpec(room=RouteRoomBackendSpec(name="room-1")),
+            paths=[RoutePathSpec(path="/", targetPort=3000)],
+        ),
+    )
+
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/project-1/routes",
+            {
+                "spec": {
+                    "version": "v1",
+                    "kind": "Route",
+                    "metadata": {"name": "app.example.test", "annotations": {}},
+                    "domain": "app.example.test",
+                    "backend": {"room": {"name": "room-1"}, "agent": None},
+                    "paths": [
+                        {
+                            "path": "/",
+                            "pathType": "prefix",
+                            "targetPort": 3000,
+                        }
+                    ],
+                }
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_route_serializes_true_strip_prefix():
+    session = _FakeSession([_FakeResponse(status=200, payload={})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.create_route(
+        project_id="project-1",
+        spec=RouteSpec(
+            metadata=RouteMetadata(name="app.example.test"),
+            domain="app.example.test",
+            backend=RouteBackendSpec(room=RouteRoomBackendSpec(name="room-1")),
+            paths=[
+                RoutePathSpec(path="/api", targetPort=3000, stripPrefix=True),
+            ],
+        ),
+    )
+
+    assert session.calls[0][2]["spec"]["paths"] == [
+        {
+            "path": "/api",
+            "pathType": "prefix",
+            "stripPrefix": True,
+            "targetPort": 3000,
+        }
     ]
 
 
