@@ -7680,9 +7680,24 @@ class RoomContainerPort(BaseModel):
     host_port: int
 
 
+class RoomContainerStats(BaseModel):
+    cpu_usage_nano_cores: Optional[int] = None
+    memory_usage_bytes: Optional[int] = None
+    memory_working_set_bytes: Optional[int] = None
+    timestamp_ns: Optional[int] = None
+
+
+class ContainerExitStatus(BaseModel):
+    exit_code: int
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    oom_killed: Optional[bool] = None
+
+
 class RoomContainer(BaseModel):
     id: str
     image: Optional[str] = None
+    image_id: Optional[str] = None
     status: Optional[str] = None
     name: Optional[str] = None
     ports: list[RoomContainerPort] = Field(default_factory=list)
@@ -7690,6 +7705,8 @@ class RoomContainer(BaseModel):
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
     private: bool
     service_id: Optional[str] = None
+    stats: Optional[RoomContainerStats] = None
+    exit_status: Optional[ContainerExitStatus] = None
 
     # Accept arbitrary extras (names, created, state, etc.)
     model_config = ConfigDict(extra="allow")
@@ -8630,6 +8647,10 @@ class ContainersClient:
         )
 
     async def wait_for_exit(self, *, container_id: str) -> int:
+        status = await self.wait_for_exit_status(container_id=container_id)
+        return status.exit_code
+
+    async def wait_for_exit_status(self, *, container_id: str) -> ContainerExitStatus:
         response = await self.room.invoke(
             toolkit="containers",
             tool="wait_for_exit",
@@ -8640,7 +8661,7 @@ class ContainersClient:
         exit_code = response.json.get("exit_code")
         if isinstance(exit_code, bool) or not isinstance(exit_code, int):
             raise self._unexpected_response_error(operation="wait_for_exit")
-        return exit_code
+        return ContainerExitStatus.model_validate(response.json)
 
     async def delete(self, *, container_id: str) -> None:
         await self.room.invoke(
