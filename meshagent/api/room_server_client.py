@@ -7639,11 +7639,35 @@ class ImportedImage(BaseModel):
     refs: List[str] = Field(default_factory=list)
 
 
+class PublishedImageLayer(BaseModel):
+    digest: str
+    size_bytes: int
+    media_type: Optional[str] = None
+
+
+class PublishedImageStats(BaseModel):
+    manifest_media_type: str
+    layer_count: int
+    total_layer_size_bytes: int
+    total_size_bytes: int
+    layers: List[PublishedImageLayer] = Field(default_factory=list)
+    config_size_bytes: Optional[int] = None
+
+
+class PublishedBuildImage(BaseModel):
+    tag: str
+    digest: str
+    resolved_ref: str
+    optimized: bool
+    stats: Optional[PublishedImageStats] = None
+
+
 class BuildJob(BaseModel):
     id: str
     tag: str
     status: Literal["queued", "running", "failed", "cancelled", "succeeded"]
     exit_code: Optional[int] = None
+    published_images: List[PublishedBuildImage] = Field(default_factory=list)
 
 
 class ContainerStartedBy(BaseModel):

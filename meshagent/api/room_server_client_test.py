@@ -4049,6 +4049,32 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
                                 "tag": "example:latest",
                                 "status": "running",
                                 "exit_code": None,
+                                "published_images": [
+                                    {
+                                        "tag": "example:latest",
+                                        "digest": "sha256:digest",
+                                        "resolved_ref": "example@sha256:digest",
+                                        "optimized": True,
+                                        "stats": {
+                                            "manifest_media_type": (
+                                                "application/vnd.oci.image.manifest.v1+json"
+                                            ),
+                                            "layer_count": 1,
+                                            "total_layer_size_bytes": 200,
+                                            "total_size_bytes": 300,
+                                            "config_size_bytes": 100,
+                                            "layers": [
+                                                {
+                                                    "digest": "sha256:layer",
+                                                    "size_bytes": 200,
+                                                    "media_type": (
+                                                        "application/vnd.oci.image.layer.v1.tar"
+                                                    ),
+                                                }
+                                            ],
+                                        },
+                                    }
+                                ],
                             }
                         ]
                     }
@@ -4087,7 +4113,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     await client.run_service(service_id="svc-1", env={"A": "1"})
     images = await client.list_images()
     inspection = await client.inspect_image(image_id="img-1")
-    await client.list_builds()
+    builds = await client.list_builds()
     await client.cancel_build(build_id="build-1")
     await client.delete_build(build_id="build-1")
     await client.list()
@@ -4120,6 +4146,10 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert inspection.image.references == ["demo:latest"]
     assert inspection.target.digest == "sha256:target"
     assert inspection.content_size == 235
+    assert builds[0].published_images[0].resolved_ref == "example@sha256:digest"
+    assert builds[0].published_images[0].stats is not None
+    assert builds[0].published_images[0].stats.layer_count == 1
+    assert builds[0].published_images[0].stats.total_size_bytes == 300
 
     pull_input = room.requests[0]["input"]
     assert isinstance(pull_input, dict)
