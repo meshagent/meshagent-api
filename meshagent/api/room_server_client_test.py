@@ -220,6 +220,18 @@ class _CloseableProtocol(_FakeProtocol):
         return self._close_reason
 
 
+class _SlowExitProtocol(_FakeProtocol):
+    def __init__(self) -> None:
+        super().__init__()
+        self.exit_started = asyncio.Event()
+        self.allow_exit = asyncio.Event()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self.exit_started.set()
+        await self.allow_exit.wait()
+        await super().__aexit__(exc_type, exc, tb)
+
+
 def test_room_exception_defaults_to_invalid_request_code() -> None:
     ex = RoomException("boom")
     assert ex.code == ErrorCode.INVALID_REQUEST
@@ -2047,6 +2059,26 @@ async def test_room_client_exit_fails_pending_requests_and_cancels_close_watcher
         await request_task
 
     assert client._pending_requests == {}
+    assert protocol.exited is True
+    assert client._close_watcher_task is None
+
+
+@pytest.mark.asyncio
+async def test_room_client_exit_shields_protocol_close_from_cancellation() -> None:
+    protocol = _SlowExitProtocol()
+    client = RoomClient(protocol_factory=protocol.create_factory())
+
+    exit_task = asyncio.create_task(client.__aexit__(None, None, None))
+    await asyncio.wait_for(protocol.exit_started.wait(), timeout=1)
+
+    exit_task.cancel()
+    await asyncio.sleep(0)
+    assert not exit_task.done()
+
+    protocol.allow_exit.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(exit_task, timeout=1)
+
     assert protocol.exited is True
     assert client._close_watcher_task is None
 

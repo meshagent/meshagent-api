@@ -1123,6 +1123,14 @@ class RoomClient:
         with contextlib.suppress(Exception):
             await protocol.__aexit__(None, None, None)
 
+    async def _close_protocol_shielded(self, protocol: Protocol) -> None:
+        close_task = asyncio.create_task(self._close_protocol(protocol))
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            await asyncio.shield(close_task)
+            raise
+
     def _replace_protocol(self, next_protocol: Protocol) -> None:
         current_protocol = self._protocol_instance
         self.protocol._unbind(current_protocol)
@@ -1644,13 +1652,19 @@ class RoomClient:
         self._close_watcher_task = None
         if close_watcher is not None:
             close_watcher.cancel()
+        close_cancelled = False
         try:
-            await self._close_protocol(self._protocol_instance)
+            try:
+                await self._close_protocol_shielded(self._protocol_instance)
+            except asyncio.CancelledError:
+                close_cancelled = True
             lifecycle_task = self._lifecycle_task
             if lifecycle_task is not None:
                 await asyncio.gather(lifecycle_task, return_exceptions=True)
             await self.sync.stop()
             await self.messaging.stop()
+            if close_cancelled:
+                raise asyncio.CancelledError
         finally:
             self._lifecycle_task = None
             self._entered = False
