@@ -341,7 +341,7 @@ class Protocol:
 
 
 class ClientProtocol(Protocol):
-    def __init__(self, *, token: str):
+    def __init__(self, *, token: str | None):
         super().__init__()
         self._token = token
 

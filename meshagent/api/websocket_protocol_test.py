@@ -24,7 +24,9 @@ class _FakeSession:
     def __init__(self) -> None:
         self.entered = False
         self.exited = False
-        self.ws_connect_calls: list[tuple[str, float | None, int | None]] = []
+        self.ws_connect_calls: list[
+            tuple[str, dict[str, str] | None, float | None, int | None]
+        ] = []
 
     async def __aenter__(self):
         self.entered = True
@@ -34,9 +36,14 @@ class _FakeSession:
         self.exited = True
 
     def ws_connect(
-        self, url: str, *, heartbeat: float | None = None, compress: int | None = None
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        heartbeat: float | None = None,
+        compress: int | None = None,
     ):
-        self.ws_connect_calls.append((url, heartbeat, compress))
+        self.ws_connect_calls.append((url, headers, heartbeat, compress))
         return _FailingWebsocketContext()
 
 
@@ -107,4 +114,22 @@ async def test_websocket_client_protocol_keeps_external_session_open_when_enter_
     assert session.entered is False
     assert session.exited is False
     assert len(session.ws_connect_calls) == 1
-    assert session.ws_connect_calls[0][2] == 15
+    assert session.ws_connect_calls[0][1] == {"Authorization": "Bearer token"}
+    assert session.ws_connect_calls[0][3] == 15
+
+
+@pytest.mark.asyncio
+async def test_websocket_client_protocol_with_iap_omits_authorization_header():
+    session = _FakeSession()
+    protocol = WebSocketClientProtocol.withIAP(session=session)
+
+    with pytest.raises(RuntimeError, match="websocket failed"):
+        await protocol.__aenter__()
+
+    assert protocol.url == "./.well-known/meshagent/room/connect"
+    assert protocol.token is None
+    assert len(session.ws_connect_calls) == 1
+    assert session.ws_connect_calls[0][0].startswith(
+        "./.well-known/meshagent/room/connect?v="
+    )
+    assert session.ws_connect_calls[0][1] is None

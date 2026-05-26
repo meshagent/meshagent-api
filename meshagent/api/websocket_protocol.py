@@ -85,7 +85,7 @@ class WebSocketClientProtocol(ClientProtocol):
         self,
         *,
         url: str,
-        token: str,
+        token: str | None,
         heartbeat: float | None = None,
         session: ClientSession | None = None,
     ):
@@ -103,6 +103,16 @@ class WebSocketClientProtocol(ClientProtocol):
     @property
     def url(self):
         return self._url
+
+    @classmethod
+    def withIAP(
+        cls,
+        *,
+        url: str = "./.well-known/meshagent/room/connect",
+        heartbeat: float | None = None,
+        session: ClientSession | None = None,
+    ):
+        return cls(url=url, token=None, heartbeat=heartbeat, session=session)
 
     def create_factory(self):
         session = self._session if self._session_external else None
@@ -129,7 +139,6 @@ class WebSocketClientProtocol(ClientProtocol):
 
             url_parts = urllib.parse.urlparse(self._url)
             query_dict = urllib.parse.parse_qs(url_parts.query)
-            query_dict.update({"token": self.token})
             query_dict.update({"v": __version__})
             new_query_string = urllib.parse.urlencode(query_dict, doseq=True)
             url_with_params = urllib.parse.urlunparse(
@@ -143,8 +152,16 @@ class WebSocketClientProtocol(ClientProtocol):
                 )
             )
 
+            headers = (
+                None
+                if self.token is None
+                else {"Authorization": f"Bearer {self.token}"}
+            )
             self._ws_ctx = self._session.ws_connect(
-                url_with_params, heartbeat=self._heartbeat, compress=15
+                url_with_params,
+                headers=headers,
+                heartbeat=self._heartbeat,
+                compress=15,
             )
             self._ws = await self._ws_ctx.__aenter__()
             self._ws_entered = True
