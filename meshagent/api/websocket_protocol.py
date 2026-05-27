@@ -1,6 +1,7 @@
 import contextlib
 import urllib.parse
 from aiohttp import ClientSession, WSMsgType, web, ClientWebSocketResponse
+from aiohttp.client_exceptions import ClientConnectionResetError
 import asyncio
 import logging
 import os
@@ -78,6 +79,12 @@ def _format_websocket_close_reason(
         return f"websocket closed with event {close_event.name}"
 
     return None
+
+
+def _format_send_close_reason(exc: BaseException | None = None) -> str:
+    if exc is None:
+        return "websocket closed before send completed"
+    return str(exc).strip() or repr(exc)
 
 
 class WebSocketClientProtocol(ClientProtocol):
@@ -237,7 +244,21 @@ class WebSocketClientProtocol(ClientProtocol):
         await super().__aexit__(exc_type, exc, tb)
 
     async def send_packet(self, data: bytes) -> None:
-        await self._ws.send_bytes(data)
+        if not self.is_open or self._ws is None or self._ws.closed:
+            self._set_close_state(
+                kind=ProtocolCloseKind.SERVER,
+                reason="websocket closed before send completed",
+            )
+            self._shutdown()
+            return
+        try:
+            await self._ws.send_bytes(data)
+        except (ClientConnectionResetError, ConnectionResetError) as exc:
+            self._set_close_state(
+                kind=ProtocolCloseKind.SERVER,
+                reason=_format_send_close_reason(exc),
+            )
+            self._shutdown()
 
 
 class WebSocketServerProtocol(Protocol):
@@ -318,4 +339,18 @@ class WebSocketServerProtocol(Protocol):
         await super().__aexit__(exc_type=exc_type, exc=exc, tb=tb)
 
     async def send_packet(self, data: bytes) -> None:
-        await self.socket.send_bytes(data)
+        if not self.is_open or self.socket.closed:
+            self._set_close_state(
+                kind=ProtocolCloseKind.CLIENT,
+                reason="websocket closed before send completed",
+            )
+            self._shutdown()
+            return
+        try:
+            await self.socket.send_bytes(data)
+        except (ClientConnectionResetError, ConnectionResetError) as exc:
+            self._set_close_state(
+                kind=ProtocolCloseKind.CLIENT,
+                reason=_format_send_close_reason(exc),
+            )
+            self._shutdown()

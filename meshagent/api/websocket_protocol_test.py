@@ -1,11 +1,14 @@
 import importlib
 
+import aiohttp
 import pytest
 
+from meshagent.api.protocol import ProtocolCloseKind
 from meshagent.api.websocket_protocol import (
     DEFAULT_WEBSOCKET_HEARTBEAT,
     WEBSOCKET_HEARTBEAT_ENV,
     WebSocketClientProtocol,
+    WebSocketServerProtocol,
     resolve_websocket_heartbeat,
 )
 
@@ -45,6 +48,15 @@ class _FakeSession:
     ):
         self.ws_connect_calls.append((url, headers, heartbeat, compress))
         return _FailingWebsocketContext()
+
+
+class _ClosingWebSocket:
+    closed = False
+
+    async def send_bytes(self, data: bytes) -> None:
+        raise aiohttp.client_exceptions.ClientConnectionResetError(
+            "Cannot write to closing transport"
+        )
 
 
 def test_resolve_websocket_heartbeat_uses_default(
@@ -133,3 +145,32 @@ async def test_websocket_client_protocol_with_iap_omits_authorization_header():
         "./.well-known/meshagent/room/connect?v="
     )
     assert session.ws_connect_calls[0][1] is None
+
+
+@pytest.mark.asyncio
+async def test_websocket_client_protocol_treats_closing_transport_as_server_close():
+    protocol = WebSocketClientProtocol(
+        url="ws://example.test/room",
+        token="token",
+        session=_FakeSession(),
+    )
+    protocol._open = True
+    protocol._ws = _ClosingWebSocket()
+
+    await protocol.send_packet(b"hello")
+
+    assert protocol.close_kind() == ProtocolCloseKind.SERVER
+    assert protocol.close_reason() == "Cannot write to closing transport"
+    assert protocol.is_open is False
+
+
+@pytest.mark.asyncio
+async def test_websocket_server_protocol_treats_closing_transport_as_client_close():
+    protocol = WebSocketServerProtocol(socket=_ClosingWebSocket())
+    protocol._open = True
+
+    await protocol.send_packet(b"hello")
+
+    assert protocol.close_kind() == ProtocolCloseKind.CLIENT
+    assert protocol.close_reason() == "Cannot write to closing transport"
+    assert protocol.is_open is False

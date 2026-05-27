@@ -145,6 +145,8 @@ class Protocol:
     async def _send_payload(self, message_id: int, data: bytes) -> None:
         packets = compute_packets(data)
         for i in range(packets):
+            if not self.is_open:
+                return
             packet = bytearray()
             packet.extend(message_id.to_bytes(8))
             packet.extend(int(i + 1).to_bytes(4))
@@ -188,6 +190,8 @@ class Protocol:
         header_data.extend(bytes(type, "utf-8"))
 
         await self.send_packet(header_data)
+        if not self.is_open:
+            return
 
         logger.debug("publishing message payload %s", message_id)
         await self._send_payload(message_id=message_id, data=data)
