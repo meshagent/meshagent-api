@@ -2542,6 +2542,7 @@ async def test_list_toolkits_preserves_strict_tool_metadata() -> None:
             "test": {
                 "title": "Test",
                 "description": "desc",
+                "annotations": {"meshagent.tool_search": "true"},
                 "tools": {
                     "strict_tool": {
                         "title": "Strict Tool",
@@ -2568,6 +2569,8 @@ async def test_list_toolkits_preserves_strict_tool_metadata() -> None:
     assert len(toolkits) == 1
     assert len(toolkits[0].tools) == 1
     assert toolkits[0].tools[0].strict is False
+    assert toolkits[0].annotations == {"meshagent.tool_search": "true"}
+    assert toolkits[0].to_json()["annotations"] == {"meshagent.tool_search": "true"}
 
 
 @pytest.mark.asyncio

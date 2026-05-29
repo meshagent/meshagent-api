@@ -162,6 +162,8 @@ type DatasetJsonValue = (
     DatasetJsonScalarValue | list["DatasetJsonValue"] | dict[str, "DatasetJsonValue"]
 )
 
+TOOL_SEARCH_ANNOTATION = "meshagent.tool_search"
+
 
 def _normalize_dataset_json_value(
     value: Any,
@@ -2338,6 +2340,12 @@ class RoomClient:
             title = tk_json.get("title", "")
             description = tk_json.get("description", "")
             participant_id = tk_json.get("participant_id", None)
+            annotations_json = tk_json.get("annotations", {})
+            annotations: dict[str, str] = {}
+            if isinstance(annotations_json, dict):
+                for key, value in annotations_json.items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        annotations[key] = value
 
             # Tools are usually a dict keyed by tool name
             tools = []
@@ -2401,6 +2409,7 @@ class RoomClient:
                     description=description,
                     tools=tools,
                     participant_id=participant_id,
+                    annotations=annotations,
                 )
             )
         return result
@@ -3092,12 +3101,14 @@ class ToolkitDescription:
         description: str,
         tools: List[ToolDescription],
         participant_id: Optional[str] = None,
+        annotations: Optional[dict[str, str]] = None,
     ):
         self.name = name
         self.title = title
         self.description = description
         self.tools = tools
         self.participant_id = participant_id
+        self.annotations = dict(annotations or {})
 
     def get_tool(self, name: str) -> ToolDescription | None:
         for t in self.tools:
@@ -3113,6 +3124,7 @@ class ToolkitDescription:
             "title": self.title,
             "tools": list(map(lambda x: x.to_json(), self.tools)),
             "participant_id": self.participant_id,
+            "annotations": self.annotations,
         }
 
 
