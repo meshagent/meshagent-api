@@ -1,3 +1,19 @@
+## [0.44.6]
+- Breaking: Codex setup now uses a single default-provider flow and removes the older multi-profile conflict/update screens.
+- Codex setup now detects all MeshAgent-managed Codex configs instead of only the active project or API host, so stale configs can be updated or removed during setup.
+
+## [0.44.5]
+- OpenAI completions now emit structured assistant text and tool-call lifecycle events, including arguments and results, so consumers can reconstruct streamed assistant and tool activity.
+- Reasoning-end events are now preserved even when no active reasoning buffer exists, as long as metadata is available, which restores reasoning dataset replay.
+- OpenAI response handling now includes all structured output items instead of only message and compaction items, improving replay coverage for additional response types.
+
+## [0.44.4]
+- Breaking: `AgentSessionContext` no longer exposes `previous_messages` or `previous_response_id`; restore flows now operate from the current `messages` payload instead of maintaining a separate history buffer.
+- OpenAI Responses restore now preserves encrypted reasoning metadata, normalizes legacy reasoning items, and forces stateless requests to use `store=False` while replaying the current context.
+- Agent event handling and dataset thread storage now keep reasoning provider/model metadata so empty reasoning items with encrypted content can still be restored without losing the payload.
+- Managed agents now share the `llm` backend abstraction, which changes thread creation and resume behavior and lets thread naming consider the selected provider/model plus audio attachments.
+- Updated `typer` to `~=0.26.6`.
+
 ## [0.44.3]
 - Stability
 
