@@ -54,6 +54,7 @@ class Protocol:
 
         self._read = read
         self._write = write
+        self.metadata: dict[str, object] = {}
 
     async def __aenter__(self):
         if self._main_task is not None:
