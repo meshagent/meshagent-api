@@ -853,6 +853,43 @@ async def test_validate_participant_token_fetches_validated_token():
 
 
 @pytest.mark.asyncio
+async def test_create_room_serializes_permissions_payload():
+    room_payload = {
+        "id": "room-1",
+        "name": "room-a",
+        "metadata": {},
+        "annotations": {},
+        "permissions": {},
+    }
+    session = _FakeSession([_FakeResponse(status=200, payload=room_payload)])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    room = await client.create_room(
+        project_id="proj_123",
+        name="room-a",
+        if_not_exists=True,
+        metadata={"purpose": "test"},
+        annotations={"meshagent.storage.class": "ephemeral"},
+        permissions={"user-1": ApiScope.full()},
+    )
+
+    assert room.name == "room-a"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/rooms",
+            {
+                "name": "room-a",
+                "if_not_exists": True,
+                "metadata": {"purpose": "test"},
+                "annotations": {"meshagent.storage.class": "ephemeral"},
+                "permissions": {"user-1": ApiScope.full().model_dump(mode="json")},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_agent_crud_methods_use_agent_routes():
     configuration = ManagedAgentSpec(
         id="agent-1",
