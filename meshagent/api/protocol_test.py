@@ -2,10 +2,20 @@ import pytest
 import asyncio
 import logging
 
-from meshagent.api.protocol import MemoryServerProtocol, MemoryClientProtocol
+from meshagent.api.protocol import MemoryServerProtocol, MemoryClientProtocol, Protocol
 from meshagent.api.chan import Chan
 
 logger = logging.getLogger("test")
+
+
+def test_protocol_has_metadata_dict() -> None:
+    protocol = Protocol(read=False, write=False)
+
+    protocol.metadata["http.headers"] = {"User-Agent": "meshagent-test-client/1.0"}
+
+    assert protocol.metadata == {
+        "http.headers": {"User-Agent": "meshagent-test-client/1.0"}
+    }
 
 
 @pytest.mark.asyncio

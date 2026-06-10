@@ -4042,6 +4042,7 @@ class Meshagent:
         if_not_exists: bool = False,
         metadata: Optional[dict[str, any]] = None,
         annotations: Optional[dict[str, str]] = None,
+        permissions: Optional[dict[str, ApiScope]] = None,
     ) -> Room:
         """
         POST /accounts/projects/{project_id}/rooms
@@ -4049,11 +4050,20 @@ class Meshagent:
         Returns Room.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms"
+        permissions_payload = (
+            {
+                user_id: scope.model_dump(mode="json")
+                for user_id, scope in permissions.items()
+            }
+            if permissions is not None
+            else None
+        )
         payload = {
             "name": name,
             "if_not_exists": bool(if_not_exists),
             "metadata": metadata,
             "annotations": annotations,
+            "permissions": permissions_payload,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
