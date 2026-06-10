@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
@@ -10,7 +11,7 @@ from meshagent.api.managed_agents import (
     ManagedAgentSpec,
 )
 from meshagent.api.participant_token import ApiScope
-from meshagent.api.client import ManagedAgentGrant, Meshagent
+from meshagent.api.client import AccessResource, AccessSubject, Meshagent
 from meshagent.api.specs.service import (
     RouteBackendSpec,
     RouteMetadata,
@@ -69,6 +70,89 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
+async def test_mint_participant_token_accepts_serialized_grants():
+    session = _FakeSession([_FakeResponse(status=200, payload={"token": "jwt-token"})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    token = await client.mint_participant_token(
+        "proj_123",
+        name="worker",
+        grants=[
+            {"name": "role", "scope": "agent"},
+            {"name": "room", "scope": "room-1"},
+            {"name": "tunnel_ports", "scope": "9000"},
+        ],
+    )
+
+    assert token == "jwt-token"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/participant-tokens",
+            {
+                "name": "worker",
+                "grants": [
+                    {"name": "role", "scope": "agent"},
+                    {"name": "room", "scope": "room-1"},
+                    {"name": "tunnel_ports", "scope": "9000"},
+                ],
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_llm_proxy_usage_builds_request_and_reads_usage():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "usage": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-4.1-mini",
+                            "type": "llm_proxy_surcharge",
+                            "total": 1.25,
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    usage = await client.get_current_user_llm_proxy_usage(
+        "proj_123",
+        start=datetime.fromisoformat("2026-04-01T00:00:00+00:00"),
+        end=datetime.fromisoformat("2026-04-30T00:00:00+00:00"),
+        interval="day",
+        annotations={"env": "prod"},
+    )
+
+    assert usage == [
+        {
+            "provider": "openai",
+            "model": "gpt-4.1-mini",
+            "type": "llm_proxy_surcharge",
+            "total": 1.25,
+        }
+    ]
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/llm-proxy/usage",
+            {
+                "start": "2026-04-01T00:00:00+00:00",
+                "end": "2026-04-30T00:00:00+00:00",
+                "interval": "day",
+                "annotations": '{"env": "prod"}',
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_render_template_accepts_decoded_json_response():
     session = _FakeSession(
         [
@@ -104,8 +188,65 @@ async def test_render_template_accepts_decoded_json_response():
 
 
 @pytest.mark.asyncio
+async def test_create_oauth_client_accepts_client_envelope():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "client": {
+                        "client_id": "client-1",
+                        "client_secret": "secret-1",
+                        "grant_types": ["authorization_code"],
+                        "response_types": ["code"],
+                        "redirect_uris": ["https://example.test/callback"],
+                        "scope": "rooms:read",
+                        "project_id": "proj_123",
+                        "metadata": {"name": "smoke"},
+                        "official": True,
+                    }
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    oauth_client = await client.create_oauth_client(
+        project_id="proj_123",
+        grant_types=["authorization_code"],
+        response_types=["code"],
+        redirect_uris=["https://example.test/callback"],
+        scope="rooms:read",
+        metadata={"name": "smoke"},
+        official=True,
+    )
+
+    assert oauth_client.client_id == "client-1"
+    assert oauth_client.official is True
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/oauth/clients",
+            {
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "redirect_uris": ["https://example.test/callback"],
+                "scope": "rooms:read",
+                "metadata": {"name": "smoke"},
+                "official": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_route_omits_default_strip_prefix_from_paths():
-    session = _FakeSession([_FakeResponse(status=200, payload={})])
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
     client = Meshagent(base_url="http://example.test", token="token", session=session)
 
     await client.create_route(
@@ -387,6 +528,107 @@ async def test_get_room_service_by_name_uses_by_name_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_list_group_members_page_returns_typed_members():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "members": [
+                        {
+                            "subject": {
+                                "type": "user",
+                                "id": "user-1",
+                                "name": "Ada Lovelace",
+                                "first_name": "Ada",
+                                "last_name": "Lovelace",
+                                "email": "ada@example.test",
+                            },
+                            "direct_roles": ["member", "manager"],
+                        },
+                        {
+                            "subject": {
+                                "type": "agent",
+                                "id": "agent-1",
+                                "name": "planner",
+                            },
+                            "direct_roles": ["member"],
+                        },
+                        {
+                            "subject": {
+                                "type": "group",
+                                "id": "group-child",
+                                "name": "child group",
+                            },
+                            "direct_roles": ["member"],
+                        },
+                    ],
+                    "continuation_token": "next-page",
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    page = await client.list_group_members_page(
+        project_id="proj_123",
+        group_id="group-1",
+        page_size=50,
+        continuation_token="member-cursor",
+    )
+
+    assert page.continuation_token == "next-page"
+    assert page.members[0].subject.email == "ada@example.test"
+    assert page.members[0].direct_roles == ["member", "manager"]
+    assert page.members[1].subject.type == "agent"
+    assert page.members[2].subject.type == "group"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/groups/group-1/members",
+            {"page_size": 50, "continuation_token": "member-cursor"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_group_member_accepts_agent_and_group_subjects():
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.delete_group_member(
+        project_id="proj_123",
+        group_id="group-1",
+        subject_type="agent",
+        subject_id="agent-1",
+    )
+    await client.delete_group_member(
+        project_id="proj_123",
+        group_id="group-1",
+        subject_type="group",
+        subject_id="group-child",
+    )
+
+    assert session.calls == [
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/groups/group-1/members/agent/agent-1",
+            None,
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/groups/group-1/members/group/group-child",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_update_scheduled_task_replaces_spec():
     session = _FakeSession([_FakeResponse(status=200, payload={})])
     client = Meshagent(base_url="http://example.test", token="token", session=session)
@@ -462,6 +704,79 @@ async def test_create_scheduled_task_uses_room_scoped_route():
     ]
 
 
+@pytest.mark.asyncio
+async def test_list_scheduled_tasks_uses_page_size_and_continuation_token():
+    spec = ScheduledTaskSpec(
+        schedule="0 * * * *",
+        queue=ScheduledTaskQueueSpec(name="jobs"),
+    )
+    task_payload = {
+        "id": "task_123",
+        "project_id": "proj_123",
+        "room_id": "room_123",
+        "room_name": "room-a",
+        "spec": spec.model_dump(mode="json"),
+        "schedule": "0 * * * *",
+        "active": True,
+        "once": False,
+        "annotations": {},
+    }
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "tasks": [task_payload],
+                    "continuation_token": "next-page",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={"tasks": [task_payload], "total": 1},
+            ),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    project_page = await client.list_scheduled_tasks_page(
+        project_id="proj_123",
+        page_size=25,
+        continuation_token="cursor-1",
+        filter="sync",
+    )
+    room_page = await client.list_scheduled_tasks_page(
+        project_id="proj_123",
+        room_id="room_123",
+        page_size=10,
+        offset=20,
+    )
+
+    assert [task.id for task in project_page.tasks] == ["task_123"]
+    assert project_page.continuation_token == "next-page"
+    assert [task.id for task in room_page.tasks] == ["task_123"]
+    assert room_page.total == 1
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/scheduled-tasks",
+            {
+                "page_size": "25",
+                "continuation_token": "cursor-1",
+                "filter": "sync",
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/scheduled-tasks",
+            {
+                "page_size": "10",
+                "room_id": "room_123",
+                "offset": "20",
+            },
+        ),
+    ]
+
+
 @pytest.mark.parametrize("schedule", ["*/15 * * * *", "15 minutes", "0 * * * *"])
 def test_scheduled_task_spec_accepts_minimum_interval(schedule: str) -> None:
     spec = ScheduledTaskSpec(
@@ -512,63 +827,6 @@ async def test_get_config_returns_typed_deployment_config():
         (
             "get",
             "http://example.test/config",
-            None,
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_can_use_llm_proxy_reads_role_capability_flag():
-    session = _FakeSession(
-        [
-            _FakeResponse(
-                status=200,
-                payload={
-                    "role": "member",
-                    "can_create_rooms": False,
-                    "can_use_llm_proxy": True,
-                },
-            )
-        ]
-    )
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    can_use_llm_proxy = await client.can_use_llm_proxy("proj_123")
-
-    assert can_use_llm_proxy is True
-    assert session.calls == [
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/role",
-            None,
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_can_create_rooms_reads_current_user_role_capability_flag():
-    session = _FakeSession(
-        [
-            _FakeResponse(
-                status=200,
-                payload={
-                    "role": "member",
-                    "can_create_rooms": True,
-                    "can_use_llm_proxy": False,
-                    "is_developer": False,
-                },
-            )
-        ]
-    )
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    can_create_rooms = await client.can_create_rooms("proj_123")
-
-    assert can_create_rooms is True
-    assert session.calls == [
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/role",
             None,
         )
     ]
@@ -640,13 +898,46 @@ async def test_list_secrets_compatibility_wrapper_fetches_secret_payloads():
         (
             "get",
             "http://example.test/accounts/projects/proj_123/secrets",
-            None,
+            {"view": "all"},
         ),
         (
             "get",
             "http://example.test/accounts/projects/proj_123/secrets/secret-1",
             None,
         ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_project_secrets_sends_selected_view():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secrets": [
+                        {
+                            "id": "secret-1",
+                            "name": "registry",
+                            "type": "docker",
+                            "delegated_to": None,
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    secrets = await client.list_project_secrets(project_id="proj_123", view="my")
+
+    assert [secret.id for secret in secrets] == ["secret-1"]
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/secrets",
+            {"view": "my"},
+        )
     ]
 
 
@@ -879,11 +1170,10 @@ async def test_agent_crud_methods_use_agent_routes():
         project_id="proj_123",
         configuration=configuration,
         if_not_exists=True,
-        permissions={"user-1": ManagedAgentGrant()},
     )
     fetched = await client.get_agent(project_id="proj_123", name="planner")
     page = await client.list_agents_page(
-        project_id="proj_123", limit=10, offset=5, filter="plan"
+        project_id="proj_123", page_size=10, filter="plan"
     )
     await client.update_agent(
         project_id="proj_123",
@@ -902,7 +1192,6 @@ async def test_agent_crud_methods_use_agent_routes():
             {
                 "configuration": configuration.model_dump(mode="json"),
                 "if_not_exists": True,
-                "permissions": {"user-1": {"admin": False}},
             },
         ),
         (
@@ -914,9 +1203,7 @@ async def test_agent_crud_methods_use_agent_routes():
             "get",
             "http://example.test/accounts/projects/proj_123/agents",
             {
-                "limit": "10",
-                "offset": "5",
-                "order_by": "agent_name",
+                "page_size": "10",
                 "filter": "plan",
             },
         ),
@@ -934,52 +1221,173 @@ async def test_agent_crud_methods_use_agent_routes():
 
 
 @pytest.mark.asyncio
-async def test_agent_grant_methods_use_agent_grant_routes():
-    configuration = {
-        "id": "agent-1",
-        "name": "planner",
-        "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+async def test_revoke_api_keys_by_msid_uses_service_account_route():
+    session = _FakeSession(
+        [_FakeResponse(status=200, payload={"revoked": ["key-1", "key-2"]})]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    result = await client.revoke_api_keys_by_msid(
+        project_id="proj_123",
+        service_account_id="service-account-1",
+        msid="oauth-msid",
+    )
+
+    assert result.revoked == ["key-1", "key-2"]
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1/api-keys:revoke",
+            {"msid": "oauth-msid"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_service_account_and_scoped_api_key_methods_return_typed_models():
+    service_account_payload = {
+        "id": "service-account-1",
+        "project_id": "proj_123",
+        "key": "deploy-bot",
+        "name": "deploy-bot",
+        "description": "Deploy bot",
+        "metadata": {"env": "test"},
+        "annotations": {"team": "platform"},
     }
+    api_key_payload = {
+        "id": "key-1",
+        "name": "ci",
+        "description": "CI key",
+        "project_id": "proj_123",
+        "service_account_id": "service-account-1",
+        "value": "secret-key",
+    }
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload=service_account_payload),
+            _FakeResponse(status=200, payload=service_account_payload),
+            _FakeResponse(
+                status=200,
+                payload={"service_accounts": [service_account_payload]},
+            ),
+            _FakeResponse(status=200, payload={"ok": True}),
+            _FakeResponse(status=200, payload=api_key_payload),
+            _FakeResponse(status=200, payload={"keys": [api_key_payload]}),
+            _FakeResponse(status=204, payload={}),
+            _FakeResponse(status=200, payload={"ok": True}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    created = await client.create_service_account(
+        "proj_123",
+        name="deploy-bot",
+        description="Deploy bot",
+        metadata={"env": "test"},
+        annotations={"team": "platform"},
+    )
+    fetched = await client.get_service_account("proj_123", "service-account-1")
+    page = await client.list_service_accounts("proj_123", page_size=50, filter="bot")
+    await client.update_service_account(
+        "proj_123",
+        "service-account-1",
+        name="deploy-bot-renamed",
+        description="Deploy bot renamed",
+    )
+    api_key = await client.create_api_key(
+        "proj_123",
+        name="ci",
+        description="CI key",
+        service_account_id="service-account-1",
+    )
+    api_keys = await client.list_api_keys("proj_123", "service-account-1")
+    await client.delete_api_key("proj_123", "key-1", "service-account-1")
+    await client.delete_service_account("proj_123", "service-account-1")
+
+    assert created.id == "service-account-1"
+    assert fetched.key == "deploy-bot"
+    assert page.service_accounts[0].metadata == {"env": "test"}
+    assert api_key.value == "secret-key"
+    assert api_keys.keys[0].service_account_id == "service-account-1"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/service-accounts",
+            {
+                "name": "deploy-bot",
+                "description": "Deploy bot",
+                "metadata": {"env": "test"},
+                "annotations": {"team": "platform"},
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1",
+            None,
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/service-accounts",
+            {"page_size": 50, "filter": "bot"},
+        ),
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1",
+            {
+                "name": "deploy-bot-renamed",
+                "description": "Deploy bot renamed",
+            },
+        ),
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1/api-keys",
+            {"name": "ci", "description": "CI key"},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1/api-keys",
+            None,
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1/api-keys/key-1",
+            None,
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/service-accounts/service-account-1",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resource_policy_methods_use_iam_policy_routes():
     grant_payload = {
-        "agent": {
+        "resource": {
+            "type": "agent",
             "id": "agent-1",
             "name": "planner",
-            "configuration": configuration,
-            "metadata": {},
-            "annotations": {},
         },
-        "user_id": "user-1",
-        "permissions": {"admin": False},
-    }
-    user_grant_payload = {
-        **grant_payload,
-        "user": {
-            "id": "user-1",
-            "first_name": "Ada",
-            "last_name": "Lovelace",
-            "email": "ada@example.test",
-        },
+        "subject": {"type": "user", "id": "user-1"},
+        "direct_roles": ["operator", "list"],
     }
     session = _FakeSession(
         [
             _FakeResponse(status=200, payload={}),
-            _FakeResponse(status=200, payload={}),
-            _FakeResponse(status=200, payload={}),
-            _FakeResponse(status=200, payload=grant_payload),
-            _FakeResponse(
-                status=200, payload={"agent_grants": [grant_payload], "total": 1}
-            ),
-            _FakeResponse(status=200, payload={"agent_grants": [grant_payload]}),
-            _FakeResponse(status=200, payload={"agent_grants": [user_grant_payload]}),
             _FakeResponse(
                 status=200,
                 payload={
-                    "agents": [
-                        {
-                            "agent": grant_payload["agent"],
-                            "count": 1,
-                        }
-                    ]
+                    "resource": {"type": "agent", "id": "agent-1", "name": "planner"},
+                    "access_grants": [grant_payload],
+                    "continuation_token": "next-token",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "resource": {"type": "agent", "id": "agent-1", "name": "planner"},
+                    "access_grants": [grant_payload],
                 },
             ),
             _FakeResponse(status=200, payload={}),
@@ -987,105 +1395,202 @@ async def test_agent_grant_methods_use_agent_grant_routes():
     )
     client = Meshagent(base_url="http://example.test", token="token", session=session)
 
-    await client.create_agent_grant(
-        project_id="proj_123", agent_id="agent-1", user_id="user-1"
-    )
-    await client.create_agent_grant_by_email(
+    await client.grant_resource_policy(
         project_id="proj_123",
-        agent_id="agent-1",
-        email="ada@example.test",
-        invite_redirect_url="https://studio.example.test",
+        resource_type="agent",
+        resource_id="agent-1",
+        subject=AccessSubject(type="user", id="user-1"),
+        roles=["operator", "list"],
     )
-    await client.update_agent_grant(
-        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    page = await client.get_resource_policy_page(
+        project_id="proj_123",
+        resource_type="agent",
+        resource_id="agent-1",
+        continuation_token="cursor-1",
     )
-    grant = await client.get_agent_grant(
-        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    grants = await client.get_resource_policy(
+        project_id="proj_123",
+        resource_type="agent",
+        resource_id="agent-1",
     )
-    page = await client.list_agent_grants_by_user_page(
-        project_id="proj_123", user_id="me", filter="plan"
-    )
-    grants = await client.list_agent_grants_by_agent(
-        project_id="proj_123", agent_name="planner"
-    )
-    members = await client.list_agent_members_by_agent(
-        project_id="proj_123", agent_name="planner"
-    )
-    counts = await client.list_unique_agents_with_grants(project_id="proj_123")
-    await client.delete_agent_grant(
-        project_id="proj_123", agent_id="agent-1", user_id="user-1"
+    await client.revoke_resource_policy(
+        project_id="proj_123",
+        resource_type="agent",
+        resource_id="agent-1",
+        subject=AccessSubject(type="user", id="user-1"),
     )
 
-    assert grant.agent.name == "planner"
-    assert page.total == 1
-    assert grants[0].user_id == "user-1"
-    assert members[0].user.email == "ada@example.test"
-    assert counts[0].count == 1
+    assert len(page.access_grants) == 1
+    assert page.continuation_token == "next-token"
+    assert page.access_grants[0].direct_roles == ["operator", "list"]
+    assert grants[0].subject.id == "user-1"
     assert session.calls == [
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/agent-grants",
+            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy:grant",
             {
-                "agent_id": "agent-1",
-                "user_id": "user-1",
-                "email": None,
-                "permissions": {"admin": False},
-                "invite_redirect_url": None,
+                "subject": {
+                    "type": "user",
+                    "id": "user-1",
+                },
+                "roles": ["operator", "list"],
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy",
+            {"page_size": "50", "continuation_token": "cursor-1"},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy",
+            {"page_size": "50"},
+        ),
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy:revoke",
+            {
+                "subject": {
+                    "type": "user",
+                    "id": "user-1",
+                },
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_access_evaluator_methods_use_access_routes():
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={"allowed": True, "relation": "can_use"}),
+            _FakeResponse(status=200, payload={"allowed": True, "relation": "can_use"}),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "resource": {"type": "room", "id": "room-1", "name": "demo"},
+                    "subject": {"type": "user", "id": "user-1"},
+                    "effective_roles": ["developer"],
+                    "capabilities": {"can_use": True, "can_manage": False},
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "access_grants": [
+                        {
+                            "resource": {
+                                "type": "room",
+                                "id": "room-1",
+                                "name": "demo",
+                            },
+                            "subject": {"type": "user", "id": "user-1"},
+                            "direct_roles": ["developer"],
+                        }
+                    ]
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "access_grants": [
+                        {
+                            "resource": {
+                                "type": "agent",
+                                "id": "agent-1",
+                                "name": "planner",
+                            },
+                            "subject": {"type": "user", "id": "user-1"},
+                            "direct_roles": ["admin"],
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    test_result = await client.test_access(
+        project_id="proj_123",
+        subject=AccessSubject(type="user", id="user-1"),
+        resource=AccessResource(type="room", id="room-1"),
+        relation="can_use",
+    )
+    userset_test_result = await client.test_access(
+        project_id="proj_123",
+        subject=AccessSubject(
+            type="userset",
+            id="proj_123",
+            object_type="project",
+            relation="member",
+        ),
+        resource=AccessResource(type="room", id="room-1"),
+        relation="can_use",
+    )
+    effective = await client.get_effective_access(
+        project_id="proj_123",
+        subject=AccessSubject(type="user", id="user-1"),
+        resource=AccessResource(type="room", id="room-1"),
+        relations=["can_use", "can_manage"],
+    )
+    bindings_page = await client.list_access_bindings_page(
+        project_id="proj_123",
+        subject=AccessSubject(type="user", id="user-1"),
+    )
+    bindings = await client.list_access_bindings(
+        project_id="proj_123",
+        subject=AccessSubject(type="user", id="user-1"),
+    )
+
+    assert test_result.allowed is True
+    assert userset_test_result.allowed is True
+    assert effective.effective_roles == ["developer"]
+    assert effective.capabilities == {"can_use": True, "can_manage": False}
+    assert bindings_page.access_grants[0].resource.name == "demo"
+    assert bindings_page.access_grants[0].direct_roles == ["developer"]
+    assert bindings[0].resource.type == "agent"
+    assert bindings[0].direct_roles == ["admin"]
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/access:test",
+            {
+                "subject": {"type": "user", "id": "user-1"},
+                "resource": {"type": "room", "id": "room-1"},
+                "relation": "can_use",
             },
         ),
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/agent-grants",
+            "http://example.test/accounts/projects/proj_123/access:test",
             {
-                "agent_id": "agent-1",
-                "user_id": None,
-                "email": "ada@example.test",
-                "permissions": {"admin": False},
-                "invite_redirect_url": "https://studio.example.test",
+                "subject": {
+                    "type": "userset",
+                    "id": "proj_123",
+                    "object_type": "project",
+                    "relation": "member",
+                },
+                "resource": {"type": "room", "id": "room-1"},
+                "relation": "can_use",
             },
         ),
         (
-            "put",
-            "http://example.test/accounts/projects/proj_123/agent-grants/unused",
+            "post",
+            "http://example.test/accounts/projects/proj_123/access:effective",
             {
-                "agent_id": "agent-1",
-                "user_id": "user-1",
-                "permissions": {"admin": False},
+                "subject": {"type": "user", "id": "user-1"},
+                "resource": {"type": "room", "id": "room-1"},
+                "relations": ["can_use", "can_manage"],
             },
         ),
         (
-            "get",
-            "http://example.test/accounts/projects/proj_123/agent-grants/agent-1/user-1",
-            None,
+            "post",
+            "http://example.test/accounts/projects/proj_123/access:bindings",
+            {"subject": {"type": "user", "id": "user-1"}},
         ),
         (
-            "get",
-            "http://example.test/accounts/projects/proj_123/agent-grants/by-user/me",
-            {
-                "limit": "100",
-                "offset": "0",
-                "order_by": "agent_name",
-                "filter": "plan",
-            },
-        ),
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/agent-grants/by-agent/planner",
-            {"limit": "50", "offset": "0"},
-        ),
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/members/by-agent/planner",
-            {"limit": "50", "offset": "0"},
-        ),
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/agent-grants/by-agent",
-            {"limit": "50", "offset": "0"},
-        ),
-        (
-            "delete",
-            "http://example.test/accounts/projects/proj_123/agent-grants/agent-1/user-1",
-            None,
+            "post",
+            "http://example.test/accounts/projects/proj_123/access:bindings",
+            {"subject": {"type": "user", "id": "user-1"}},
         ),
     ]

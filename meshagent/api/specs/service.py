@@ -627,7 +627,7 @@ class EndpointSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str = Field(
         ...,
-        description="the path that should receive a webhook call when the service starts",
+        description="the path that should receive a service handoff call when the service starts",
     )
     meshagent: Optional[MeshagentEndpointSpec] = Field(
         None,
@@ -662,7 +662,7 @@ class PortSpec(BaseModel):
     published: Optional[bool] = Field(
         None,
         description=(
-            "allow traffic to be routed directly to this container from the internet, useful for implementing patterns such as webhooks"
+            "allow traffic to be routed directly to this container from the internet"
         ),
     )
     public: Optional[bool] = Field(

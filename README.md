@@ -43,7 +43,7 @@ Messages are encoded and decoded using a ``Protocol`` layer that is transport-ag
 ``SyncClient`` and the document runtime allow multiple participants to edit structured documents (defined by a ``MeshSchema``) with real-time updates propagated via WebSocket messages.
 
 ### WebhookServer
-``WebhookServer`` can run in your own service to receive signed events (HTTP webhooks) from MeshAgent—such as room lifecycle events (e.g., room started/ended)—allowing you to trigger custom logic.
+``WebhookServer`` can run in your own service to receive signed ``room.call`` handoffs from MeshAgent.
 
 ### Meshagent
 Separate from rooms, ``Meshagent`` is a REST-based client for managing projects, API keys, and secrets. It is useful for administrative tasks.

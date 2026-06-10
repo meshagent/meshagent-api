@@ -10,6 +10,7 @@ from pydantic import (
     JsonValue,
     Field,
     ConfigDict,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -63,14 +64,14 @@ class ServerError(RoomException):
 
 class OAuthClient(BaseModel):
     client_id: str
-    client_secret: str
+    client_secret: str | None = None
     grant_types: list[str]
     response_types: list[str]
     redirect_uris: list[str]
     scope: str
     project_id: str
     metadata: dict[str, str]
-    official: bool
+    official: bool = False
 
 
 class OAuthTokenResponse(BaseModel):
@@ -111,12 +112,6 @@ class MeshagentDeploymentConfig(BaseModel):
     version: str | None = None
 
 
-class RoomShare(BaseModel):
-    id: str
-    project_id: str
-    settings: dict[str, JsonValue]
-
-
 class RoomSession(BaseModel):
     id: str
     room_id: Optional[str]
@@ -143,12 +138,269 @@ class Room(BaseModel):
 class RoomsPage(BaseModel):
     rooms: list[Room]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
-class ProjectRoomGrant(BaseModel):
-    room: Room
-    user_id: str
-    permissions: ApiScope
+AccessSubjectType = Literal["user", "group", "agent", "service_account", "userset"]
+AccessResourceType = Literal[
+    "project",
+    "room",
+    "agent",
+    "group",
+    "repository",
+    "feed",
+    "secret",
+]
+ProjectRole = Literal[
+    "member",
+    "admin",
+    "developer",
+    "room_creator",
+    "room_inventory",
+    "room_manager",
+    "session_inventory",
+    "agent_creator",
+    "agent_inventory",
+    "agent_manager",
+    "repository_creator",
+    "repository_inventory",
+    "repository_manager",
+    "feed_creator",
+    "feed_inventory",
+    "feed_manager",
+    "oauth_client_creator",
+    "oauth_client_inventory",
+    "oauth_client_manager",
+    "api_key_creator",
+    "api_key_inventory",
+    "api_key_manager",
+    "secret_creator",
+    "secret_inventory",
+    "secret_manager",
+    "external_oauth_client_creator",
+    "external_oauth_client_inventory",
+    "external_oauth_client_manager",
+    "service_creator",
+    "service_inventory",
+    "service_manager",
+    "service_account_creator",
+    "service_account_inventory",
+    "service_account_manager",
+    "participant_token_creator",
+    "mailbox_creator",
+    "mailbox_inventory",
+    "mailbox_manager",
+    "route_creator",
+    "route_inventory",
+    "route_manager",
+    "scheduled_task_creator",
+    "scheduled_task_inventory",
+    "scheduled_task_manager",
+    "feed_subscription_creator",
+    "feed_subscription_inventory",
+    "feed_subscription_manager",
+    "llm_logger_creator",
+    "llm_logger_inventory",
+    "llm_logger_manager",
+    "llm_proxy_user",
+    "usage_reporter",
+    "billing_manager",
+    "group_manager",
+]
+ResourceRole = Literal["viewer", "operator", "developer", "admin"]
+FeedRole = Literal["reader", "subscriber", "publisher", "manager"]
+SecretRole = Literal["secret_accessor", "secret_manager", "secret_list"]
+AccessRole = ProjectRole | ResourceRole | FeedRole | SecretRole | Literal["list"]
+
+
+class AccessSubject(BaseModel):
+    type: AccessSubjectType
+    id: str
+    name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    object_type: Optional[Literal["project"]] = None
+    relation: Optional[Literal["member", "developer", "agent"]] = None
+
+
+class AccessResource(BaseModel):
+    type: AccessResourceType
+    id: str
+    name: Optional[str] = None
+    metadata: Optional[dict[str, JsonValue]] = None
+    annotations: Optional[dict[str, str]] = None
+
+
+class RoleGrant(BaseModel):
+    resource: AccessResource
+    subject: AccessSubject
+    direct_roles: list[AccessRole] = Field(default_factory=list)
+
+
+class RoleGrantsPage(BaseModel):
+    grants: list[RoleGrant]
+    continuation_token: Optional[str] = None
+
+
+class AccessBindingsPage(BaseModel):
+    access_grants: list[RoleGrant]
+
+
+class ResourcePolicyPage(BaseModel):
+    resource: AccessResource
+    access_grants: list[RoleGrant]
+    continuation_token: Optional[str] = None
+
+
+class ProjectMemberAccess(BaseModel):
+    user: "User"
+    direct_roles: list[str] = Field(default_factory=list)
+
+
+class ProjectAccessSummary(BaseModel):
+    project_id: str
+    subject: AccessSubject
+    project_roles: list[ProjectRole]
+    capabilities: dict[str, bool]
+
+
+class ResourceAccessSummary(BaseModel):
+    resource: AccessResource
+    subject: AccessSubject
+    effective_roles: list[str]
+    capabilities: dict[str, bool]
+
+
+class AccessTestResult(BaseModel):
+    allowed: bool
+
+
+class Group(BaseModel):
+    id: str
+    name: str
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
+class GroupsPage(BaseModel):
+    groups: list[Group]
+    continuation_token: Optional[str] = None
+
+
+class ServiceAccount(BaseModel):
+    id: str
+    project_id: str
+    key: str
+    name: str
+    display_name: Optional[str] = None
+    description: str = ""
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ServiceAccountsPage(BaseModel):
+    service_accounts: list[ServiceAccount]
+    continuation_token: Optional[str] = None
+
+
+class ApiKey(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    project_id: Optional[str] = None
+    service_account_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    value: Optional[str] = None
+
+
+class ApiKeysPage(BaseModel):
+    keys: list[ApiKey]
+
+
+class ApiKeysRevocationResult(BaseModel):
+    revoked: list[str] = Field(default_factory=list)
+
+
+class GroupMember(BaseModel):
+    subject: AccessSubject
+    direct_roles: list[str] = Field(default_factory=list)
+
+
+class GroupMembersPage(BaseModel):
+    members: list[GroupMember]
+    continuation_token: Optional[str] = None
+
+
+class _CreateGroupRequest(BaseModel):
+    name: str
+    metadata: dict[str, JsonValue] | None = None
+    annotations: dict[str, str] | None = None
+
+
+class _UpdateGroupRequest(BaseModel):
+    name: str
+    metadata: dict[str, JsonValue] | None = None
+    annotations: dict[str, str] | None = None
+
+
+class _SetGroupMemberRequest(BaseModel):
+    subject: AccessSubject
+    role: Literal["member", "manager"] = "member"
+
+
+def _strip_readonly_subject_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    subject = payload.get("subject")
+    if isinstance(subject, dict):
+        subject.pop("first_name", None)
+        subject.pop("last_name", None)
+    return payload
+
+
+def _role_from_api_scope(scope: Any) -> ResourceRole:
+    if not isinstance(scope, ApiScope):
+        scope = ApiScope.model_validate(scope)
+    if scope.admin is not None:
+        return "admin"
+    if scope.developer is not None or scope.tunnels is not None:
+        return "developer"
+    return "operator"
+
+
+def room_scope_for_role_compat(role: ResourceRole) -> ApiScope:
+    if role == "admin":
+        return ApiScope.full()
+    if role == "developer":
+        return ApiScope.agent_default(tunnels=True)
+    return ApiScope.user_default()
+
+
+class ProjectRoomGrant(RoleGrant):
+    @property
+    def room(self) -> Room:
+        return Room(
+            id=self.resource.id,
+            name=self.resource.name or self.resource.id,
+            metadata=self.resource.metadata or {},
+            annotations=self.resource.annotations or {},
+        )
+
+    @property
+    def user_id(self) -> str:
+        return self.subject.id
+
+    @property
+    def permissions(self) -> ApiScope:
+        if "admin" in self.direct_roles:
+            return room_scope_for_role_compat("admin")
+        if "developer" in self.direct_roles:
+            return room_scope_for_role_compat("developer")
+        if "operator" in self.direct_roles:
+            return room_scope_for_role_compat("operator")
+        return ApiScope.user_default()
 
 
 class ManagedAgent(BaseModel):
@@ -163,6 +415,7 @@ Agent = ManagedAgent
 class AgentsPage(BaseModel):
     agents: list[ManagedAgent]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class ManagedAgentGrant(BaseModel):
@@ -170,60 +423,92 @@ class ManagedAgentGrant(BaseModel):
     admin: bool = False
 
 
-class ProjectAgentGrant(BaseModel):
-    agent: ManagedAgent
-    user_id: str
-    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
+class ProjectAgentGrant(RoleGrant):
+    @property
+    def agent(self) -> ManagedAgent:
+        return ManagedAgent(
+            id=self.resource.id,
+            name=self.resource.name or self.resource.id,
+            configuration=ManagedAgentSpec.model_construct(),
+        )
+
+    @property
+    def user_id(self) -> str:
+        return self.subject.id
+
+    @property
+    def permissions(self) -> ManagedAgentGrant:
+        return ManagedAgentGrant(admin="admin" in self.direct_roles)
 
 
 class AgentRoomGrant(ApiScope):
     pass
 
 
-class ProjectAgentRoomGrant(BaseModel):
-    agent: ManagedAgent
-    room: Room
-    permissions: AgentRoomGrant = Field(default_factory=AgentRoomGrant)
+class ProjectAgentRoomGrant(RoleGrant):
+    pass
+
+
+class ProjectRepositoryGrant(RoleGrant):
+    pass
+
+
+class ProjectFeedGrant(RoleGrant):
+    pass
 
 
 class AgentGrantsPage(BaseModel):
     agent_grants: list[ProjectAgentGrant]
-    total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class AgentRoomGrantsPage(BaseModel):
     agent_room_grants: list[ProjectAgentRoomGrant]
-    total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class RoomGrantsPage(BaseModel):
     room_grants: list[ProjectRoomGrant]
+    continuation_token: Optional[str] = None
+
+
+class RepositoryGrantsPage(BaseModel):
+    repository_grants: list[ProjectRepositoryGrant]
+    continuation_token: Optional[str] = None
+
+
+class FeedGrantsPage(BaseModel):
+    feed_grants: list[ProjectFeedGrant]
+    continuation_token: Optional[str] = None
+
+
+class ProjectRepositoriesPage(BaseModel):
+    repositories: list["ProjectRepository"]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class ProjectMembersPage(BaseModel):
-    users: list[dict[str, Any]]
-    total: int = 0
-
-
-class ProjectUserGrantCountsPage(BaseModel):
-    users: list["ProjectUserGrantCount"]
-    total: int = 0
+    users: list[ProjectMemberAccess]
+    continuation_token: Optional[str] = None
 
 
 class MailboxesPage(BaseModel):
     mailboxes: list["Mailbox"]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class RoutesPage(BaseModel):
     routes: list["Route"]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class FeedsPage(BaseModel):
     feeds: list["Feed"]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class OAuthClientsPage(BaseModel):
@@ -234,6 +519,7 @@ class OAuthClientsPage(BaseModel):
 class ScheduledTasksPage(BaseModel):
     tasks: list["ScheduledTask"]
     total: int = 0
+    continuation_token: Optional[str] = None
 
 
 class ScheduledTaskRunsPage(BaseModel):
@@ -258,64 +544,6 @@ class UserAgentGrant(BaseModel):
     agent: ManagedAgent
     user: User
     permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
-
-
-class ProjectRoomGrantCount(BaseModel):
-    room: Room
-    count: int
-
-
-class ProjectAgentGrantCount(BaseModel):
-    agent: ManagedAgent
-    count: int
-
-
-class ProjectUserGrantCount(BaseModel):
-    user_id: str
-    count: int
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    email: str
-
-
-class _CreateRoomGrantRequest(BaseModel):
-    room_id: str
-    user_id: Optional[str] = None
-    email: Optional[str] = None
-    permissions: ApiScope
-    invite_redirect_url: Optional[str] = None
-
-
-class _UpdateRoomGrantRequest(BaseModel):
-    room_id: str
-    user_id: str
-    permissions: ApiScope
-
-
-class _CreateAgentGrantRequest(BaseModel):
-    agent_id: str
-    user_id: Optional[str] = None
-    email: Optional[str] = None
-    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
-    invite_redirect_url: Optional[str] = None
-
-
-class _UpdateAgentGrantRequest(BaseModel):
-    agent_id: str
-    user_id: str
-    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
-
-
-class _CreateAgentRoomGrantRequest(BaseModel):
-    agent_id: str
-    room_id: str
-    permissions: AgentRoomGrant = Field(default_factory=AgentRoomGrant)
-
-
-class _UpdateAgentRoomGrantRequest(BaseModel):
-    agent_id: str
-    room_id: str
-    permissions: AgentRoomGrant = Field(default_factory=AgentRoomGrant)
 
 
 class _BaseSecret(BaseModel):
@@ -442,18 +670,6 @@ def _parse_secret_payload(*, secret: ManagedSecretInfo, raw_data: bytes) -> Secr
     )
 
 
-ProjectRole = Literal["member", "admin", "developer", "none"]
-
-
-class ProjectRoleInfo(BaseModel):
-    role: ProjectRole
-    can_create_rooms: bool = False
-    can_create_agents: bool = False
-    can_use_llm_proxy: bool = False
-    is_admin: bool = False
-    is_developer: bool = False
-
-
 class _CreateMailboxRequest(BaseModel):
     room: str
     queue: str
@@ -537,6 +753,20 @@ class Route(BaseModel):
 
 FeedVisibility = Literal["public", "project", "private"]
 FeedJsonSchema = dict[str, JsonValue] | bool
+FeedReconciliationStatus = Literal["ready", "provisioning", "deleting"]
+
+
+def _feed_reconciliation_status(
+    *,
+    deletion_requested_at: datetime | None,
+    desired_generation: int,
+    applied_generation: int,
+) -> FeedReconciliationStatus:
+    if deletion_requested_at is not None:
+        return "deleting"
+    if applied_generation == desired_generation:
+        return "ready"
+    return "provisioning"
 
 
 class _FeedRequestBase(BaseModel):
@@ -590,6 +820,24 @@ class Feed(BaseModel):
     paused: bool = False
     annotations: dict[str, str] = Field(default_factory=dict)
     message_schema: FeedJsonSchema | None = None
+    desired_generation: int = 1
+    applied_generation: int = 1
+    deletion_requested_at: Optional[datetime] = None
+    reconcile_after: Optional[datetime] = None
+    reconcile_error: Optional[str] = None
+    reconcile_claimed_by: Optional[str] = None
+    reconcile_claimed_at: Optional[datetime] = None
+    reconcile_claim_expires_at: Optional[datetime] = None
+    reconcile_claim_generation: Optional[int] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def status(self) -> FeedReconciliationStatus:
+        return _feed_reconciliation_status(
+            deletion_requested_at=self.deletion_requested_at,
+            desired_generation=self.desired_generation,
+            applied_generation=self.applied_generation,
+        )
 
 
 class _FeedSubscriptionRequestBase(BaseModel):
@@ -634,6 +882,20 @@ class FeedSubscription(BaseModel):
     filename_datetime_format: Optional[str] = None
     created_at: datetime
     annotations: dict[str, str] = Field(default_factory=dict)
+    desired_generation: int = 1
+    applied_generation: int = 1
+    deletion_requested_at: Optional[datetime] = None
+    reconcile_after: Optional[datetime] = None
+    reconcile_error: Optional[str] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def status(self) -> FeedReconciliationStatus:
+        return _feed_reconciliation_status(
+            deletion_requested_at=self.deletion_requested_at,
+            desired_generation=self.desired_generation,
+            applied_generation=self.applied_generation,
+        )
 
 
 class _LLMLoggerRequestBase(BaseModel):
@@ -1021,114 +1283,6 @@ class Meshagent:
                 )
             return await resp.read()
 
-    async def get_project_role(self, project_id: str) -> ProjectRole:
-        """
-        Corresponds to: GET /accounts/projects/{id}/role
-        Returns a JSON dict with { "role" : "member" | "admin" } on success.
-        """
-        return (await self.get_project_role_info(project_id)).role
-
-    async def get_project_role_info(self, project_id: str) -> ProjectRoleInfo:
-        """
-        Corresponds to: GET /accounts/projects/{id}/role
-        Returns role and current-user project permission metadata.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/role"
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-        ) as resp:
-            await self._raise_for_status(resp)
-            try:
-                return ProjectRoleInfo.model_validate(await resp.json())
-            except ValidationError as exc:
-                raise RoomException(f"Invalid project role payload: {exc}") from exc
-
-    async def can_use_llm_proxy(self, project_id: str) -> bool:
-        """
-        Corresponds to: GET /accounts/projects/{id}/role
-        Returns whether the current user can use the project LLM proxy.
-        """
-        return (await self.get_project_role_info(project_id)).can_use_llm_proxy
-
-    async def can_create_rooms(self, project_id: str) -> bool:
-        """
-        Corresponds to: GET /accounts/projects/{id}/role
-        Returns whether the current user can create rooms in the project.
-        """
-        role_info = await self.get_project_role_info(project_id)
-        return role_info.is_developer or role_info.can_create_rooms
-
-    async def create_share(
-        self, project_id: str, settings: Optional[dict] = None
-    ) -> Dict[str, Any]:
-        """
-        Corresponds to: POST /accounts/projects
-        Body: { "name": "<name>" }
-        Returns a JSON dict with { "id" } on success.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/shares"
-
-        payload = {"settings": settings or {}}
-
-        async with self._session.post(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-            return await resp.json()
-
-    async def delete_share(self, project_id: str, share_id: str) -> None:
-        """
-        Corresponds to: DELETE /accounts/projects/:id/shares/:share_id
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/shares/{share_id}"
-
-        async with self._session.delete(
-            url,
-            headers=self._get_headers(),
-        ) as resp:
-            await self._raise_for_status(resp)
-            return None
-
-    async def update_share(
-        self, project_id: str, share_id: str, settings: Optional[dict] = None
-    ) -> None:
-        """
-        Corresponds to: PUT /accounts/projects/:id/shares/:share_id
-        Body: { "settings" }
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/shares/{share_id}"
-
-        payload = {"settings": settings or {}}
-
-        async with self._session.put(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-            return None
-
-    async def list_shares(self, project_id: str) -> list[RoomShare]:
-        """
-        Corresponds to: GET /accounts/projects/:id/shares
-        Returns a JSON dict with { "shares" : [{ "id", "settings" }] } on success.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/shares"
-
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [RoomShare.model_validate(item) for item in data["shares"]]
-            except (KeyError, ValidationError) as exc:
-                raise RoomException(f"Invalid shares payload: {exc}") from exc
-
     async def create_project(
         self, name: str, settings: Optional[dict] = None
     ) -> Dict[str, Any]:
@@ -1151,11 +1305,7 @@ class Meshagent:
         self,
         project_id: str,
         user_id: str,
-        is_admin: bool | None = None,
-        is_developer: bool | None = None,
-        can_create_rooms: bool | None = None,
-        can_create_agents: bool | None = None,
-        can_use_llm_proxy: bool | None = None,
+        roles: list[ProjectRole],
     ) -> Dict[str, Any]:
         """
         Corresponds to: POST /accounts/projects/:id/users
@@ -1166,23 +1316,7 @@ class Meshagent:
         body = {
             "project_id": project_id,
             "user_id": user_id,
-            **({"is_admin": is_admin} if is_admin is not None else {}),
-            **({"is_developer": is_developer} if is_developer is not None else {}),
-            **(
-                {"can_create_rooms": can_create_rooms}
-                if can_create_rooms is not None
-                else {}
-            ),
-            **(
-                {"can_create_agents": can_create_agents}
-                if can_create_agents is not None
-                else {}
-            ),
-            **(
-                {"can_use_llm_proxy": can_use_llm_proxy}
-                if can_use_llm_proxy is not None
-                else {}
-            ),
+            "roles": roles,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=body
@@ -1208,26 +1342,15 @@ class Meshagent:
         project_id: str,
         user_id: str,
         *,
-        is_admin: bool,
-        is_developer: bool,
-        can_create_rooms: bool,
-        can_use_llm_proxy: bool,
-        can_create_agents: bool | None = None,
+        roles: list[ProjectRole],
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/projects/:project_id/users/:user_id
-        Body: { "is_admin", "is_developer", "can_create_rooms", "can_create_agents", "can_use_llm_proxy" }
+        Body: { "roles" }
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users/{user_id}"
-        body = {
-            "is_admin": is_admin,
-            "is_developer": is_developer,
-            "can_create_rooms": can_create_rooms,
-            "can_use_llm_proxy": can_use_llm_proxy,
-        }
-        if can_create_agents is not None:
-            body["can_create_agents"] = can_create_agents
+        body = {"roles": roles}
         async with self._session.put(
             url, headers=self._get_headers(), json=body
         ) as resp:
@@ -1252,8 +1375,8 @@ class Meshagent:
         self,
         project_id: str,
         *,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> ProjectMembersPage:
         """
@@ -1261,7 +1384,9 @@ class Meshagent:
         Returns a JSON dict with { "users": [...] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
-        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        params: Dict[str, str] = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if filter is not None and filter.strip() != "":
             params["filter"] = filter
 
@@ -1270,18 +1395,14 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
-            users = data.get("users", [])
-            if not isinstance(users, list):
-                raise RoomException(
-                    "Invalid project users payload: expected users list"
-                )
-            return ProjectMembersPage(
-                users=users, total=int(data.get("total", len(users)))
-            )
+            try:
+                return ProjectMembersPage.model_validate(data)
+            except ValidationError as exc:
+                raise RoomException(f"Invalid project users payload: {exc}") from exc
 
     async def get_users_in_project(self, project_id: str) -> Dict[str, Any]:
         page = await self.get_users_in_project_page(project_id)
-        return {"users": page.users, "total": page.total}
+        return page.model_dump(mode="json")
 
     async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """
@@ -1351,22 +1472,186 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await self._read_model(resp, ProjectInfo)
 
+    async def list_service_accounts(
+        self,
+        project_id: str,
+        *,
+        page_size: int | None = None,
+        continuation_token: str | None = None,
+        filter: str | None = None,
+    ) -> ServiceAccountsPage:
+        """GET /accounts/projects/{project_id}/service-accounts."""
+        url = f"{self.base_url}/accounts/projects/{project_id}/service-accounts"
+        params: dict[str, object] = {}
+        if page_size is not None:
+            params["page_size"] = page_size
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        if filter is not None:
+            params["filter"] = filter
+
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params or None,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceAccountsPage.model_validate(await resp.json())
+
+    async def create_service_account(
+        self,
+        project_id: str,
+        *,
+        name: str,
+        key: str | None = None,
+        display_name: str | None = None,
+        description: str = "",
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, str] | None = None,
+    ) -> ServiceAccount:
+        """POST /accounts/projects/{project_id}/service-accounts."""
+        url = f"{self.base_url}/accounts/projects/{project_id}/service-accounts"
+        payload: dict[str, object] = {
+            "name": name,
+            "description": description,
+        }
+        if key is not None:
+            payload["key"] = key
+        if display_name is not None:
+            payload["display_name"] = display_name
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if annotations is not None:
+            payload["annotations"] = annotations
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ServiceAccount.model_validate(await resp.json())
+
+    async def get_service_account(
+        self,
+        project_id: str,
+        service_account_id: str,
+    ) -> ServiceAccount:
+        """GET /accounts/projects/{project_id}/service-accounts/{service_account_id}."""
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}"
+        )
+
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return ServiceAccount.model_validate(await resp.json())
+
+    async def update_service_account(
+        self,
+        project_id: str,
+        service_account_id: str,
+        *,
+        name: str,
+        display_name: str | None = None,
+        description: str = "",
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, str] | None = None,
+    ) -> None:
+        """PUT /accounts/projects/{project_id}/service-accounts/{service_account_id}."""
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}"
+        )
+        payload: dict[str, object] = {
+            "name": name,
+            "description": description,
+        }
+        if display_name is not None:
+            payload["display_name"] = display_name
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if annotations is not None:
+            payload["annotations"] = annotations
+
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def delete_service_account(
+        self,
+        project_id: str,
+        service_account_id: str,
+    ) -> None:
+        """DELETE /accounts/projects/{project_id}/service-accounts/{service_account_id}."""
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}"
+        )
+
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def mint_participant_token(
+        self,
+        project_id: str,
+        *,
+        name: str,
+        room_name: str | None = None,
+        role: str | None = None,
+        api: dict[str, Any] | None = None,
+        grants: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """POST /accounts/projects/{project_id}/participant-tokens."""
+        url = f"{self.base_url}/accounts/projects/{project_id}/participant-tokens"
+        payload: dict[str, object] = {"name": name}
+        if grants is not None:
+            payload["grants"] = grants
+        else:
+            if room_name is not None:
+                payload["room_name"] = room_name
+            if role is not None:
+                payload["role"] = role
+            if api is not None:
+                payload["api"] = api
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            token = data.get("token")
+            if not isinstance(token, str) or token.strip() == "":
+                raise RoomException("Invalid participant token mint response")
+            return token
+
     async def create_api_key(
-        self, project_id: str, name: str, description: str
-    ) -> Dict[str, Any]:
+        self,
+        project_id: str,
+        name: str,
+        description: str,
+        service_account_id: str,
+    ) -> ApiKey:
         """
-        Corresponds to: POST /accounts/projects/{project_id}/api-keys
+        Corresponds to:
+        POST /accounts/projects/{project_id}/service-accounts/{service_account_id}/api-keys
         Body: { "name": "<>", "description": "<>" }
         Returns a JSON dict with { "id", "name", "description", "value" }.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}/api-keys"
+        )
         payload = {"name": name, "description": description}
 
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            return ApiKey.model_validate(await resp.json())
 
     async def get_pricing(self) -> Dict[str, Any]:
         """GET /pricing"""
@@ -1547,27 +1832,95 @@ class Meshagent:
                 )
             return [item for item in usage if isinstance(item, dict)]
 
-    async def delete_api_key(self, project_id: str, id: str) -> None:
+    async def get_current_user_llm_proxy_usage(
+        self,
+        project_id: str,
+        *,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        interval: Optional[str] = None,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """GET /accounts/projects/{project_id}/llm-proxy/usage"""
+        url = f"{self.base_url}/accounts/projects/{project_id}/llm-proxy/usage"
+        params: Dict[str, str] = {}
+        if start is not None:
+            params["start"] = start.isoformat()
+        if end is not None:
+            params["end"] = end.isoformat()
+        if interval is not None:
+            params["interval"] = interval
+        if annotations:
+            params["annotations"] = json.dumps(annotations)
+
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params or None,
+        ) as resp:
+            await self._ensure_success(
+                resp,
+                action="retrieve current user LLM proxy usage",
+            )
+            data = await resp.json()
+            usage = data.get("usage", [])
+            if not isinstance(usage, list):
+                raise RoomException(
+                    "Invalid current user LLM proxy usage payload: expected "
+                    "'usage' to be a list"
+                )
+            return [item for item in usage if isinstance(item, dict)]
+
+    async def delete_api_key(
+        self, project_id: str, id: str, service_account_id: str
+    ) -> None:
         """
-        Corresponds to: DELETE /accounts/projects/{project_id}/api-keys/{token_id}
+        Corresponds to:
+        DELETE /accounts/projects/{project_id}/service-accounts/{service_account_id}/api-keys/{token_id}
         Returns 204 No Content on success (no JSON body).
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/api-keys/{id}"
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}/api-keys/{id}"
+        )
 
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             # The server returns status 204 with no content, so no need to parse JSON.
 
-    async def list_api_keys(self, project_id: str) -> Dict[str, Any]:
+    async def revoke_api_keys_by_msid(
+        self, project_id: str, service_account_id: str, msid: str
+    ) -> ApiKeysRevocationResult:
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}/api-keys:revoke"
+        )
+
+        async with self._session.post(
+            url, headers=self._get_headers(), json={"msid": msid}
+        ) as resp:
+            await self._raise_for_status(resp)
+            return ApiKeysRevocationResult.model_validate(await resp.json())
+
+    async def list_api_keys(
+        self, project_id: str, service_account_id: str
+    ) -> ApiKeysPage:
         """
-        Corresponds to: GET /accounts/projects/{project_id}/api-keys
-        Returns a JSON dict like: { "tokens": [ { ... }, ... ] }.
+        Corresponds to:
+        GET /accounts/projects/{project_id}/service-accounts/{service_account_id}/api-keys
+        Returns an API key page.
         """
-        url = f"{self.base_url}/accounts/projects/{project_id}/api-keys"
+        encoded_service_account_id = quote(service_account_id, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{encoded_service_account_id}/api-keys"
+        )
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            return ApiKeysPage.model_validate(await resp.json())
 
     async def get_session(self, project_id: str, session_id: str) -> Dict[str, Any]:
         """
@@ -1632,6 +1985,31 @@ class Meshagent:
             sessions = data.get("sessions", [])
             return [RoomSession.model_validate(session) for session in sessions]
 
+    async def list_recent_room_sessions(
+        self,
+        project_id: str,
+        room_name: str,
+        *,
+        limit: int = 25,
+    ) -> list[RoomSession]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/rooms/{room_name}/sessions
+        Returns a JSON dict: { "sessions": [...] }
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/"
+            f"{quote(room_name, safe='')}/sessions"
+        )
+        params: dict[str, str] = {"limit": str(limit)}
+
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            sessions = data.get("sessions", [])
+            return [RoomSession.model_validate(session) for session in sessions]
+
     async def list_active_agent_sessions(self, project_id: str) -> list[RoomSession]:
         """
         Corresponds to: GET /accounts/projects/{project_id}/agents/sessions/active
@@ -1660,6 +2038,31 @@ class Meshagent:
         params: dict[str, str] = {"limit": str(limit)}
         if agent_id is not None:
             params["agent_id"] = agent_id
+
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            data = await resp.json()
+            sessions = data.get("sessions", [])
+            return [RoomSession.model_validate(session) for session in sessions]
+
+    async def list_recent_single_agent_sessions(
+        self,
+        project_id: str,
+        agent_name: str,
+        *,
+        limit: int = 25,
+    ) -> list[RoomSession]:
+        """
+        Corresponds to: GET /accounts/projects/{project_id}/agents/{agent_name}/sessions
+        Returns a JSON dict: { "sessions": [...] }
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/agents/"
+            f"{quote(agent_name, safe='')}/sessions"
+        )
+        params: dict[str, str] = {"limit": str(limit)}
 
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -1720,98 +2123,6 @@ class Meshagent:
             await self._raise_for_status(resp)
             data = await resp.json()
             return data.get("metrics", [])
-
-    async def create_webhook(
-        self,
-        project_id: str,
-        name: str,
-        url: str,
-        events: List[str],
-        description: str = "",
-        action: Optional[str] = "",
-        payload: Optional[dict] = "",
-    ) -> Dict[str, Any]:
-        """
-        Corresponds to: POST /accounts/projects/{project_id}/webhooks
-        Body: { "name", "description", "url", "events" }
-        The server might generate an internal webhook_id (or retrieve it from the request).
-        Returns whatever JSON object the server responds with (likely empty or your new resource data).
-        """
-        endpoint = f"{self.base_url}/accounts/projects/{project_id}/webhooks"
-        payload = {
-            "name": name,
-            "description": description,
-            "url": url,
-            "events": events,
-            "action": action,
-            "payload": payload,
-        }
-
-        async with self._session.post(
-            endpoint, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-            # If the server returns JSON with newly created webhook info, parse it:
-            return await resp.json()
-
-    async def update_webhook(
-        self,
-        project_id: str,
-        webhook_id: str,
-        name: str,
-        url: str,
-        events: List[str],
-        description: str = "",
-        action: Optional[str] = None,
-        payload: Optional[dict] = None,
-        secret: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Corresponds to: PUT /accounts/projects/{project_id}/webhooks/{webhook_id}
-        Body: { "name", "description", "url", "events" }
-        Returns JSON (could be the updated resource or an empty dict).
-        """
-        endpoint = (
-            f"{self.base_url}/accounts/projects/{project_id}/webhooks/{webhook_id}"
-        )
-        payload = {
-            "name": name,
-            "description": description,
-            "url": url,
-            "events": events,
-            "action": action,
-            "payload": payload,
-            "secret": secret,
-        }
-
-        async with self._session.put(
-            endpoint, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-            return await resp.json()
-
-    async def list_webhooks(self, project_id: str) -> Dict[str, Any]:
-        """
-        Corresponds to: GET /accounts/projects/{project_id}/webhooks
-        Returns a JSON dict like: { "webhooks": [ { ... }, ... ] }
-        """
-        endpoint = f"{self.base_url}/accounts/projects/{project_id}/webhooks"
-
-        async with self._session.get(endpoint, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-            return await resp.json()
-
-    async def delete_webhook(self, project_id: str, webhook_id: str) -> None:
-        """
-        Corresponds to: DELETE /accounts/projects/{project_id}/webhooks/{webhook_id}
-        Typically returns 200 or 204 on success (no JSON body).
-        """
-        endpoint = (
-            f"{self.base_url}/accounts/projects/{project_id}/webhooks/{webhook_id}"
-        )
-
-        async with self._session.delete(endpoint, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
 
     async def create_mailbox(
         self,
@@ -1930,12 +2241,15 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> List[Mailbox]:
         page = await self.list_mailboxes_page(
-            project_id=project_id, count=count, offset=offset, filter=filter
+            project_id=project_id,
+            page_size=page_size,
+            continuation_token=continuation_token,
+            filter=filter,
         )
         return page.mailboxes
 
@@ -1943,8 +2257,8 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> MailboxesPage:
         """
@@ -1952,7 +2266,9 @@ class Meshagent:
         Returns a list[Mailbox].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes"
-        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        params: Dict[str, str] = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if filter is not None and filter.strip() != "":
             params["filter"] = filter
         async with self._session.get(
@@ -1963,7 +2279,9 @@ class Meshagent:
             try:
                 mailboxes = [Mailbox.model_validate(item) for item in data["mailboxes"]]
                 return MailboxesPage(
-                    mailboxes=mailboxes, total=int(data.get("total", len(mailboxes)))
+                    mailboxes=mailboxes,
+                    total=int(data.get("total", len(mailboxes))),
+                    continuation_token=data.get("continuation_token"),
                 )
             except ValidationError as exc:
                 raise RoomException(f"Invalid mailboxes payload: {exc}") from exc
@@ -2103,12 +2421,15 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> List[Route]:
         page = await self.list_routes_page(
-            project_id=project_id, count=count, offset=offset, filter=filter
+            project_id=project_id,
+            page_size=page_size,
+            continuation_token=continuation_token,
+            filter=filter,
         )
         return page.routes
 
@@ -2116,8 +2437,8 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> RoutesPage:
         """
@@ -2125,7 +2446,9 @@ class Meshagent:
         Returns a list[Route].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/routes"
-        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        params: Dict[str, str] = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if filter is not None and filter.strip() != "":
             params["filter"] = filter
         async with self._session.get(
@@ -2136,7 +2459,9 @@ class Meshagent:
             try:
                 routes = [Route.model_validate(item) for item in data["routes"]]
                 return RoutesPage(
-                    routes=routes, total=int(data.get("total", len(routes)))
+                    routes=routes,
+                    total=int(data.get("total", len(routes))),
+                    continuation_token=data.get("continuation_token"),
                 )
             except ValidationError as exc:
                 raise RoomException(f"Invalid routes payload: {exc}") from exc
@@ -2214,12 +2539,17 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
+        view: str | None = None,
     ) -> List[Feed]:
         page = await self.list_feeds_page(
-            project_id=project_id, count=count, offset=offset, filter=filter
+            project_id=project_id,
+            page_size=page_size,
+            continuation_token=continuation_token,
+            filter=filter,
+            view=view,
         )
         return page.feeds
 
@@ -2227,14 +2557,19 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        count: int = 100,
-        offset: int = 0,
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: str | None = None,
+        view: str | None = None,
     ) -> FeedsPage:
         url = f"{self.base_url}/accounts/projects/{project_id}/feeds"
-        params: Dict[str, str] = {"count": str(count), "offset": str(offset)}
+        params: Dict[str, str] = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if filter is not None and filter.strip() != "":
             params["filter"] = filter
+        if view is not None and view.strip() != "":
+            params["view"] = view
         async with self._session.get(
             url, headers=self._get_headers(), params=params
         ) as resp:
@@ -2242,7 +2577,11 @@ class Meshagent:
             data = await resp.json()
             try:
                 feeds = [Feed.model_validate(item) for item in data["feeds"]]
-                return FeedsPage(feeds=feeds, total=int(data.get("total", len(feeds))))
+                return FeedsPage(
+                    feeds=feeds,
+                    total=int(data.get("total", len(feeds))),
+                    continuation_token=data.get("continuation_token"),
+                )
             except ValidationError as exc:
                 raise RoomException(f"Invalid feeds payload: {exc}") from exc
 
@@ -2986,16 +3325,51 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await self._read_model(resp, ProjectRepository)
 
-    async def list_repositories(self, *, project_id: str) -> List[ProjectRepository]:
+    async def list_repositories(
+        self,
+        *,
+        project_id: str,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+        view: str | None = None,
+    ) -> List[ProjectRepository]:
+        page = await self.list_repositories_page(
+            project_id=project_id,
+            page_size=page_size,
+            continuation_token=continuation_token,
+            view=view,
+        )
+        return page.repositories
+
+    async def list_repositories_page(
+        self,
+        *,
+        project_id: str,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+        view: str | None = None,
+    ) -> ProjectRepositoriesPage:
         url = f"{self.base_url}/accounts/projects/{project_id}/repositories"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        params: Dict[str, str] = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        if view is not None and view.strip() != "":
+            params["view"] = view
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             data = await resp.json()
             try:
-                return [
+                repositories = [
                     ProjectRepository.model_validate(item)
                     for item in data["repositories"]
                 ]
+                return ProjectRepositoriesPage(
+                    repositories=repositories,
+                    total=int(data.get("total", len(repositories))),
+                    continuation_token=data.get("continuation_token"),
+                )
             except ValidationError as exc:
                 raise RoomException(f"Invalid repositories payload: {exc}") from exc
 
@@ -3088,9 +3462,12 @@ class Meshagent:
         self,
         *,
         project_id: str,
+        view: str = "all",
     ) -> list[ManagedSecretInfo]:
         url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        async with self._session.get(
+            url, headers=self._get_headers(), params={"view": view}
+        ) as resp:
             await self._raise_for_status(resp)
             try:
                 return _ListManagedSecretsResponse.model_validate(
@@ -3665,7 +4042,6 @@ class Meshagent:
         if_not_exists: bool = False,
         metadata: Optional[dict[str, any]] = None,
         annotations: Optional[dict[str, str]] = None,
-        permissions: Optional[dict[str, ApiScope]] = None,
     ) -> Room:
         """
         POST /accounts/projects/{project_id}/rooms
@@ -3678,7 +4054,6 @@ class Meshagent:
             "if_not_exists": bool(if_not_exists),
             "metadata": metadata,
             "annotations": annotations,
-            "permissions": permissions,
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
@@ -3738,27 +4113,201 @@ class Meshagent:
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
+    async def create_group(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        metadata: Optional[dict[str, JsonValue]] = None,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> Group:
+        url = f"{self.base_url}/accounts/projects/{project_id}/groups"
+        payload = _CreateGroupRequest(
+            name=name,
+            metadata=metadata,
+            annotations=annotations,
+        ).model_dump(mode="json", exclude_none=True)
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return Group.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid group payload: {exc}") from exc
+
+    async def get_group(self, *, project_id: str, group_id: str) -> Group:
+        url = f"{self.base_url}/accounts/projects/{project_id}/groups/{group_id}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            if resp.status == 404:
+                raise RoomException("group not found")
+            await self._raise_for_status(resp)
+            try:
+                return Group.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid group payload: {exc}") from exc
+
+    async def update_group(
+        self,
+        *,
+        project_id: str,
+        group_id: str,
+        name: str,
+        metadata: Optional[dict[str, JsonValue]] = None,
+        annotations: Optional[dict[str, str]] = None,
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/groups/{group_id}"
+        payload = _UpdateGroupRequest(
+            name=name,
+            metadata=metadata,
+            annotations=annotations,
+        ).model_dump(mode="json", exclude_none=True)
+        async with self._session.put(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def delete_group(self, *, project_id: str, group_id: str) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/groups/{group_id}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def list_groups_page(
+        self,
+        *,
+        project_id: str,
+        page_size: int = 50,
+        continuation_token: Optional[str] = None,
+        filter: Optional[str] = None,
+    ) -> GroupsPage:
+        url = f"{self.base_url}/accounts/projects/{project_id}/groups"
+        params: dict[str, str | int] = {"page_size": page_size}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        if filter is not None:
+            params["filter"] = filter
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params,
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return GroupsPage.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid groups payload: {exc}") from exc
+
+    async def list_groups(
+        self,
+        *,
+        project_id: str,
+        page_size: int = 50,
+        continuation_token: Optional[str] = None,
+        filter: Optional[str] = None,
+    ) -> list[Group]:
+        page = await self.list_groups_page(
+            project_id=project_id,
+            page_size=page_size,
+            continuation_token=continuation_token,
+            filter=filter,
+        )
+        return page.groups
+
+    async def set_group_member(
+        self,
+        *,
+        project_id: str,
+        group_id: str,
+        subject: AccessSubject,
+        role: Literal["member", "manager"] = "member",
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/groups/{group_id}/members"
+        )
+        payload = _SetGroupMemberRequest(subject=subject, role=role).model_dump(
+            mode="json"
+        )
+        payload = _strip_readonly_subject_fields(payload)
+        async with self._session.post(
+            url, headers=self._get_headers(), json=payload
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def delete_group_member(
+        self,
+        *,
+        project_id: str,
+        group_id: str,
+        subject_type: Literal["user", "agent", "group"],
+        subject_id: str,
+    ) -> None:
+        from urllib.parse import quote
+
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}"
+            f"/groups/{quote(group_id, safe='')}/members/"
+            f"{quote(subject_type, safe='')}/{quote(subject_id, safe='')}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def list_group_members_page(
+        self,
+        *,
+        project_id: str,
+        group_id: str,
+        page_size: int = 50,
+        continuation_token: Optional[str] = None,
+    ) -> GroupMembersPage:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/groups/{group_id}/members"
+        )
+        params: dict[str, str | int] = {"page_size": page_size}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params,
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return GroupMembersPage.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid group members payload: {exc}") from exc
+
+    async def list_group_members(
+        self,
+        *,
+        project_id: str,
+        group_id: str,
+        page_size: int = 50,
+        continuation_token: Optional[str] = None,
+    ) -> list[GroupMember]:
+        page = await self.list_group_members_page(
+            project_id=project_id,
+            group_id=group_id,
+            page_size=page_size,
+            continuation_token=continuation_token,
+        )
+        return page.members
+
     async def create_agent(
         self,
         *,
         project_id: str,
         configuration: ManagedAgentSpec,
         if_not_exists: bool = False,
-        permissions: Optional[dict[str, ManagedAgentGrant]] = None,
     ) -> ManagedAgent:
         """
         POST /accounts/projects/{project_id}/agents
-        Body: { "configuration": ManagedAgentSpec, "if_not_exists?": bool, "permissions?": dict }
+        Body: { "configuration": ManagedAgentSpec, "if_not_exists?": bool }
         Returns Agent.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/agents"
         payload = {
             "configuration": configuration.model_dump(mode="json"),
             "if_not_exists": bool(if_not_exists),
-            "permissions": {
-                user_id: grant.model_dump(mode="json")
-                for user_id, grant in (permissions or {}).items()
-            },
         }
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
@@ -3839,386 +4388,25 @@ class Meshagent:
             await self._raise_for_status(resp)
             return AgentConnectionInfo.model_validate(await resp.json())
 
-    async def create_room_grant(
-        self,
-        *,
-        project_id: str,
-        room_id: str,
-        user_id: str,
-        permissions: Dict[str, Any],
-    ) -> None:
-        """
-        POST /accounts/projects/{project_id}/room-grants
-        Body: { "room_id", "user_id", "permissions" }
-        Returns {} on success.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
-        payload = _CreateRoomGrantRequest(
-            room_id=room_id,
-            user_id=user_id,
-            permissions=permissions,
-        ).model_dump(mode="json")
-
-        async with self._session.post(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def create_room_grant_by_email(
-        self,
-        *,
-        project_id: str,
-        room_id: str,
-        email: str,
-        permissions: ApiScope,
-        invite_redirect_url: str | None = None,
-    ) -> None:
-        """
-        POST /accounts/projects/{project_id}/room-grants
-        Body: { "room_id", "user_id", "permissions" }
-        Returns {} on success.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
-        payload = _CreateRoomGrantRequest(
-            room_id=room_id,
-            email=email,
-            permissions=permissions,
-            invite_redirect_url=invite_redirect_url,
-        ).model_dump(mode="json")
-
-        async with self._session.post(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def update_room_grant(
-        self,
-        *,
-        project_id: str,
-        room_id: str,
-        user_id: str,
-        permissions: ApiScope,
-        grant_id: Optional[str] = None,
-    ) -> None:
-        """
-        PUT /accounts/projects/{project_id}/room-grants/{grant_id}
-        Body: { "room_id", "user_id", "permissions" }
-        NOTE: The server handler currently ignores grant_id and updates by (project_id, room_id, user_id).
-        """
-        gid = grant_id or "unused"
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/{gid}"
-        payload = _UpdateRoomGrantRequest(
-            room_id=room_id,
-            user_id=user_id,
-            permissions=permissions,
-        ).model_dump(mode="json")
-
-        async with self._session.put(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def delete_room_grant(
-        self, *, project_id: str, room_id: str, user_id: str
-    ) -> None:
-        """
-        DELETE /accounts/projects/{project_id}/room-grants/{room_id}/{user_id}
-        Returns {} on success.
-        """
-        from urllib.parse import quote
-
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/{quote(room_id, safe='')}/{quote(user_id, safe='')}"
-        )
-        async with self._session.delete(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-
-    async def get_room_grant(
-        self, *, project_id: str, room_id: str, user_id: str
-    ) -> ProjectRoomGrant:
-        """
-        GET /accounts/projects/{project_id}/room-grants/{room_id}/{user_id}
-        Returns ProjectRoomGrant
-        """
-        from urllib.parse import quote
-
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/{quote(room_id, safe='')}/{quote(user_id, safe='')}"
-        )
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return ProjectRoomGrant.model_validate(data)
-            except ValidationError as exc:
-                raise RoomException(f"Invalid room grant payload: {exc}") from exc
-
-    async def create_agent_grant(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        user_id: str,
-        permissions: ManagedAgentGrant | None = None,
-    ) -> None:
-        """
-        POST /accounts/projects/{project_id}/agent-grants
-        Body: { "agent_id", "user_id", "permissions" }
-        Returns {} on success.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants"
-        payload = _CreateAgentGrantRequest(
-            agent_id=agent_id,
-            user_id=user_id,
-            permissions=permissions or ManagedAgentGrant(),
-        ).model_dump(mode="json")
-
-        async with self._session.post(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def create_agent_grant_by_email(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        email: str,
-        permissions: ManagedAgentGrant | None = None,
-        invite_redirect_url: str | None = None,
-    ) -> None:
-        """
-        POST /accounts/projects/{project_id}/agent-grants
-        Body: { "agent_id", "email", "permissions" }
-        Returns {} on success.
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants"
-        payload = _CreateAgentGrantRequest(
-            agent_id=agent_id,
-            email=email,
-            permissions=permissions or ManagedAgentGrant(),
-            invite_redirect_url=invite_redirect_url,
-        ).model_dump(mode="json")
-
-        async with self._session.post(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def update_agent_grant(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        user_id: str,
-        permissions: ManagedAgentGrant | None = None,
-        grant_id: Optional[str] = None,
-    ) -> None:
-        """
-        PUT /accounts/projects/{project_id}/agent-grants/{grant_id}
-        Body: { "agent_id", "user_id", "permissions" }
-        NOTE: The server handler currently ignores grant_id and updates by (project_id, agent_id, user_id).
-        """
-        gid = grant_id or "unused"
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants/{gid}"
-        payload = _UpdateAgentGrantRequest(
-            agent_id=agent_id,
-            user_id=user_id,
-            permissions=permissions or ManagedAgentGrant(),
-        ).model_dump(mode="json")
-
-        async with self._session.put(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def delete_agent_grant(
-        self, *, project_id: str, agent_id: str, user_id: str
-    ) -> None:
-        """
-        DELETE /accounts/projects/{project_id}/agent-grants/{agent_id}/{user_id}
-        Returns {} on success.
-        """
-        from urllib.parse import quote
-
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-grants/{quote(agent_id, safe='')}/{quote(user_id, safe='')}"
-        )
-        async with self._session.delete(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-
-    async def get_agent_grant(
-        self, *, project_id: str, agent_id: str, user_id: str
-    ) -> ProjectAgentGrant:
-        """
-        GET /accounts/projects/{project_id}/agent-grants/{agent_id}/{user_id}
-        Returns ProjectAgentGrant
-        """
-        from urllib.parse import quote
-
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-grants/{quote(agent_id, safe='')}/{quote(user_id, safe='')}"
-        )
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return ProjectAgentGrant.model_validate(data)
-            except ValidationError as exc:
-                raise RoomException(f"Invalid agent grant payload: {exc}") from exc
-
-    async def create_agent_room_grant(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        room_id: str,
-        permissions: AgentRoomGrant | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-room-grants"
-        payload = _CreateAgentRoomGrantRequest(
-            agent_id=agent_id,
-            room_id=room_id,
-            permissions=permissions or AgentRoomGrant(),
-        ).model_dump(mode="json")
-        async with self._session.post(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def update_agent_room_grant(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        room_id: str,
-        permissions: AgentRoomGrant | None = None,
-        grant_id: Optional[str] = None,
-    ) -> None:
-        gid = grant_id or "unused"
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-room-grants/{gid}"
-        payload = _UpdateAgentRoomGrantRequest(
-            agent_id=agent_id,
-            room_id=room_id,
-            permissions=permissions or AgentRoomGrant(),
-        ).model_dump(mode="json")
-        async with self._session.put(
-            url, headers=self._get_headers(), json=payload
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def delete_agent_room_grant(
-        self, *, project_id: str, agent_id: str, room_id: str
-    ) -> None:
-        from urllib.parse import quote
-
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-room-grants/{quote(agent_id, safe='')}/{quote(room_id, safe='')}"
-        )
-        async with self._session.delete(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-
-    async def get_agent_room_grant(
-        self, *, project_id: str, agent_id: str, room_id: str
-    ) -> ProjectAgentRoomGrant:
-        from urllib.parse import quote
-
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-room-grants/{quote(agent_id, safe='')}/{quote(room_id, safe='')}"
-        )
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return ProjectAgentRoomGrant.model_validate(data)
-            except ValidationError as exc:
-                raise RoomException(f"Invalid agent room grant payload: {exc}") from exc
-
-    async def list_agent_room_grants_by_agent(
-        self,
-        *,
-        project_id: str,
-        agent_name: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> list[ProjectAgentRoomGrant]:
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-room-grants/by-agent/{quote(agent_name, safe='')}"
-        )
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [
-                    ProjectAgentRoomGrant.model_validate(item)
-                    for item in data["agent_room_grants"]
-                ]
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid agent room grants-by-agent payload: {exc}"
-                ) from exc
-
-    async def list_agent_room_grants_by_room(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> list[ProjectAgentRoomGrant]:
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-room-grants/by-room/{quote(room_name, safe='')}"
-        )
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [
-                    ProjectAgentRoomGrant.model_validate(item)
-                    for item in data["agent_room_grants"]
-                ]
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid agent room grants-by-room payload: {exc}"
-                ) from exc
-
     async def list_rooms(
         self,
         *,
         project_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "room_name",
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: Optional[str] = None,
+        view: str | None = None,
     ) -> List[Room]:
         """
-        GET /accounts/projects/{project_id}/rooms?limit=&offset=&order_by=
+        GET /accounts/projects/{project_id}/rooms?page_size=&continuation_token=&filter=&view=
         Returns [Rooms]
         """
         page = await self.list_rooms_page(
             project_id=project_id,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
+            page_size=page_size,
+            continuation_token=continuation_token,
             filter=filter,
+            view=view,
         )
         return page.rooms
 
@@ -4226,18 +4414,22 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "room_name",
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: Optional[str] = None,
+        view: str | None = None,
     ) -> RoomsPage:
         """
-        GET /accounts/projects/{project_id}/rooms?limit=&offset=&order_by=&filter=
-        Returns paged rooms with total.
+        GET /accounts/projects/{project_id}/rooms?page_size=&continuation_token=&filter=&view=
+        Returns paged rooms.
         """
-        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        params = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if filter is not None:
             params["filter"] = filter
+        if view is not None:
+            params["view"] = view
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms"
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -4253,21 +4445,21 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "agent_name",
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: Optional[str] = None,
+        view: str | None = None,
     ) -> List[ManagedAgent]:
         """
-        GET /accounts/projects/{project_id}/agents?limit=&offset=&order_by=
+        GET /accounts/projects/{project_id}/agents?page_size=&continuation_token=&filter=&view=
         Returns [Agents]
         """
         page = await self.list_agents_page(
             project_id=project_id,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
+            page_size=page_size,
+            continuation_token=continuation_token,
             filter=filter,
+            view=view,
         )
         return page.agents
 
@@ -4275,18 +4467,22 @@ class Meshagent:
         self,
         *,
         project_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "agent_name",
+        page_size: int = 100,
+        continuation_token: str | None = None,
         filter: Optional[str] = None,
+        view: str | None = None,
     ) -> AgentsPage:
         """
-        GET /accounts/projects/{project_id}/agents?limit=&offset=&order_by=&filter=
-        Returns paged agents with total.
+        GET /accounts/projects/{project_id}/agents?page_size=&continuation_token=&filter=&view=
+        Returns paged agents.
         """
-        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
+        params = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if filter is not None:
             params["filter"] = filter
+        if view is not None:
+            params["view"] = view
         url = f"{self.base_url}/accounts/projects/{project_id}/agents"
         async with self._session.get(
             url, headers=self._get_headers(), params=params
@@ -4298,373 +4494,195 @@ class Meshagent:
             except ValidationError as exc:
                 raise RoomException(f"Invalid agents list payload: {exc}") from exc
 
-    async def list_room_grants(
+    async def test_access(
         self,
         *,
         project_id: str,
-        limit: int = 50,
-        offset: int = 0,
-        order_by: str = "room_name",
-    ) -> List[ProjectRoomGrant]:
-        """
-        GET /accounts/projects/{project_id}/room-grants?limit=&offset=&order_by=
-        Returns [ProjectRoomGrant]
-        """
-        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants"
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
+        subject: AccessSubject,
+        resource: AccessResource,
+        relation: str,
+    ) -> AccessTestResult:
+        """POST /accounts/projects/{project_id}/access:test."""
+        payload = {
+            "subject": subject.model_dump(mode="json", exclude_none=True),
+            "resource": resource.model_dump(mode="json", exclude_none=True),
+            "relation": relation,
+        }
+        url = f"{self.base_url}/accounts/projects/{project_id}/access:test"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
         ) as resp:
             await self._raise_for_status(resp)
-            data = await resp.json()
             try:
-                return [
-                    ProjectRoomGrant.model_validate(item)
-                    for item in data["room_grants"]
-                ]
+                return AccessTestResult.model_validate(await resp.json())
             except ValidationError as exc:
-                raise RoomException(f"Invalid room grants list payload: {exc}") from exc
+                raise RoomException(f"Invalid access test payload: {exc}") from exc
 
-    async def list_agent_grants(
+    async def get_effective_access(
         self,
         *,
         project_id: str,
-        limit: int = 50,
-        offset: int = 0,
-        order_by: str = "agent_name",
-    ) -> List[ProjectAgentGrant]:
-        """
-        GET /accounts/projects/{project_id}/agent-grants?limit=&offset=&order_by=
-        Returns [ProjectAgentGrant]
-        """
-        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants"
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
+        subject: AccessSubject,
+        resource: AccessResource,
+        relations: list[str] | None = None,
+    ) -> ResourceAccessSummary:
+        """POST /accounts/projects/{project_id}/access:effective."""
+        payload: dict[str, Any] = {
+            "subject": subject.model_dump(mode="json", exclude_none=True),
+            "resource": resource.model_dump(mode="json", exclude_none=True),
+        }
+        if relations is not None:
+            payload["relations"] = relations
+        url = f"{self.base_url}/accounts/projects/{project_id}/access:effective"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
         ) as resp:
             await self._raise_for_status(resp)
-            data = await resp.json()
             try:
-                return [
-                    ProjectAgentGrant.model_validate(item)
-                    for item in data["agent_grants"]
-                ]
+                return ResourceAccessSummary.model_validate(await resp.json())
             except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid agent grants list payload: {exc}"
-                ) from exc
+                raise RoomException(f"Invalid effective access payload: {exc}") from exc
 
-    async def list_room_grants_by_user(
+    async def list_access_bindings(
         self,
         *,
         project_id: str,
-        user_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "room_name",
-        filter: Optional[str] = None,
-    ) -> List[ProjectRoomGrant]:
-        """
-        GET /accounts/projects/{project_id}/room-grants/by-user/{user_id}?limit=&offset=&order_by=
-        Returns [ProjectRoomGrant]
-        """
-        page = await self.list_room_grants_by_user_page(
+        subject: AccessSubject,
+    ) -> list[RoleGrant]:
+        """POST /accounts/projects/{project_id}/access:bindings."""
+        page = await self.list_access_bindings_page(
             project_id=project_id,
-            user_id=user_id,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            filter=filter,
+            subject=subject,
         )
-        return page.room_grants
+        return page.access_grants
 
-    async def list_room_grants_by_user_page(
+    async def list_access_bindings_page(
         self,
         *,
         project_id: str,
-        user_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "room_name",
-        filter: Optional[str] = None,
-    ) -> RoomGrantsPage:
-        """
-        GET /accounts/projects/{project_id}/room-grants/by-user/{user_id}?limit=&offset=&order_by=&filter=
-        Returns paged room grants with total.
-        """
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
-        if filter is not None:
-            params["filter"] = filter
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/by-user/{quote(user_id, safe='')}"
-        )
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
+        subject: AccessSubject,
+    ) -> AccessBindingsPage:
+        """POST /accounts/projects/{project_id}/access:bindings."""
+        payload = {"subject": subject.model_dump(mode="json", exclude_none=True)}
+        url = f"{self.base_url}/accounts/projects/{project_id}/access:bindings"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
         ) as resp:
             await self._raise_for_status(resp)
-            data = await resp.json()
             try:
-                return RoomGrantsPage.model_validate(data)
+                return AccessBindingsPage.model_validate(await resp.json())
             except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid room grants-by-user payload: {exc}"
-                ) from exc
+                raise RoomException(f"Invalid access bindings payload: {exc}") from exc
 
-    async def list_agent_grants_by_user(
+    async def get_resource_policy_page(
         self,
         *,
         project_id: str,
-        user_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "agent_name",
-        filter: Optional[str] = None,
-    ) -> List[ProjectAgentGrant]:
-        """
-        GET /accounts/projects/{project_id}/agent-grants/by-user/{user_id}?limit=&offset=&order_by=
-        Returns [ProjectAgentGrant]
-        """
-        page = await self.list_agent_grants_by_user_page(
-            project_id=project_id,
-            user_id=user_id,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            filter=filter,
-        )
-        return page.agent_grants
-
-    async def list_agent_grants_by_user_page(
-        self,
-        *,
-        project_id: str,
-        user_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        order_by: str = "agent_name",
-        filter: Optional[str] = None,
-    ) -> AgentGrantsPage:
-        """
-        GET /accounts/projects/{project_id}/agent-grants/by-user/{user_id}?limit=&offset=&order_by=&filter=
-        Returns paged agent grants with total.
-        """
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset), "order_by": order_by}
-        if filter is not None:
-            params["filter"] = filter
+        resource_type: AccessResourceType,
+        resource_id: str,
+        page_size: int = 50,
+        continuation_token: str | None = None,
+    ) -> ResourcePolicyPage:
+        """GET /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy."""
+        params = {"page_size": str(page_size)}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
         url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-grants/by-user/{quote(user_id, safe='')}"
+            f"{self.base_url}/accounts/projects/{project_id}/iam/"
+            f"{quote(resource_type, safe='')}/{quote(resource_id, safe='')}/policy"
         )
         async with self._session.get(
-            url, headers=self._get_headers(), params=params
+            url,
+            headers=self._get_headers(),
+            params=params,
         ) as resp:
             await self._raise_for_status(resp)
-            data = await resp.json()
             try:
-                return AgentGrantsPage.model_validate(data)
+                return ResourcePolicyPage.model_validate(await resp.json())
             except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid agent grants-by-user payload: {exc}"
-                ) from exc
+                raise RoomException(f"Invalid resource policy payload: {exc}") from exc
 
-    async def list_room_grants_by_room(
+    async def get_resource_policy(
         self,
         *,
         project_id: str,
-        room_name: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[ProjectRoomGrant]:
-        """
-        GET /accounts/projects/{project_id}/room-grants/by-room/{room_id}?limit=&offset=
-        Returns [ProjectRoomGrant]
-        """
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/room-grants/by-room/{quote(room_name, safe='')}"
-        )
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [
-                    ProjectRoomGrant.model_validate(item)
-                    for item in data["room_grants"]
-                ]
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid room grants-by-room payload: {exc}"
-                ) from exc
-
-    async def list_agent_grants_by_agent(
-        self,
-        *,
-        project_id: str,
-        agent_name: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[ProjectAgentGrant]:
-        """
-        GET /accounts/projects/{project_id}/agent-grants/by-agent/{agent_name}?limit=&offset=
-        Returns [ProjectAgentGrant]
-        """
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/agent-grants/by-agent/{quote(agent_name, safe='')}"
-        )
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [
-                    ProjectAgentGrant.model_validate(item)
-                    for item in data["agent_grants"]
-                ]
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid agent grants-by-agent payload: {exc}"
-                ) from exc
-
-    async def list_agent_members_by_agent(
-        self,
-        *,
-        project_id: str,
-        agent_name: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[UserAgentGrant]:
-        """
-        GET /accounts/projects/{project_id}/members/by-agent/{agent_name}?limit=&offset=
-        Returns [UserAgentGrant]
-        """
-        from urllib.parse import quote
-
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}"
-            f"/members/by-agent/{quote(agent_name, safe='')}"
-        )
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            try:
-                return [
-                    UserAgentGrant.model_validate(item) for item in data["agent_grants"]
-                ]
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid agent members-by-agent payload: {exc}"
-                ) from exc
-
-    async def list_unique_rooms_with_grants(
-        self,
-        *,
-        project_id: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[ProjectRoomGrantCount]:
-        """
-        GET /accounts/projects/{project_id}/room-grants/by-room?limit=&offset=
-        Returns [ProjectRoomGrantCount]; accepts either {"room": "..."} or {"room_name": "..."} shapes.
-        """
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-room"
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            items = data.get("rooms", [])
-            out: List[ProjectRoomGrantCount] = []
-            for item in items:
-                # tolerate either key name
-                out.append(ProjectRoomGrantCount.model_validate(item))
-            return out
-
-    async def list_unique_agents_with_grants(
-        self,
-        *,
-        project_id: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[ProjectAgentGrantCount]:
-        """
-        GET /accounts/projects/{project_id}/agent-grants/by-agent?limit=&offset=
-        Returns [ProjectAgentGrantCount].
-        """
-        params = {"limit": str(limit), "offset": str(offset)}
-        url = f"{self.base_url}/accounts/projects/{project_id}/agent-grants/by-agent"
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            return [
-                ProjectAgentGrantCount.model_validate(item)
-                for item in data.get("agents", [])
-            ]
-
-    async def list_unique_users_with_grants(
-        self,
-        *,
-        project_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        filter: str | None = None,
-    ) -> List[ProjectUserGrantCount]:
-        page = await self.list_unique_users_with_grants_page(
-            project_id=project_id,
-            limit=limit,
-            offset=offset,
-            filter=filter,
-        )
-        return page.users
-
-    async def list_unique_users_with_grants_page(
-        self,
-        *,
-        project_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        filter: str | None = None,
-    ) -> ProjectUserGrantCountsPage:
-        """
-        GET /accounts/projects/{project_id}/room-grants/by-user?limit=&offset=
-        Returns [ProjectUserGrantCount]
-        """
-        params = {"limit": str(limit), "offset": str(offset)}
-        if filter is not None and filter.strip() != "":
-            params["filter"] = filter
-        url = f"{self.base_url}/accounts/projects/{project_id}/room-grants/by-user"
-        async with self._session.get(
-            url, headers=self._get_headers(), params=params
-        ) as resp:
-            await self._raise_for_status(resp)
-            data = await resp.json()
-            items = data.get("users", [])
-            out: List[ProjectUserGrantCount] = []
-            for item in items:
-                out.append(ProjectUserGrantCount.model_validate(item))
-            return ProjectUserGrantCountsPage(
-                users=out, total=int(data.get("total", len(out)))
+        resource_type: AccessResourceType,
+        resource_id: str,
+        page_size: int = 50,
+    ) -> list[RoleGrant]:
+        grants: list[RoleGrant] = []
+        continuation_token: str | None = None
+        while True:
+            page = await self.get_resource_policy_page(
+                project_id=project_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                page_size=page_size,
+                continuation_token=continuation_token,
             )
+            grants.extend(page.access_grants)
+            if page.continuation_token is None:
+                return grants
+            continuation_token = page.continuation_token
+
+    async def grant_resource_policy(
+        self,
+        *,
+        project_id: str,
+        resource_type: AccessResourceType,
+        resource_id: str,
+        subject: AccessSubject,
+        roles: list[AccessRole],
+        invite_redirect_url: str | None = None,
+    ) -> None:
+        """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:grant."""
+        payload = {
+            "subject": subject.model_dump(mode="json", exclude_none=True),
+            "roles": roles,
+        }
+        if invite_redirect_url is not None:
+            payload["invite_redirect_url"] = invite_redirect_url
+        payload = _strip_readonly_subject_fields(payload)
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/iam/"
+            f"{quote(resource_type, safe='')}/{quote(resource_id, safe='')}/policy:grant"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def revoke_resource_policy(
+        self,
+        *,
+        project_id: str,
+        resource_type: AccessResourceType,
+        resource_id: str,
+        subject: AccessSubject,
+    ) -> None:
+        """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:revoke."""
+        payload = {
+            "subject": subject.model_dump(mode="json", exclude_none=True),
+        }
+        payload = _strip_readonly_subject_fields(payload)
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/iam/"
+            f"{quote(resource_type, safe='')}/{quote(resource_id, safe='')}/policy:revoke"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
 
     async def exchange_oauth_token(
         self,
@@ -4716,8 +4734,9 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
             raw = await resp.json()
+            payload = raw.get("client", raw) if isinstance(raw, dict) else raw
             try:
-                return OAuthClient.model_validate(raw)
+                return OAuthClient.model_validate(payload)
             except ValidationError as exc:
                 raise RoomException(
                     f"Invalid create-oauth-client payload: {exc}"
@@ -4931,8 +4950,9 @@ class Meshagent:
         room_id: Optional[str] = None,
         task_id: Optional[str] = None,
         active: Optional[bool] = None,
-        limit: int = 100,
+        page_size: int = 100,
         offset: int = 0,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> List[ScheduledTask]:
         page = await self.list_scheduled_tasks_page(
@@ -4940,8 +4960,9 @@ class Meshagent:
             room_id=room_id,
             task_id=task_id,
             active=active,
-            limit=limit,
+            page_size=page_size,
             offset=offset,
+            continuation_token=continuation_token,
             filter=filter,
         )
         return page.tasks
@@ -4953,21 +4974,22 @@ class Meshagent:
         room_id: Optional[str] = None,
         task_id: Optional[str] = None,
         active: Optional[bool] = None,
-        limit: int = 100,
+        page_size: int = 100,
         offset: int = 0,
+        continuation_token: str | None = None,
         filter: str | None = None,
     ) -> ScheduledTasksPage:
         """
-        GET /accounts/projects/{project_id}/scheduled-tasks?room_id=&task_id=&active=&limit=&offset=
+        GET /accounts/projects/{project_id}/scheduled-tasks?room_id=&task_id=&active=&page_size=&continuation_token=
         Returns a list[ScheduledTask].
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/scheduled-tasks"
-        params: Dict[str, str] = {
-            "limit": str(limit),
-            "offset": str(offset),
-        }
+        params: Dict[str, str] = {"page_size": str(page_size)}
         if room_id is not None:
             params["room_id"] = room_id
+            params["offset"] = str(offset)
+        elif continuation_token is not None:
+            params["continuation_token"] = continuation_token
         if task_id is not None:
             params["task_id"] = task_id
         if active is not None:
@@ -4990,7 +5012,9 @@ class Meshagent:
         try:
             tasks = [ScheduledTask.model_validate(item) for item in tasks_raw]
             return ScheduledTasksPage(
-                tasks=tasks, total=int(data.get("total", len(tasks)))
+                tasks=tasks,
+                total=int(data.get("total", len(tasks))),
+                continuation_token=data.get("continuation_token"),
             )
         except ValidationError as exc:
             raise RoomException(f"Invalid scheduled-tasks payload: {exc}") from exc
