@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AllowedModel(BaseModel):
@@ -25,6 +25,43 @@ ManagedAllowedModel = Annotated[
 ]
 
 ManagedAgentThreadIsolation = Literal["global", "participant"]
+
+
+class ManagedAgentRunAs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(
+        ..., description="the service account email this managed agent runs as"
+    )
+    scopes: list[str] = Field(
+        default_factory=lambda: ["secrets:proxy"],
+        description=(
+            "OAuth scopes to grant to the runtime service account token. "
+            "The project scope is always added by the server."
+        ),
+    )
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized == "":
+            raise ValueError("run_as.email must not be empty")
+        return normalized
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: list[str]) -> list[str]:
+        normalized_scopes: list[str] = []
+        seen: set[str] = set()
+        for scope in value:
+            normalized_scope = scope.strip()
+            if normalized_scope == "":
+                continue
+            if normalized_scope not in seen:
+                normalized_scopes.append(normalized_scope)
+                seen.add(normalized_scope)
+        return normalized_scopes
 
 
 class ManagedAgentToolkit(BaseModel):
@@ -54,63 +91,6 @@ class ManagedAgentImageGeneration(ManagedAgentToolkit):
     size: Literal["1024x1024", "1024x1536", "1536x1024", "auto"] | None = None
 
 
-class AgentSecretRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["agent"] = "agent"
-    secret_id: str
-
-
-class UserOAuthSecretRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    secret_name: str
-    client_secret_id: str | None = None
-    scopes: list[str] | None = None
-    authorization_endpoint: str | None = None
-    token_endpoint: str | None = None
-    registration_endpoint: str | None = None
-    redirect_uri: str | None = None
-    client_id: str | None = None
-    no_pkce: bool = False
-
-
-class UserSecretRef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["user"] = "user"
-    secret_name: str
-    prompt: str | None = None
-    oauth: UserOAuthSecretRequest | None = None
-
-
-ManagedAgentSecretRef = Annotated[
-    AgentSecretRef | UserSecretRef,
-    Field(discriminator="type"),
-]
-
-
-class ManagedAgentMCPBearerAuthorization(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["bearer"] = "bearer"
-    secret: ManagedAgentSecretRef
-
-
-class ManagedAgentMCPHeaderAuthorization(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["header"] = "header"
-    name: str
-    secret: ManagedAgentSecretRef
-
-
-ManagedAgentMCPAuthorization = Annotated[
-    ManagedAgentMCPBearerAuthorization | ManagedAgentMCPHeaderAuthorization,
-    Field(discriminator="type"),
-]
-
-
 class ManagedAgentMCPHeader(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -124,12 +104,21 @@ class ManagedAgentMCPServer(BaseModel):
     server_label: str
     server_url: str
     allowed_tools: list[str] | None = None
-    authorization: ManagedAgentMCPAuthorization | None = None
     headers: list[ManagedAgentMCPHeader] | None = None
     require_approval: Literal["always", "never"] | None = None
     always_require_approval: list[str] | None = None
     never_require_approval: list[str] | None = None
     openai_connector_id: str | None = None
+    use_proxy_secret: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_authorization(cls, value: object) -> object:
+        if isinstance(value, dict) and "authorization" in value:
+            migrated = dict(value)
+            migrated.pop("authorization", None)
+            return migrated
+        return value
 
 
 class ManagedAgentMCPToolkit(ManagedAgentToolkit):
@@ -159,6 +148,7 @@ class ManagedAgentSpec(BaseModel):
     id: str | None = None
     metadata: ManagedAgentMetadata
     allowed_models: list[ManagedAllowedModel]
+    run_as: ManagedAgentRunAs | None = None
     thread_isolation: ManagedAgentThreadIsolation = "global"
     instructions: str | None = None
     toolkits: list[ManagedToolkit] | None = None

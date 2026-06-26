@@ -51,7 +51,7 @@ from meshagent.api.chan import ChanClosed
 
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
-from meshagent.api.messaging import pack_message, unpack_message
+from meshagent.api.messaging import MessageProtocolError, pack_message, unpack_message
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
 from meshagent.api.messaging import (
@@ -69,7 +69,6 @@ from meshagent.api.messaging import (
     ensure_content,
     _ControlContent,
 )
-from meshagent.api.oauth import OAuthClientConfig, ConnectorRef
 from meshagent.api.error_codes import ErrorCode
 import uuid
 
@@ -820,9 +819,6 @@ class RoomClient:
         protocol_factory: Callable[[], Protocol] | None = None,
         reconnect_timeout: float | None = None,
         session: aiohttp.ClientSession | None = None,
-        oauth_token_request_handler: Optional[
-            Callable[["OAuthTokenRequest"], Awaitable]
-        ] = None,
     ):
         if reconnect_timeout is not None and reconnect_timeout < 0:
             raise ValueError("reconnect_timeout must be None or a non-negative number")
@@ -893,11 +889,9 @@ class RoomClient:
         self.developer = DeveloperClient(room=self)
         self.queues = QueuesClient(room=self)
         self.datasets = DatasetsClient(room=self)
+        self.sqlite = SqliteClient(room=self)
         self.memory = MemoryClient(room=self)
         self.containers = ContainersClient(room=self)
-        self.secrets = SecretsClient(
-            room=self, oauth_token_request_handler=oauth_token_request_handler
-        )
         self.services = ServicesClient(room=self)
 
         self._room_url = None
@@ -2101,6 +2095,25 @@ class RoomClient:
                 )
             except KeyError:
                 pass
+            except MessageProtocolError as ex:
+                if str(ex).startswith("unsupported content type:"):
+                    pass
+                else:
+                    error = RoomException(
+                        f"unable to unpack tool call response chunk payload: {ex}",
+                        code=ex.code,
+                    )
+                    stream = self._tool_call_streams.get(tool_call_id, None)
+                    if stream is not None:
+                        stream.close_with_error(error)
+                    self.emit(
+                        "room.tool_call_response_chunk",
+                        event={
+                            "tool_call_id": tool_call_id,
+                            "chunk": ErrorContent(text=str(error), code=error.code),
+                        },
+                    )
+                    return
             except Exception as ex:
                 logger.warning(
                     "unable to unpack tool call response chunk payload",
@@ -2117,9 +2130,11 @@ class RoomClient:
                 )
                 stream._push_chunk(stream_chunk)
             except Exception as ex:
-                stream.close_with_error(
-                    RoomException(f"unable to decode tool call stream chunk: {ex}")
+                error = RoomException(
+                    f"unable to decode tool call stream chunk: {ex}",
+                    code=ex.code if isinstance(ex, MessageProtocolError) else None,
                 )
+                stream.close_with_error(error)
 
         self.emit(
             "room.tool_call_response_chunk",
@@ -3564,6 +3579,131 @@ class StorageEntry(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class _StoragePathToolInput(BaseModel):
+    path: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDeleteToolInput(BaseModel):
+    path: str
+    recursive: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageMoveToolInput(BaseModel):
+    source_path: str
+    destination_path: str
+    overwrite: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDownloadUrlToolInput(BaseModel):
+    path: str
+    download: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageFileEventHeader(BaseModel):
+    path: str
+    participant_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageFileMovedEventHeader(BaseModel):
+    source_path: str
+    destination_path: str
+    participant_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageExistsToolResponse(BaseModel):
+    exists: bool
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageStatToolResponse(BaseModel):
+    exists: bool
+    name: Optional[str] = None
+    is_folder: Optional[bool] = None
+    size: Optional[int] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageListToolResponse(BaseModel):
+    files: list[StorageEntry]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDownloadUrlToolResponse(BaseModel):
+    url: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageUploadStartHeaders(BaseModel):
+    kind: Literal["start"]
+    path: str
+    overwrite: bool = False
+    name: Optional[str] = None
+    mime_type: Optional[str] = None
+    size: Optional[int] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageUploadDataHeaders(BaseModel):
+    kind: Literal["data"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageUploadPullHeaders(BaseModel):
+    kind: Literal["pull"]
+    chunk_size: Optional[int] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDownloadStartHeaders(BaseModel):
+    kind: Literal["start"]
+    path: str
+    chunk_size: int
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDownloadPullHeaders(BaseModel):
+    kind: Literal["pull"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDownloadStartResponseHeaders(BaseModel):
+    kind: Literal["start"]
+    name: str
+    mime_type: str
+    size: int
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _StorageDownloadDataHeaders(BaseModel):
+    kind: Literal["data"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class StorageClient:
     """
     An API for managing files and folders within a remote storage system.
@@ -3601,27 +3741,30 @@ class StorageClient:
 
     async def _on_file_deleted(self, protocol, message_id, msg_type, data):
         payload, _ = unpack_message(data)
+        event = _StorageFileEventHeader.model_validate(payload)
         self.emit(
             "file.deleted",
-            path=payload["path"],
-            participant_id=payload["participant_id"],
+            path=event.path,
+            participant_id=event.participant_id,
         )
 
     async def _on_file_updated(self, protocol, message_id, msg_type, data):
         payload, _ = unpack_message(data)
+        event = _StorageFileEventHeader.model_validate(payload)
         self.emit(
             "file.updated",
-            path=payload["path"],
-            participant_id=payload["participant_id"],
+            path=event.path,
+            participant_id=event.participant_id,
         )
 
     async def _on_file_moved(self, protocol, message_id, msg_type, data):
         payload, _ = unpack_message(data)
+        event = _StorageFileMovedEventHeader.model_validate(payload)
         self.emit(
             "file.moved",
-            source_path=payload["source_path"],
-            destination_path=payload["destination_path"],
-            participant_id=payload["participant_id"],
+            source_path=event.source_path,
+            destination_path=event.destination_path,
+            participant_id=event.participant_id,
         )
 
     async def _invoke(
@@ -3654,31 +3797,40 @@ class StorageClient:
                 print("Data file exists!")
         """
 
-        response = await self._invoke(operation="exists", input={"path": path})
+        response = await self._invoke(
+            operation="exists",
+            input=_StoragePathToolInput(path=path).model_dump(),
+        )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="exists")
-        return response.json["exists"]
+        try:
+            payload = _StorageExistsToolResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="exists") from exc
+        return payload.exists
 
     async def stat(self, *, path: str) -> StorageEntry | None:
-        response = await self._invoke(operation="stat", input={"path": path})
+        response = await self._invoke(
+            operation="stat",
+            input=_StoragePathToolInput(path=path).model_dump(),
+        )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="stat")
-        payload = response.json
-        exists = payload["exists"]
-        if not exists:
+        try:
+            payload = _StorageStatToolResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="stat") from exc
+        if not payload.exists:
             return None
-        else:
-            return StorageEntry(
-                name=payload["name"],
-                is_folder=payload["is_folder"],
-                size=payload.get("size"),
-                created_at=datetime.fromisoformat(payload["created_at"])
-                if payload.get("created_at") is not None
-                else None,
-                updated_at=datetime.fromisoformat(payload["updated_at"])
-                if payload.get("updated_at") is not None
-                else None,
-            )
+        if payload.name is None or payload.is_folder is None:
+            raise self._unexpected_response_error(operation="stat")
+        return StorageEntry(
+            name=payload.name,
+            is_folder=payload.is_folder,
+            size=payload.size,
+            created_at=payload.created_at,
+            updated_at=payload.updated_at,
+        )
 
     async def move(
         self,
@@ -3689,11 +3841,11 @@ class StorageClient:
     ) -> None:
         await self._invoke(
             operation="move",
-            input={
-                "source_path": source_path,
-                "destination_path": destination_path,
-                "overwrite": overwrite,
-            },
+            input=_StorageMoveToolInput(
+                source_path=source_path,
+                destination_path=destination_path,
+                overwrite=overwrite,
+            ).model_dump(),
         )
 
     @staticmethod
@@ -3755,9 +3907,13 @@ class StorageClient:
                     raise self._unexpected_response_error(operation="upload")
                 if not isinstance(chunk, BinaryContent):
                     raise self._unexpected_response_error(operation="upload")
-                if chunk.headers.get("kind") != "pull":
+                try:
+                    headers = _StorageUploadPullHeaders.model_validate(chunk.headers)
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation="upload") from exc
+                if headers.kind != "pull":
                     raise self._unexpected_response_error(operation="upload")
-                raw_chunk_size = chunk.headers.get("chunk_size")
+                raw_chunk_size = headers.chunk_size
                 input_stream.request_next(
                     raw_chunk_size
                     if isinstance(raw_chunk_size, int) and raw_chunk_size > 0
@@ -3845,24 +4001,32 @@ class StorageClient:
                 if kind == "start":
                     if metadata_received:
                         raise self._unexpected_response_error(operation="download")
-                    chunk_name = chunk.headers.get("name")
-                    chunk_mime_type = chunk.headers.get("mime_type")
-                    chunk_size_value = chunk.headers.get("size")
-                    if (
-                        not isinstance(chunk_name, str)
-                        or not isinstance(chunk_mime_type, str)
-                        or not isinstance(chunk_size_value, int)
-                        or chunk_size_value < 0
-                    ):
+                    try:
+                        headers = _StorageDownloadStartResponseHeaders.model_validate(
+                            chunk.headers
+                        )
+                    except ValidationError as exc:
+                        raise self._unexpected_response_error(
+                            operation="download"
+                        ) from exc
+                    if headers.size < 0:
                         raise self._unexpected_response_error(operation="download")
                     metadata_received = True
-                    expected_size = chunk_size_value
+                    expected_size = headers.size
                     yield chunk
                     if expected_size > 0:
                         input_stream.request_next()
                     continue
 
-                if kind != "data" or not metadata_received or expected_size is None:
+                try:
+                    headers = _StorageDownloadDataHeaders.model_validate(chunk.headers)
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation="download") from exc
+                if (
+                    headers.kind != "data"
+                    or not metadata_received
+                    or expected_size is None
+                ):
                     raise self._unexpected_response_error(operation="download")
 
                 bytes_received += len(chunk.data)
@@ -3896,22 +4060,24 @@ class StorageClient:
         async for chunk in self.download_stream(path=path):
             kind = chunk.headers.get("kind")
             if kind == "start":
-                chunk_name = chunk.headers.get("name")
-                chunk_mime_type = chunk.headers.get("mime_type")
-                chunk_size_value = chunk.headers.get("size")
-                if (
-                    not isinstance(chunk_name, str)
-                    or not isinstance(chunk_mime_type, str)
-                    or not isinstance(chunk_size_value, int)
-                    or chunk_size_value < 0
-                ):
+                try:
+                    headers = _StorageDownloadStartResponseHeaders.model_validate(
+                        chunk.headers
+                    )
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation="download") from exc
+                if headers.size < 0:
                     raise self._unexpected_response_error(operation="download")
-                file_name = chunk_name
-                mime_type = chunk_mime_type
-                expected_size = chunk_size_value
+                file_name = headers.name
+                mime_type = headers.mime_type
+                expected_size = headers.size
                 continue
 
-            if kind != "data":
+            try:
+                headers = _StorageDownloadDataHeaders.model_validate(chunk.headers)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="download") from exc
+            if headers.kind != "data":
                 raise self._unexpected_response_error(operation="download")
             chunks.extend(chunk.data)
             bytes_received += len(chunk.data)
@@ -3940,10 +4106,17 @@ class StorageClient:
             print("Download using:", url)
         """
 
-        response = await self._invoke(operation="download_url", input={"path": path})
+        response = await self._invoke(
+            operation="download_url",
+            input=_StorageDownloadUrlToolInput(path=path).model_dump(),
+        )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="download_url")
-        return response["url"]
+        try:
+            payload = _StorageDownloadUrlToolResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="download_url") from exc
+        return payload.url
 
     async def list(self, *, path: str) -> list[StorageEntry]:
         """
@@ -3962,25 +4135,17 @@ class StorageClient:
                 print(e.name, e.is_folder)
         """
 
-        response = await self._invoke(operation="list", input={"path": path})
+        response = await self._invoke(
+            operation="list",
+            input=_StoragePathToolInput(path=path).model_dump(),
+        )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list")
-        return list(
-            map(
-                lambda f: StorageEntry(
-                    name=f["name"],
-                    is_folder=f["is_folder"],
-                    size=f.get("size"),
-                    created_at=datetime.fromisoformat(f["created_at"])
-                    if f.get("created_at") is not None
-                    else None,
-                    updated_at=datetime.fromisoformat(f["updated_at"])
-                    if f.get("updated_at") is not None
-                    else None,
-                ),
-                response["files"],
-            )
-        )
+        try:
+            payload = _StorageListToolResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list") from exc
+        return payload.files
 
     async def delete(self, path: str, recursive: Optional[bool] = None):
         """
@@ -3998,7 +4163,10 @@ class StorageClient:
 
         await self._invoke(
             operation="delete",
-            input={"path": path, "recursive": recursive},
+            input=_StorageDeleteToolInput(
+                path=path,
+                recursive=recursive,
+            ).model_dump(),
         )
 
 
@@ -4026,17 +4194,20 @@ class _StorageDownloadInputStream:
     async def _stream(self) -> AsyncIterator[Content]:
         yield BinaryContent(
             data=b"",
-            headers={
-                "kind": "start",
-                "path": self._path,
-                "chunk_size": self._chunk_size,
-            },
+            headers=_StorageDownloadStartHeaders(
+                kind="start",
+                path=self._path,
+                chunk_size=self._chunk_size,
+            ).model_dump(),
         )
         while True:
             await self._pulls.get()
             if self._closed.is_set():
                 return
-            yield BinaryContent(data=b"", headers={"kind": "pull"})
+            yield BinaryContent(
+                data=b"",
+                headers=_StorageDownloadPullHeaders(kind="pull").model_dump(),
+            )
 
 
 class _StorageUploadInputStream:
@@ -4119,14 +4290,14 @@ class _StorageUploadInputStream:
     async def _stream(self) -> AsyncIterator[Content]:
         yield BinaryContent(
             data=b"",
-            headers={
-                "kind": "start",
-                "path": self._path,
-                "overwrite": self._overwrite,
-                "name": self._name,
-                "mime_type": self._mime_type,
-                "size": self._size,
-            },
+            headers=_StorageUploadStartHeaders(
+                kind="start",
+                path=self._path,
+                overwrite=self._overwrite,
+                name=self._name,
+                mime_type=self._mime_type,
+                size=self._size,
+            ).model_dump(),
         )
         while True:
             requested_chunk_size = await self._pulls.get()
@@ -4141,7 +4312,10 @@ class _StorageUploadInputStream:
             if next_chunk is None:
                 return
 
-            yield BinaryContent(data=next_chunk, headers={"kind": "data"})
+            yield BinaryContent(
+                data=next_chunk,
+                headers=_StorageUploadDataHeaders(kind="data").model_dump(),
+            )
 
 
 class Queue:
@@ -4156,6 +4330,19 @@ class Queue:
     @property
     def size(self):
         return self._size
+
+
+class _QueueItemResponse(BaseModel):
+    name: str
+    size: Any
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class _QueueListResponse(BaseModel):
+    queues: list[_QueueItemResponse]
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class QueuesClient:
@@ -4192,9 +4379,17 @@ class QueuesClient:
         response = await self._invoke(operation="list", arguments={})
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list")
+        try:
+            payload = _QueueListResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list") from exc
         queues = []
-        for item in response.json["queues"]:
-            queues.append(Queue(name=item["name"], size=int(item["size"])))
+        for item in payload.queues:
+            try:
+                size = int(item.size)
+            except (TypeError, ValueError) as exc:
+                raise self._unexpected_response_error(operation="list") from exc
+            queues.append(Queue(name=item.name, size=size))
         return queues
 
     async def open(self, *, name: str) -> None:
@@ -4695,6 +4890,8 @@ class DeveloperClient:
         raw_json, _ = unpack_message(data)
 
         log_type = raw_json.get("type", "unknown")
+        if not isinstance(log_type, str):
+            log_type = "unknown"
         log_data = raw_json.get("data", {})
 
         self.emit("log", type=log_type, data=log_data)
@@ -5099,6 +5296,10 @@ class _MemoryListRequest(BaseModel):
     namespace: Optional[list[str]] = None
 
 
+class _MemoryListResponse(BaseModel):
+    memories: list[str] = Field(default_factory=list)
+
+
 class _MemoryCreateRequest(_MemoryNamedRequest):
     overwrite: bool = False
     ignore_exists: bool = False
@@ -5216,6 +5417,221 @@ DatasetSqlExecution = DatasetSqlQuery | DatasetSqlStatement
 @dataclass(frozen=True, slots=True)
 class DatasetSqlCancelResult:
     status: Literal["cancelled", "cancelling", "not_cancellable"]
+
+
+class _DatasetListTablesResponse(BaseModel):
+    tables: list[str]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetCountResponse(BaseModel):
+    count: int
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetRowsAffectedResponse(BaseModel):
+    rows_affected: int
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetSqlStatementResponse(_DatasetRowsAffectedResponse):
+    kind: Literal["statement"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetSqlCancelResponse(BaseModel):
+    status: Literal["cancelled", "cancelling", "not_cancellable"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetSqlQueryHeaders(BaseModel):
+    kind: Literal["query"]
+    query_id: str
+    content_type: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetSchemaHeaders(BaseModel):
+    kind: Literal["schema"]
+    content_type: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetPullHeaders(BaseModel):
+    kind: Literal["pull"]
+    chunk_size: Optional[int] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetDataHeaders(BaseModel):
+    kind: Literal["data"]
+    content_type: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetWatchDataHeaders(BaseModel):
+    kind: Literal["data"]
+    content_type: Optional[str] = None
+    phase: Optional[str] = None
+    version: Optional[int | str] = None
+    change_type: Optional[str] = None
+    begin_version: Optional[int | str] = None
+    end_version: Optional[int | str] = None
+    watch_event: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetWatchReadyEvent(BaseModel):
+    kind: Literal["ready"]
+    phase: Optional[str] = None
+    version: Optional[int | str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetTableVersionEntry(BaseModel):
+    version: int
+    timestamp: str
+    metadata_json: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetListVersionsResponse(BaseModel):
+    versions: list[_DatasetTableVersionEntry]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetTableIndexEntry(BaseModel):
+    name: str
+    columns: list[str]
+    type: str
+    fields: list[int] = Field(default_factory=list)
+    type_url: Optional[str] = None
+    num_rows_indexed: Optional[int] = None
+    num_segments: Optional[int] = None
+    total_size_bytes: Optional[int] = None
+    details_json: str
+    statistics_json: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetListIndexesResponse(BaseModel):
+    indexes: list[_DatasetTableIndexEntry]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetListBranchesResponse(BaseModel):
+    branches: list[dict[str, Any]]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetOptimizeResponse(BaseModel):
+    compaction: Optional[dict[str, JsonValue]] = None
+    compaction_json: Optional[str] = None
+    optimized_indices: bool = False
+    cleanup: Optional[dict[str, JsonValue]] = None
+    cleanup_json: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _DatasetStatsResponse(BaseModel):
+    dataset: Optional[dict[str, JsonValue]] = None
+    dataset_json: Optional[str] = None
+    data: Optional[dict[str, JsonValue]] = None
+    data_json: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@dataclass(frozen=True, slots=True)
+class SqliteSqlQuery:
+    schema: pa.Schema
+    query_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SqliteSqlStatement:
+    rows_affected: int
+
+
+SqliteSqlExecution = SqliteSqlQuery | SqliteSqlStatement
+
+
+@dataclass(frozen=True, slots=True)
+class SqliteSqlCancelResult:
+    status: Literal["cancelled", "cancelling", "not_cancellable"]
+
+
+class SqliteDatabaseDetails(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+    tables: int | None = None
+    size_bytes: int | None = None
+
+
+class _SqliteListDatabasesResponse(BaseModel):
+    databases: list[str]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteListTablesResponse(BaseModel):
+    tables: list[str]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteRowsAffectedResponse(BaseModel):
+    rows_affected: int
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteCountResponse(BaseModel):
+    count: int
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteStatementResponse(_SqliteRowsAffectedResponse):
+    kind: Literal["statement"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteCancelResponse(BaseModel):
+    status: Literal["cancelled", "cancelling", "not_cancellable"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteQueryHeaders(BaseModel):
+    kind: Literal["query"]
+    query_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _SqliteKindHeaders(BaseModel):
+    kind: str
+
+    model_config = ConfigDict(extra="forbid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -5822,14 +6238,20 @@ class DatasetsClient:
                         return
                     raise self._unexpected_response_error(operation=operation)
                 if isinstance(chunk, BinaryContent):
-                    if chunk.headers.get("kind") != "pull":
-                        raise self._unexpected_response_error(operation=operation)
+                    try:
+                        _DatasetPullHeaders.model_validate(chunk.headers)
+                    except ValidationError as exc:
+                        raise self._unexpected_response_error(
+                            operation=operation
+                        ) from exc
                     input_stream.request_next()
                     continue
                 if not isinstance(chunk, JsonContent):
                     raise self._unexpected_response_error(operation=operation)
-                if chunk.json.get("kind") != "pull":
-                    raise self._unexpected_response_error(operation=operation)
+                try:
+                    _DatasetPullHeaders.model_validate(chunk.json)
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation=operation) from exc
                 input_stream.request_next()
         finally:
             input_stream.close()
@@ -5856,8 +6278,10 @@ class DatasetsClient:
                     raise self._unexpected_response_error(operation=operation)
                 if not isinstance(chunk, BinaryContent):
                     raise self._unexpected_response_error(operation=operation)
-                if chunk.headers.get("kind") != "data":
-                    raise self._unexpected_response_error(operation=operation)
+                try:
+                    _DatasetDataHeaders.model_validate(chunk.headers)
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation=operation) from exc
                 yield _table_from_arrow_ipc(chunk.data)
                 input_stream.request_next()
         finally:
@@ -5875,7 +6299,11 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list_tables")
-        return response.json.get("tables", [])
+        try:
+            payload = _DatasetListTablesResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_tables") from exc
+        return payload.tables
 
     async def inspect(
         self,
@@ -5896,6 +6324,10 @@ class DatasetsClient:
         )
         if not isinstance(response, BinaryContent):
             raise self._unexpected_response_error(operation="inspect")
+        try:
+            _DatasetSchemaHeaders.model_validate(response.headers)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="inspect") from exc
         return _schema_from_arrow_ipc(response.data)
 
     async def _create_table(
@@ -6367,12 +6799,15 @@ class DatasetsClient:
         )
         if not isinstance(response, BinaryContent):
             raise self._unexpected_response_error(operation="open_sql_query")
-        query_id = response.headers.get("query_id")
-        if not isinstance(query_id, str) or query_id == "":
+        try:
+            headers = _DatasetSqlQueryHeaders.model_validate(response.headers)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="open_sql_query") from exc
+        if headers.query_id == "":
             raise self._unexpected_response_error(operation="open_sql_query")
         return DatasetSqlQuery(
             schema=_schema_from_arrow_ipc(response.data),
-            query_id=query_id,
+            query_id=headers.query_id,
         )
 
     async def execute_sql(
@@ -6401,22 +6836,22 @@ class DatasetsClient:
             ),
         )
         if isinstance(response, BinaryContent):
-            if response.headers.get("kind") != "query":
-                raise self._unexpected_response_error(operation="execute_sql")
-            query_id = response.headers.get("query_id")
-            if not isinstance(query_id, str) or query_id == "":
+            try:
+                headers = _DatasetSqlQueryHeaders.model_validate(response.headers)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="execute_sql") from exc
+            if headers.query_id == "":
                 raise self._unexpected_response_error(operation="execute_sql")
             return DatasetSqlQuery(
                 schema=_schema_from_arrow_ipc(response.data),
-                query_id=query_id,
+                query_id=headers.query_id,
             )
         if isinstance(response, JsonContent):
-            if response.json.get("kind") != "statement":
-                raise self._unexpected_response_error(operation="execute_sql")
-            rows_affected = response.json.get("rows_affected")
-            if not isinstance(rows_affected, int):
-                raise self._unexpected_response_error(operation="execute_sql")
-            return DatasetSqlStatement(rows_affected=rows_affected)
+            try:
+                payload = _DatasetSqlStatementResponse.model_validate(response.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="execute_sql") from exc
+            return DatasetSqlStatement(rows_affected=payload.rows_affected)
         raise self._unexpected_response_error(operation="execute_sql")
 
     async def sql_stream(
@@ -6472,10 +6907,11 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="cancel_sql_query")
-        status = response.json.get("status")
-        if status not in {"cancelled", "cancelling", "not_cancellable"}:
-            raise self._unexpected_response_error(operation="cancel_sql_query")
-        return DatasetSqlCancelResult(status=status)
+        try:
+            payload = _DatasetSqlCancelResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="cancel_sql_query") from exc
+        return DatasetSqlCancelResult(status=payload.status)
 
     async def execute_sql_statement(
         self,
@@ -6504,10 +6940,13 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="execute_sql_statement")
-        rows_affected = response.json.get("rows_affected")
-        if not isinstance(rows_affected, int):
-            raise self._unexpected_response_error(operation="execute_sql_statement")
-        return rows_affected
+        try:
+            payload = _DatasetRowsAffectedResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(
+                operation="execute_sql_statement"
+            ) from exc
+        return payload.rows_affected
 
     async def search(
         self,
@@ -6610,31 +7049,35 @@ class DatasetsClient:
                         return
                     raise self._unexpected_response_error(operation="watch_table")
                 if isinstance(chunk, BinaryContent):
-                    if chunk.headers.get("kind") != "data":
-                        raise self._unexpected_response_error(operation="watch_table")
+                    try:
+                        headers = _DatasetWatchDataHeaders.model_validate(chunk.headers)
+                    except ValidationError as exc:
+                        raise self._unexpected_response_error(
+                            operation="watch_table"
+                        ) from exc
                     yield DatasetWatchEvent(
                         kind="data",
-                        phase=chunk.headers.get("phase"),
+                        phase=headers.phase,
                         table=_table_from_arrow_ipc(chunk.data),
-                        version=_dataset_optional_int(chunk.headers.get("version")),
-                        change_type=chunk.headers.get("change_type"),
-                        begin_version=_dataset_optional_int(
-                            chunk.headers.get("begin_version")
-                        ),
-                        end_version=_dataset_optional_int(
-                            chunk.headers.get("end_version")
-                        ),
-                        watch_event=chunk.headers.get("watch_event"),
+                        version=_dataset_optional_int(headers.version),
+                        change_type=headers.change_type,
+                        begin_version=_dataset_optional_int(headers.begin_version),
+                        end_version=_dataset_optional_int(headers.end_version),
+                        watch_event=headers.watch_event,
                     )
                     input_stream.request_next()
                     continue
                 if isinstance(chunk, JsonContent):
-                    if chunk.json.get("kind") != "ready":
-                        raise self._unexpected_response_error(operation="watch_table")
+                    try:
+                        event = _DatasetWatchReadyEvent.model_validate(chunk.json)
+                    except ValidationError as exc:
+                        raise self._unexpected_response_error(
+                            operation="watch_table"
+                        ) from exc
                     yield DatasetWatchEvent(
                         kind="ready",
-                        phase=chunk.json.get("phase"),
-                        version=_dataset_optional_int(chunk.json.get("version")),
+                        phase=event.phase,
+                        version=_dataset_optional_int(event.version),
                     )
                     input_stream.request_next()
                     continue
@@ -6652,7 +7095,7 @@ class DatasetsClient:
         namespace: Optional[list[str]] = None,
         branch: Optional[str] = None,
         version: Optional[int] = None,
-    ) -> list[Dict[str, Any]]:
+    ) -> int:
         if isinstance(where, dict):
             where = " AND ".join(
                 f"{column} = {_dataset_sql_literal(value)}"
@@ -6673,9 +7116,11 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="count")
-        if not isinstance(response.json.get("count"), int):
-            raise self._unexpected_response_error(operation="count")
-        return response.json["count"]
+        try:
+            payload = _DatasetCountResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="count") from exc
+        return payload.count
 
     async def optimize(
         self,
@@ -6699,7 +7144,11 @@ class DatasetsClient:
             },
         )
         if isinstance(response, JsonContent):
-            return DatasetOptimizeResult._from_tool_response(response.json)
+            try:
+                payload = _DatasetOptimizeResponse.model_validate(response.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="optimize") from exc
+            return DatasetOptimizeResult._from_tool_response(payload.model_dump())
         raise self._unexpected_response_error(operation="optimize")
 
     async def stats(
@@ -6722,7 +7171,11 @@ class DatasetsClient:
             },
         )
         if isinstance(response, JsonContent):
-            return DatasetTableStats._from_tool_response(response.json)
+            try:
+                payload = _DatasetStatsResponse.model_validate(response.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="stats") from exc
+            return DatasetTableStats._from_tool_response(payload.model_dump())
         raise self._unexpected_response_error(operation="stats")
 
     async def restore(
@@ -6760,18 +7213,14 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list_versions")
-        versions = response.json.get("versions")
-        if not isinstance(versions, list):
-            raise self._unexpected_response_error(operation="list_versions")
+        try:
+            payload = _DatasetListVersionsResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_versions") from exc
         parsed_versions = list[TableVersion]()
-        for version in versions:
-            if not isinstance(version, dict):
-                raise self._unexpected_response_error(operation="list_versions")
-            metadata_json = version.get("metadata_json")
-            if not isinstance(metadata_json, str):
-                raise self._unexpected_response_error(operation="list_versions")
+        for version in payload.versions:
             try:
-                metadata = json.loads(metadata_json)
+                metadata = json.loads(version.metadata_json)
             except json.JSONDecodeError as exc:
                 raise self._unexpected_response_error(
                     operation="list_versions"
@@ -6779,8 +7228,8 @@ class DatasetsClient:
             parsed_versions.append(
                 TableVersion.model_validate(
                     {
-                        "version": version.get("version"),
-                        "timestamp": version.get("timestamp"),
+                        "version": version.version,
+                        "timestamp": version.timestamp,
                         "metadata": metadata,
                     }
                 )
@@ -6824,10 +7273,14 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list_indexes")
-        indexes = response.json.get("indexes")
-        if not isinstance(indexes, list):
-            raise self._unexpected_response_error(operation="list_indexes")
-        return [TableIndex._from_tool_response(index_data) for index_data in indexes]
+        try:
+            payload = _DatasetListIndexesResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_indexes") from exc
+        return [
+            TableIndex._from_tool_response(index_data.model_dump())
+            for index_data in payload.indexes
+        ]
 
     async def list_branches(
         self, *, namespace: Optional[list[str]] = None
@@ -6838,10 +7291,11 @@ class DatasetsClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list_branches")
-        branches = response.json.get("branches")
-        if not isinstance(branches, list):
-            raise self._unexpected_response_error(operation="list_branches")
-        return [TableBranch.model_validate(branch) for branch in branches]
+        try:
+            payload = _DatasetListBranchesResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_branches") from exc
+        return [TableBranch.model_validate(branch) for branch in payload.branches]
 
     async def create_branch(
         self,
@@ -6866,6 +7320,968 @@ class DatasetsClient:
             operation="delete_branch",
             input={"branch": branch, "namespace": namespace},
         )
+
+
+class SqliteDatabaseClient:
+    def __init__(
+        self,
+        *,
+        client: "SqliteClient",
+        database: str,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        self._client = client
+        self.database = database
+        self.namespace = namespace
+
+    async def create_database(self, *, mode: Optional[CreateMode] = "create") -> None:
+        await self._client.create_database(
+            name=self.database,
+            namespace=self.namespace,
+            mode=mode,
+        )
+
+    async def drop_database(self, *, ignore_missing: bool = False) -> None:
+        await self._client.drop_database(
+            name=self.database,
+            namespace=self.namespace,
+            ignore_missing=ignore_missing,
+        )
+
+    async def inspect_database(self) -> SqliteDatabaseDetails:
+        return await self._client.inspect_database(
+            name=self.database,
+            namespace=self.namespace,
+        )
+
+    async def list_tables(self) -> list[str]:
+        return await self._client.list_tables(
+            database=self.database,
+            namespace=self.namespace,
+        )
+
+    async def create_table_with_schema(
+        self,
+        *,
+        name: str,
+        schema: Optional[DatasetSchemaInput] = None,
+        data: Any = None,
+        mode: Optional[CreateMode] = "create",
+    ) -> None:
+        await self._client.create_table_with_schema(
+            database=self.database,
+            name=name,
+            schema=schema,
+            data=data,
+            mode=mode,
+            namespace=self.namespace,
+        )
+
+    async def create_table_from_data(
+        self,
+        *,
+        name: str,
+        data: Any = None,
+        mode: Optional[CreateMode] = "create",
+    ) -> None:
+        await self._client.create_table_from_data(
+            database=self.database,
+            name=name,
+            data=data,
+            mode=mode,
+            namespace=self.namespace,
+        )
+
+    async def drop_table(self, *, name: str, ignore_missing: bool = False) -> None:
+        await self._client.drop_table(
+            database=self.database,
+            name=name,
+            ignore_missing=ignore_missing,
+            namespace=self.namespace,
+        )
+
+    async def rename_table(self, *, name: str, new_name: str) -> None:
+        await self._client.rename_table(
+            database=self.database,
+            name=name,
+            new_name=new_name,
+            namespace=self.namespace,
+        )
+
+    async def inspect(self, *, table: str) -> pa.Schema:
+        return await self._client.inspect(
+            database=self.database,
+            table=table,
+            namespace=self.namespace,
+        )
+
+    async def add_columns(
+        self,
+        *,
+        table: str,
+        new_columns: DatasetSchemaInput,
+    ) -> None:
+        await self._client.add_columns(
+            database=self.database,
+            table=table,
+            new_columns=new_columns,
+            namespace=self.namespace,
+        )
+
+    async def drop_columns(self, *, table: str, columns: list[str]) -> None:
+        await self._client.drop_columns(
+            database=self.database,
+            table=table,
+            columns=columns,
+            namespace=self.namespace,
+        )
+
+    async def insert(
+        self,
+        *,
+        table: str,
+        records: pa.Table | pa.RecordBatch | DatasetRows,
+    ) -> None:
+        await self._client.insert(
+            database=self.database,
+            table=table,
+            records=records,
+            namespace=self.namespace,
+        )
+
+    async def update(
+        self,
+        *,
+        table: str,
+        where: str,
+        values: DatasetRecord,
+        params: Any = None,
+    ) -> int:
+        return await self._client.update(
+            database=self.database,
+            table=table,
+            where=where,
+            values=values,
+            params=params,
+            namespace=self.namespace,
+        )
+
+    async def delete(self, *, table: str, where: str, params: Any = None) -> int:
+        return await self._client.delete(
+            database=self.database,
+            table=table,
+            where=where,
+            params=params,
+            namespace=self.namespace,
+        )
+
+    async def search(
+        self,
+        *,
+        table: str,
+        where: Optional[str] | dict = None,
+        params: Any = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        select: Optional[list[str]] = None,
+    ) -> pa.Table:
+        return await self._client.search(
+            database=self.database,
+            table=table,
+            where=where,
+            params=params,
+            offset=offset,
+            limit=limit,
+            select=select,
+            namespace=self.namespace,
+        )
+
+    async def search_stream(
+        self,
+        *,
+        table: str,
+        where: Optional[str] | dict = None,
+        params: Any = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        select: Optional[list[str]] = None,
+    ) -> AsyncIterator[pa.Table]:
+        async for batch in self._client.search_stream(
+            database=self.database,
+            table=table,
+            where=where,
+            params=params,
+            offset=offset,
+            limit=limit,
+            select=select,
+            namespace=self.namespace,
+        ):
+            yield batch
+
+    async def count(
+        self,
+        *,
+        table: str,
+        where: Optional[str] | dict = None,
+        params: Any = None,
+    ) -> int:
+        return await self._client.count(
+            database=self.database,
+            table=table,
+            where=where,
+            params=params,
+            namespace=self.namespace,
+        )
+
+    async def sql(self, *, query: str, params: Any = None) -> pa.Table:
+        return await self._client.sql(
+            database=self.database,
+            query=query,
+            params=params,
+            namespace=self.namespace,
+        )
+
+    async def sql_stream(
+        self, *, query: str, params: Any = None
+    ) -> AsyncIterator[pa.Table]:
+        async for batch in self._client.sql_stream(
+            database=self.database,
+            query=query,
+            params=params,
+            namespace=self.namespace,
+        ):
+            yield batch
+
+    async def execute_sql(
+        self, *, query: str, params: Any = None
+    ) -> SqliteSqlExecution:
+        return await self._client.execute_sql(
+            database=self.database,
+            query=query,
+            params=params,
+            namespace=self.namespace,
+        )
+
+    async def execute_sql_statement(self, *, query: str, params: Any = None) -> int:
+        return await self._client.execute_sql_statement(
+            database=self.database,
+            query=query,
+            params=params,
+            namespace=self.namespace,
+        )
+
+
+class SqliteClient:
+    """
+    A client for interacting with the 'sqlite' toolkit on the room server.
+    """
+
+    def __init__(self, room: RoomClient):
+        self.room = room
+
+    @staticmethod
+    def _unexpected_response_error(*, operation: str) -> RoomException:
+        return RoomException(
+            f"unexpected return type from sqlite.{operation}",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+
+    def database(
+        self, name: str, *, namespace: Optional[list[str]] = None
+    ) -> SqliteDatabaseClient:
+        return SqliteDatabaseClient(client=self, database=name, namespace=namespace)
+
+    async def _invoke(self, *, operation: str, input: dict) -> Content:
+        response = await self.room.invoke(
+            toolkit="sqlite",
+            tool=operation,
+            input=input,
+        )
+        if not isinstance(response, Content):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
+    async def _invoke_content(self, *, operation: str, input: Content) -> Content:
+        response = await self.room.invoke(
+            toolkit="sqlite",
+            tool=operation,
+            input=input,
+        )
+        if not isinstance(response, Content):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
+    async def _invoke_stream(
+        self,
+        *,
+        operation: str,
+        input: AsyncIterable[Content],
+    ) -> AsyncIterable[Content]:
+        response = await self.room.invoke(
+            toolkit="sqlite",
+            tool=operation,
+            input=input,
+        )
+        if isinstance(response, Content) or not isinstance(response, AsyncIterable):
+            raise self._unexpected_response_error(operation=operation)
+        return response
+
+    async def _drain_write_stream(
+        self,
+        *,
+        operation: str,
+        input_stream: _DatasetArrowWriteInputStream,
+    ) -> None:
+        response_stream = await self._invoke_stream(
+            operation=operation,
+            input=input_stream,
+        )
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation=operation)
+                if not isinstance(chunk, BinaryContent):
+                    raise self._unexpected_response_error(operation=operation)
+                try:
+                    headers = _SqliteKindHeaders.model_validate(chunk.headers)
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation=operation) from exc
+                if headers.kind != "pull":
+                    raise self._unexpected_response_error(operation=operation)
+                input_stream.request_next()
+        finally:
+            input_stream.close()
+
+    async def _stream_arrow(
+        self,
+        *,
+        operation: str,
+        start: dict[str, Any],
+    ) -> AsyncIterator[pa.Table]:
+        input_stream = _DatasetArrowReadInputStream(start=start)
+        response_stream = await self._invoke_stream(
+            operation=operation,
+            input=input_stream,
+        )
+        input_stream.request_next()
+        try:
+            async for chunk in response_stream:
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+                if isinstance(chunk, _ControlContent):
+                    if chunk.method == "close":
+                        return
+                    raise self._unexpected_response_error(operation=operation)
+                if not isinstance(chunk, BinaryContent):
+                    raise self._unexpected_response_error(operation=operation)
+                try:
+                    headers = _SqliteKindHeaders.model_validate(chunk.headers)
+                except ValidationError as exc:
+                    raise self._unexpected_response_error(operation=operation) from exc
+                if headers.kind != "data":
+                    raise self._unexpected_response_error(operation=operation)
+                yield _table_from_arrow_ipc(chunk.data)
+                input_stream.request_next()
+        finally:
+            input_stream.close()
+
+    async def list_databases(
+        self, *, namespace: Optional[list[str]] = None
+    ) -> list[str]:
+        response = await self._invoke(
+            operation="list_databases",
+            input={"namespace": namespace},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list_databases")
+        try:
+            payload = _SqliteListDatabasesResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_databases") from exc
+        return payload.databases
+
+    async def create_database(
+        self,
+        *,
+        name: str,
+        namespace: Optional[list[str]] = None,
+        mode: str = "create",
+    ) -> None:
+        response = await self._invoke(
+            operation="create_database",
+            input={"name": name, "namespace": namespace, "mode": mode},
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="create_database")
+
+    async def drop_database(
+        self,
+        *,
+        name: str,
+        namespace: Optional[list[str]] = None,
+        ignore_missing: bool = False,
+    ) -> None:
+        response = await self._invoke(
+            operation="drop_database",
+            input={
+                "name": name,
+                "namespace": namespace,
+                "ignore_missing": ignore_missing,
+            },
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="drop_database")
+
+    async def inspect_database(
+        self, *, name: str, namespace: Optional[list[str]] = None
+    ) -> SqliteDatabaseDetails:
+        response = await self._invoke(
+            operation="inspect_database",
+            input={"name": name, "namespace": namespace},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="inspect_database")
+        return SqliteDatabaseDetails.model_validate(response.json)
+
+    async def list_tables(
+        self, *, database: str, namespace: Optional[list[str]] = None
+    ) -> list[str]:
+        response = await self._invoke(
+            operation="list_tables",
+            input={"database": database, "namespace": namespace},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="list_tables")
+        try:
+            payload = _SqliteListTablesResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_tables") from exc
+        return payload.tables
+
+    async def _create_table(
+        self,
+        *,
+        database: str,
+        name: str,
+        data: Any = None,
+        schema: Optional[DatasetSchemaInput] = None,
+        mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        arrow_schema = _normalize_dataset_schema(schema) if schema is not None else None
+        input_stream = _DatasetArrowWriteInputStream(
+            start={
+                "kind": "start",
+                "database": database,
+                "name": name,
+                "mode": mode,
+                "namespace": namespace,
+            },
+            schema=arrow_schema,
+            chunks=_dataset_arrow_chunks(data, schema=arrow_schema),
+        )
+        await self._drain_write_stream(
+            operation="create_table",
+            input_stream=input_stream,
+        )
+
+    async def create_table_with_schema(
+        self,
+        *,
+        database: str,
+        name: str,
+        schema: Optional[DatasetSchemaInput] = None,
+        data: Any = None,
+        mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        await self._create_table(
+            database=database,
+            name=name,
+            schema=schema,
+            data=data,
+            mode=mode,
+            namespace=namespace,
+        )
+
+    async def create_table_from_data(
+        self,
+        *,
+        database: str,
+        name: str,
+        data: Any = None,
+        mode: Optional[CreateMode] = "create",
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        await self._create_table(
+            database=database,
+            name=name,
+            data=data,
+            mode=mode,
+            namespace=namespace,
+        )
+
+    async def drop_table(
+        self,
+        *,
+        database: str,
+        name: str,
+        ignore_missing: bool = False,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        response = await self._invoke(
+            operation="drop_table",
+            input={
+                "database": database,
+                "name": name,
+                "ignore_missing": ignore_missing,
+                "namespace": namespace,
+            },
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="drop_table")
+
+    async def rename_table(
+        self,
+        *,
+        database: str,
+        name: str,
+        new_name: str,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        response = await self._invoke(
+            operation="rename_table",
+            input={
+                "database": database,
+                "name": name,
+                "new_name": new_name,
+                "namespace": namespace,
+            },
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="rename_table")
+
+    async def inspect(
+        self,
+        *,
+        database: str,
+        table: str,
+        namespace: Optional[list[str]] = None,
+    ) -> pa.Schema:
+        response = await self._invoke(
+            operation="inspect",
+            input={"database": database, "table": table, "namespace": namespace},
+        )
+        if not isinstance(response, BinaryContent):
+            raise self._unexpected_response_error(operation="inspect")
+        return _schema_from_arrow_ipc(response.data)
+
+    async def add_columns(
+        self,
+        *,
+        database: str,
+        table: str,
+        new_columns: DatasetSchemaInput,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        schema = _normalize_dataset_schema(new_columns)
+        response = await self._invoke_content(
+            operation="add_columns",
+            input=BinaryContent(
+                data=_schema_to_arrow_ipc(schema),
+                headers={
+                    "database": database,
+                    "table": table,
+                    "namespace": namespace,
+                    "content_type": _ARROW_IPC_STREAM_MIME_TYPE,
+                },
+            ),
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="add_columns")
+
+    async def drop_columns(
+        self,
+        *,
+        database: str,
+        table: str,
+        columns: list[str],
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        response = await self._invoke(
+            operation="drop_columns",
+            input={
+                "database": database,
+                "table": table,
+                "columns": columns,
+                "namespace": namespace,
+            },
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="drop_columns")
+
+    async def _write_chunks_for_table(
+        self,
+        *,
+        database: str,
+        table: str,
+        chunks: Any,
+        namespace: Optional[list[str]] = None,
+    ) -> Any:
+        if isinstance(chunks, list) and all(isinstance(item, dict) for item in chunks):
+            schema = await self.inspect(
+                database=database,
+                table=table,
+                namespace=namespace,
+            )
+            return _dataset_arrow_chunks(chunks, schema=schema)
+        return _dataset_arrow_chunks(chunks)
+
+    async def insert(
+        self,
+        *,
+        database: str,
+        table: str,
+        records: pa.Table | pa.RecordBatch | DatasetRows,
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        input_stream = _DatasetArrowWriteInputStream(
+            start={
+                "kind": "start",
+                "database": database,
+                "table": table,
+                "namespace": namespace,
+            },
+            chunks=await self._write_chunks_for_table(
+                database=database,
+                table=table,
+                chunks=records,
+                namespace=namespace,
+            ),
+        )
+        await self._drain_write_stream(operation="insert", input_stream=input_stream)
+
+    async def update(
+        self,
+        *,
+        database: str,
+        table: str,
+        where: str,
+        values: DatasetRecord,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> int:
+        response = await self._invoke(
+            operation="update",
+            input={
+                "database": database,
+                "table": table,
+                "where": where,
+                "values": [
+                    {"column": column, "value_json": _dataset_value_json(value)}
+                    for column, value in values.items()
+                ],
+                "params": params,
+                "namespace": namespace,
+            },
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="update")
+        try:
+            payload = _SqliteRowsAffectedResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="update") from exc
+        return payload.rows_affected
+
+    async def delete(
+        self,
+        *,
+        database: str,
+        table: str,
+        where: str,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> int:
+        response = await self._invoke(
+            operation="delete",
+            input={
+                "database": database,
+                "table": table,
+                "where": where,
+                "params": params,
+                "namespace": namespace,
+            },
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="delete")
+        try:
+            payload = _SqliteRowsAffectedResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="delete") from exc
+        return payload.rows_affected
+
+    async def search(
+        self,
+        *,
+        database: str,
+        table: str,
+        where: Optional[str] | dict = None,
+        params: Any = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        select: Optional[list[str]] = None,
+        namespace: Optional[list[str]] = None,
+    ) -> pa.Table:
+        batches = list[pa.Table]()
+        async for batch in self.search_stream(
+            database=database,
+            table=table,
+            where=where,
+            params=params,
+            offset=offset,
+            limit=limit,
+            select=select,
+            namespace=namespace,
+        ):
+            batches.append(batch)
+        if len(batches) == 0:
+            return pa.table({})
+        return pa.concat_tables(batches, promote_options="default")
+
+    async def search_stream(
+        self,
+        *,
+        database: str,
+        table: str,
+        where: Optional[str] | dict = None,
+        params: Any = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        select: Optional[list[str]] = None,
+        namespace: Optional[list[str]] = None,
+    ) -> AsyncIterator[pa.Table]:
+        async for batch in self._stream_arrow(
+            operation="search",
+            start={
+                "kind": "start",
+                "database": database,
+                "table": table,
+                "where": where,
+                "params": params,
+                "offset": offset,
+                "limit": limit,
+                "select": select,
+                "namespace": namespace,
+            },
+        ):
+            yield batch
+
+    async def count(
+        self,
+        *,
+        database: str,
+        table: str,
+        where: Optional[str] | dict = None,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> int:
+        response = await self._invoke(
+            operation="count",
+            input={
+                "database": database,
+                "table": table,
+                "where": where,
+                "params": params,
+                "namespace": namespace,
+            },
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="count")
+        try:
+            payload = _SqliteCountResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="count") from exc
+        return payload.count
+
+    async def sql(
+        self,
+        *,
+        database: str,
+        query: str,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> pa.Table:
+        batches = list[pa.Table]()
+        async for batch in self.sql_stream(
+            database=database,
+            query=query,
+            params=params,
+            namespace=namespace,
+        ):
+            batches.append(batch)
+        if len(batches) == 0:
+            return pa.table({})
+        return pa.concat_tables(batches, promote_options="default")
+
+    async def open_sql_query(
+        self,
+        *,
+        database: str,
+        query: str,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> SqliteSqlQuery:
+        response = await self._invoke_content(
+            operation="open_sql_query",
+            input=BinaryContent(
+                data=b"",
+                headers={
+                    "database": database,
+                    "query": query,
+                    "params": params,
+                    "namespace": namespace,
+                },
+            ),
+        )
+        if not isinstance(response, BinaryContent):
+            raise self._unexpected_response_error(operation="open_sql_query")
+        try:
+            headers = _SqliteQueryHeaders.model_validate(response.headers)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="open_sql_query") from exc
+        if headers.query_id == "":
+            raise self._unexpected_response_error(operation="open_sql_query")
+        return SqliteSqlQuery(
+            schema=_schema_from_arrow_ipc(response.data),
+            query_id=headers.query_id,
+        )
+
+    async def execute_sql(
+        self,
+        *,
+        database: str,
+        query: str,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> SqliteSqlExecution:
+        response = await self._invoke_content(
+            operation="execute_sql",
+            input=BinaryContent(
+                data=b"",
+                headers={
+                    "database": database,
+                    "query": query,
+                    "params": params,
+                    "namespace": namespace,
+                },
+            ),
+        )
+        if isinstance(response, BinaryContent):
+            try:
+                headers = _SqliteQueryHeaders.model_validate(response.headers)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="execute_sql") from exc
+            if headers.query_id == "":
+                raise self._unexpected_response_error(operation="execute_sql")
+            return SqliteSqlQuery(
+                schema=_schema_from_arrow_ipc(response.data),
+                query_id=headers.query_id,
+            )
+        if isinstance(response, JsonContent):
+            try:
+                payload = _SqliteStatementResponse.model_validate(response.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="execute_sql") from exc
+            return SqliteSqlStatement(rows_affected=payload.rows_affected)
+        raise self._unexpected_response_error(operation="execute_sql")
+
+    async def sql_stream(
+        self,
+        *,
+        database: str,
+        query: str,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> AsyncIterator[pa.Table]:
+        result = await self.execute_sql(
+            database=database,
+            query=query,
+            params=params,
+            namespace=namespace,
+        )
+        if isinstance(result, SqliteSqlStatement):
+            raise RoomException(
+                f"SQL statement did not return rows; rows_affected={result.rows_affected}",
+                code=ErrorCode.INVALID_REQUEST,
+            )
+        opened = result
+        try:
+            async for batch in self.read_sql_query(query_id=opened.query_id):
+                yield batch
+        finally:
+            await self.close_sql_query(query_id=opened.query_id)
+
+    async def read_sql_query(self, *, query_id: str) -> AsyncIterator[pa.Table]:
+        async for batch in self._stream_arrow(
+            operation="read_sql_query",
+            start={"kind": "start", "query_id": query_id},
+        ):
+            yield batch
+
+    async def close_sql_query(self, *, query_id: str) -> None:
+        response = await self._invoke(
+            operation="close_sql_query",
+            input={"query_id": query_id},
+        )
+        if not isinstance(response, EmptyContent):
+            raise self._unexpected_response_error(operation="close_sql_query")
+
+    async def cancel_sql_query(self, *, query_id: str) -> SqliteSqlCancelResult:
+        response = await self._invoke(
+            operation="cancel_sql_query",
+            input={"query_id": query_id},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="cancel_sql_query")
+        try:
+            payload = _SqliteCancelResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="cancel_sql_query") from exc
+        return SqliteSqlCancelResult(status=payload.status)
+
+    async def execute_sql_statement(
+        self,
+        *,
+        database: str,
+        query: str,
+        params: Any = None,
+        namespace: Optional[list[str]] = None,
+    ) -> int:
+        response = await self._invoke_content(
+            operation="execute_sql_statement",
+            input=BinaryContent(
+                data=b"",
+                headers={
+                    "database": database,
+                    "query": query,
+                    "params": params,
+                    "namespace": namespace,
+                },
+            ),
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="execute_sql_statement")
+        try:
+            payload = _SqliteRowsAffectedResponse.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(
+                operation="execute_sql_statement"
+            ) from exc
+        return payload.rows_affected
 
 
 class MemoryClient:
@@ -6897,7 +8313,11 @@ class MemoryClient:
             input=request_model.model_dump(),
         )
         if isinstance(response, JsonContent):
-            return list(response.json.get("memories", []))
+            try:
+                payload = _MemoryListResponse.model_validate(response.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="list") from exc
+            return payload.memories
 
         raise self._unexpected_response_error(operation="list")
 
@@ -7696,6 +9116,30 @@ class BuildJob(BaseModel):
     published_images: List[PublishedBuildImage] = Field(default_factory=list)
 
 
+class _ContainerIdToolOutput(BaseModel):
+    container_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _BuildIdToolOutput(BaseModel):
+    build_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _ListBuildsToolOutput(BaseModel):
+    builds: List[BuildJob]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class _ListImagesToolOutput(BaseModel):
+    images: List[dict[str, Any]]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ContainerStartedBy(BaseModel):
     id: str
     name: str
@@ -7935,6 +9379,28 @@ def _container_port_pairs(
     ]
 
 
+def _container_status_from_bytes(*, operation: str, data: bytes) -> int:
+    try:
+        status_payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as ex:
+        raise RoomException(
+            f"containers.{operation} returned an invalid status payload",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        ) from ex
+    if not isinstance(status_payload, dict):
+        raise RoomException(
+            f"containers.{operation} returned an invalid status payload",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+    status = status_payload.get("status")
+    if isinstance(status, bool) or not isinstance(status, int):
+        raise RoomException(
+            f"containers.{operation} returned an invalid status payload",
+            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+        )
+    return status
+
+
 class ExecSession:
     """
     Provides async input/output streams for an interactive container session.
@@ -8142,6 +9608,29 @@ class ContainersClient:
             payload["labels"] = normalized_labels
         return payload
 
+    @classmethod
+    async def _build_id_from_response(
+        cls, response: Content | AsyncIterable[Content]
+    ) -> str:
+        if isinstance(response, JsonContent):
+            try:
+                payload = _BuildIdToolOutput.model_validate(response.json)
+            except ValidationError as exc:
+                raise cls._unexpected_response_error(operation="build") from exc
+            return payload.build_id
+        if isinstance(response, AsyncIterable):
+            async for chunk in response:
+                if isinstance(chunk, JsonContent):
+                    try:
+                        payload = _BuildIdToolOutput.model_validate(chunk.json)
+                    except ValidationError as exc:
+                        raise cls._unexpected_response_error(operation="build") from exc
+                    return payload.build_id
+                if isinstance(chunk, ErrorContent):
+                    raise RoomException(chunk.text, code=chunk.code)
+            raise cls._unexpected_response_error(operation="build")
+        raise cls._unexpected_response_error(operation="build")
+
     async def list_images(self) -> List[Image]:
         res = await self.room.invoke(
             toolkit="containers",
@@ -8150,8 +9639,13 @@ class ContainersClient:
         )
         if not isinstance(res, JsonContent):
             raise self._unexpected_response_error(operation="list_images")
-        imgs = res["images"]
-        return [Image.model_validate(self._image_payload(i)) for i in imgs]
+        try:
+            payload = _ListImagesToolOutput.model_validate(res.json)
+            return [
+                Image.model_validate(self._image_payload(i)) for i in payload.images
+            ]
+        except (TypeError, ValidationError) as exc:
+            raise self._unexpected_response_error(operation="list_images") from exc
 
     async def inspect_image(self, *, image_id: str) -> ImageInspection:
         res = await self.room.invoke(
@@ -8161,7 +9655,10 @@ class ContainersClient:
         )
         if not isinstance(res, JsonContent):
             raise self._unexpected_response_error(operation="inspect_image")
-        return ImageInspection.model_validate(res.json)
+        try:
+            return ImageInspection.model_validate(res.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="inspect_image") from exc
 
     async def delete_image(self, *, image: str) -> None:
         await self.room.invoke(
@@ -8205,8 +9702,11 @@ class ContainersClient:
             },
         )
         if isinstance(resp, JsonContent):
-            container_id: str = resp.json["container_id"]
-            return container_id
+            try:
+                payload = _ContainerIdToolOutput.model_validate(resp.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="push_image") from exc
+            return payload.container_id
 
         raise self._unexpected_response_error(operation="push_image")
 
@@ -8223,7 +9723,10 @@ class ContainersClient:
             },
         )
         if isinstance(resp, JsonContent):
-            return ImportedImage.model_validate(resp.json)
+            try:
+                return ImportedImage.model_validate(resp.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="load") from exc
 
         raise self._unexpected_response_error(operation="load")
 
@@ -8246,8 +9749,11 @@ class ContainersClient:
             },
         )
         if isinstance(resp, JsonContent):
-            container_id: str = resp.json["container_id"]
-            return container_id
+            try:
+                payload = _ContainerIdToolOutput.model_validate(resp.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="load_image") from exc
+            return payload.container_id
 
         raise self._unexpected_response_error(operation="load_image")
 
@@ -8272,8 +9778,11 @@ class ContainersClient:
             },
         )
         if isinstance(resp, JsonContent):
-            container_id: str = resp.json["container_id"]
-            return container_id
+            try:
+                payload = _ContainerIdToolOutput.model_validate(resp.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="save_image") from exc
+            return payload.container_id
 
         raise self._unexpected_response_error(operation="save_image")
 
@@ -8326,8 +9835,11 @@ class ContainersClient:
             },
         )
         if isinstance(resp, JsonContent):
-            container_id: str = resp.json["container_id"]
-            return container_id
+            try:
+                payload = _ContainerIdToolOutput.model_validate(resp.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="run") from exc
+            return payload.container_id
 
         raise self._unexpected_response_error(operation="run")
 
@@ -8373,13 +9885,7 @@ class ContainersClient:
                 size=size,
             ),
         )
-        if isinstance(response, JsonContent):
-            build_id = response.json.get("build_id")
-            if not isinstance(build_id, str):
-                raise self._unexpected_response_error(operation="build")
-            return build_id
-
-        raise self._unexpected_response_error(operation="build")
+        return await self._build_id_from_response(response)
 
     async def list_builds(self) -> List[BuildJob]:
         response = await self.room.invoke(
@@ -8389,10 +9895,11 @@ class ContainersClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="list_builds")
-        builds = response.json.get("builds")
-        if not isinstance(builds, list):
-            raise self._unexpected_response_error(operation="list_builds")
-        return [BuildJob.model_validate(build) for build in builds]
+        try:
+            payload = _ListBuildsToolOutput.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="list_builds") from exc
+        return payload.builds
 
     async def cancel_build(self, *, build_id: str) -> None:
         await self.room.invoke(
@@ -8420,8 +9927,11 @@ class ContainersClient:
             },
         )
         if isinstance(resp, JsonContent):
-            container_id: str = resp.json["container_id"]
-            return container_id
+            try:
+                payload = _ContainerIdToolOutput.model_validate(resp.json)
+            except ValidationError as exc:
+                raise self._unexpected_response_error(operation="run_service") from exc
+            return payload.container_id
 
         raise self._unexpected_response_error(operation="run_service")
 
@@ -8474,13 +9984,9 @@ class ContainersClient:
                         container._push_err(chunk.data)
                         continue
                     if channel_value == 3:
-                        status_payload = json.loads(chunk.data.decode("utf-8"))
-                        status = status_payload.get("status")
-                        if isinstance(status, int):
-                            return status
-                        raise RoomException(
-                            "containers.exec returned an invalid status payload",
-                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        return _container_status_from_bytes(
+                            operation="exec",
+                            data=chunk.data,
                         )
 
                     logger.warning(
@@ -8638,13 +10144,9 @@ class ContainersClient:
                         stream._logs_q.put_nowait(text)
                         continue
                     if channel_value == 3:
-                        status_payload = json.loads(chunk.data.decode("utf-8"))
-                        status = status_payload.get("status")
-                        if isinstance(status, int):
-                            return status
-                        raise RoomException(
-                            "containers.get_build_logs returned an invalid status payload",
-                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        return _container_status_from_bytes(
+                            operation="get_build_logs",
+                            data=chunk.data,
                         )
 
                     logger.warning(
@@ -8705,502 +10207,3 @@ class ContainersClient:
         if not isinstance(res, JsonContent):
             raise self._unexpected_response_error(operation="list")
         return [RoomContainer(**c) for c in res["containers"]]
-
-
-class _GetOfflineOAuthTokenRequest(BaseModel):
-    connector: Optional[ConnectorRef] = None
-    oauth: Optional[OAuthClientConfig] = None
-    delegated_to: Optional[str] = None
-    delegated_by: Optional[str] = None
-
-
-class _GetOfflineOAuthTokenResponse(BaseModel):
-    access_token: Optional[str] = None
-
-
-class SecretRequestInfo(BaseModel):
-    url: str
-    type: str
-    participant_id: str
-    timeout: int = 60 * 5
-    delegate_to: Optional[str] = None
-
-
-class _RequestOAuthTokenRequest(BaseModel):
-    connector: Optional[ConnectorRef] = None
-    oauth: Optional[OAuthClientConfig] = None
-    redirect_uri: str
-    participant_id: str
-    timeout: int = 60 * 5
-    delegate_to: Optional[str] = None
-
-
-class _RequestOAuthTokenResponse(BaseModel):
-    access_token: Optional[str] = None
-
-
-class _DeleteUserSecretRequest(BaseModel):
-    id: str
-    delegated_to: Optional[str] = None
-
-
-class _DeleteUserSecretResponse(BaseModel):
-    pass
-
-
-class _DeleteRequestedSecretRequest(BaseModel):
-    url: str
-    type: str
-    delegated_to: Optional[str] = None
-
-
-class _DeleteRequestedSecretResponse(BaseModel):
-    pass
-
-
-class _ListUserSecretsRequest(BaseModel):
-    pass
-
-
-class SecretInfo(BaseModel):
-    id: str
-    type: str
-    name: str
-    delegated_to: Optional[str] = None
-    agent_id: Optional[str] = None
-
-
-class _ListUserSecretsResponse(BaseModel):
-    secrets: list[SecretInfo]
-
-
-class _SecretExistsRequest(BaseModel):
-    secret_id: str
-    delegated_to: Optional[str] = None
-    for_identity: Optional[str] = None
-
-
-class _SecretExistsResponse(BaseModel):
-    exists: bool
-
-
-class OAuthCredentials(BaseModel):
-    access_token: str
-    refresh_token: Optional[str] = None
-    expiration: Optional[datetime] = None
-    scopes: Optional[list[str]] = None
-
-
-class _ClientRequestOAuthTokenRequest(BaseModel):
-    request_id: str
-    request: _RequestOAuthTokenRequest
-    challenge: Optional[str]
-
-
-class _ClientRequestOAuthTokenResponse(BaseModel):
-    request_id: str
-    code: Optional[str] = None
-    error: Optional[str] = None
-
-
-class _ClientRequestSecretRequest(BaseModel):
-    request_id: str
-    request: SecretRequestInfo
-
-
-class _ClientRequestSecretResponse(BaseModel):
-    # secret will be passed back as data in message
-    request_id: str
-    error: Optional[str] = None
-
-
-@dataclass
-class OAuthTokenRequest:
-    request_id: str
-    authorization_endpoint: str
-    token_endpoint: str
-    challenge: str
-    scopes: Optional[list[str]] = None
-
-
-@dataclass
-class SecretRequest:
-    request_id: str
-    url: str
-    type: str
-    delegate_to: Optional[str] = None
-
-
-class _SetSecretRequest(BaseModel):
-    secret_id: Optional[str] = Field(default=None)
-    type: Optional[str] = Field(default=None)
-    name: Optional[str] = Field(default=None)
-    delegated_to: Optional[str] = Field(default=None)
-    for_identity: Optional[str] = Field(default=None)
-
-
-class _GetSecretRequest(BaseModel):
-    secret_id: Optional[str] = Field(default=None)
-    type: Optional[str] = Field(default=None)
-    name: Optional[str] = Field(default=None)
-    delegated_to: Optional[str] = Field(default=None)
-
-
-class SecretsClient:
-    def __init__(
-        self,
-        *,
-        room: RoomClient,
-        oauth_token_request_handler: Optional[
-            Callable[[OAuthTokenRequest], Awaitable]
-        ] = None,
-        secret_request_handler: Optional[Callable[[SecretRequest], Awaitable]] = None,
-    ):
-        self.room = room
-        # Hook server -> client events
-        self.room.protocol.register_handler(
-            "secrets.request_oauth_token", self._handle_client_oauth_token_request
-        )
-
-        self.room.protocol.register_handler(
-            "secrets.request_secret", self._handle_request_secret_request
-        )
-
-        self._oauth_token_request_handler = oauth_token_request_handler
-        self._secret_request_handler = secret_request_handler
-        self._pending_authorization_requests = []
-        self._pending_secret_requests = []
-
-    @staticmethod
-    def _unexpected_response_error(*, operation: str) -> RoomException:
-        return RoomException(
-            f"unexpected return type from secrets.{operation}",
-            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
-        )
-
-    async def _invoke(self, *, operation: str, input: dict | Content) -> Content:
-        return await self.room.invoke(
-            toolkit="secrets",
-            tool=operation,
-            input=input,
-        )
-
-    async def _handle_client_oauth_token_request(
-        self, protocol: Protocol, message_id: int, type: str, data: bytes
-    ) -> None:
-        request, bytes = unpack_message(data=data)
-        req = _ClientRequestOAuthTokenRequest.model_validate(request)
-
-        if self._oauth_token_request_handler is None:
-            raise RoomException("No oauth token handler registered")
-
-        def on_done(t: asyncio.Task):
-            try:
-                t.result()
-            finally:
-                self._pending_authorization_requests.remove(t)
-
-        task = asyncio.create_task(
-            self._oauth_token_request_handler(
-                OAuthTokenRequest(
-                    request_id=req.request_id,
-                    authorization_endpoint=req.request.oauth.authorization_endpoint,
-                    token_endpoint=req.request.oauth.token_endpoint,
-                    scopes=req.request.oauth.scopes,
-                    challenge=req.challenge,
-                )
-            )
-        )
-        task.add_done_callback(on_done)
-        self._pending_authorization_requests.append(task)
-
-    async def _handle_request_secret_request(
-        self, protocol: Protocol, message_id: int, type: str, data: bytes
-    ) -> None:
-        request, bytes = unpack_message(data=data)
-        req = _ClientRequestSecretRequest.model_validate(request)
-
-        if self._secret_request_handler is None:
-            raise RoomException("No secret handler registered")
-
-        def on_done(t: asyncio.Task):
-            try:
-                t.result()
-            finally:
-                self._pending_secret_requests.remove(t)
-
-        task = asyncio.create_task(
-            self._secret_request_handler(
-                SecretRequest(
-                    request_id=req.request_id,
-                    url=req.request.url,
-                    type=req.request.type,
-                    delegate_to=req.request.delegate_to,
-                )
-            )
-        )
-        task.add_done_callback(on_done)
-        self._pending_secret_requests.append(task)
-
-    async def provide_oauth_authorization(
-        self,
-        *,
-        request_id: str,
-        code: str,
-    ):
-        await self._invoke(
-            operation="provide_oauth_authorization",
-            input=_ClientRequestOAuthTokenResponse(
-                request_id=request_id,
-                code=code,
-                error=None,
-            ).model_dump(mode="json"),
-        )
-
-    async def reject_oauth_authorization(
-        self,
-        *,
-        request_id: str,
-        error: str,
-    ):
-        await self._invoke(
-            operation="provide_oauth_authorization",
-            input=_ClientRequestOAuthTokenResponse(
-                request_id=request_id,
-                code=None,
-                error=error,
-            ).model_dump(mode="json"),
-        )
-
-    async def provide_secret(
-        self,
-        *,
-        request_id: str,
-        data: bytes,
-    ) -> None:
-        await self._invoke(
-            operation="provide_secret",
-            input=BinaryContent(
-                data=data,
-                headers={"request_id": request_id, "error": None},
-            ),
-        )
-
-    async def reject_secret(
-        self,
-        *,
-        request_id: str,
-        error: str,
-    ) -> None:
-        await self._invoke(
-            operation="provide_secret",
-            input=BinaryContent(
-                data=b"",
-                headers={"request_id": request_id, "error": error},
-            ),
-        )
-
-    # get a saved oauth token
-    async def get_offline_oauth_token(
-        self,
-        *,
-        connector: Optional[ConnectorRef] = None,
-        oauth: Optional[OAuthClientConfig] = None,
-        delegated_to: Optional[str] = None,
-        delegated_by: Optional[str] = None,
-    ):
-        req = _GetOfflineOAuthTokenRequest(
-            connector=connector,
-            oauth=oauth,
-            delegated_by=delegated_by,
-            delegated_to=delegated_to,
-        )
-        response = await self._invoke(
-            operation="get_offline_oauth_token",
-            input=req.model_dump(mode="json"),
-        )
-        if isinstance(response, JsonContent):
-            resp = _GetOfflineOAuthTokenResponse.model_validate(response.json)
-            return resp.access_token
-        raise self._unexpected_response_error(operation="get_offline_oauth_token")
-
-    async def request_oauth_token(
-        self,
-        *,
-        connector: Optional[ConnectorRef] = None,
-        oauth: Optional[OAuthClientConfig] = None,
-        timeout: int = 60 * 5,
-        from_participant_id: str,
-        redirect_uri: str,
-        delegate_to: Optional[str] = None,
-    ) -> str | None:
-        req = _RequestOAuthTokenRequest(
-            redirect_uri=redirect_uri,
-            timeout=timeout,
-            participant_id=from_participant_id,
-            oauth=oauth,
-            connector=connector,
-            delegate_to=delegate_to,
-        )
-        response = await self._invoke(
-            operation="request_oauth_token",
-            input=req.model_dump(mode="json"),
-        )
-        if isinstance(response, JsonContent):
-            resp = _RequestOAuthTokenResponse.model_validate(response.json)
-            return resp.access_token
-        raise self._unexpected_response_error(operation="request_oauth_token")
-
-    async def list_secrets(self) -> list[SecretInfo]:
-        response = await self._invoke(
-            operation="list_secrets",
-            input=_ListUserSecretsRequest().model_dump(mode="json"),
-        )
-        if isinstance(response, JsonContent):
-            resp = _ListUserSecretsResponse.model_validate(response.json)
-            return resp.secrets
-        raise self._unexpected_response_error(operation="list_secrets")
-
-    async def exists(
-        self,
-        *,
-        secret_id: str,
-        delegated_to: Optional[str] = None,
-        for_identity: Optional[str] = None,
-    ) -> bool:
-        response = await self._invoke(
-            operation="exists",
-            input=_SecretExistsRequest(
-                secret_id=secret_id,
-                delegated_to=delegated_to,
-                for_identity=for_identity,
-            ).model_dump(mode="json"),
-        )
-        if isinstance(response, JsonContent):
-            resp = _SecretExistsResponse.model_validate(response.json)
-            return resp.exists
-        raise self._unexpected_response_error(operation="exists")
-
-    async def delete_secret(self, *, id: str, delegated_to: Optional[str] = None):
-        response = await self._invoke(
-            operation="delete_secret",
-            input=_DeleteUserSecretRequest(
-                id=id,
-                delegated_to=delegated_to,
-            ).model_dump(mode="json"),
-        )
-        if isinstance(response, (EmptyContent, JsonContent)):
-            return
-        raise self._unexpected_response_error(operation="delete_secret")
-
-    async def delete_requested_secret(
-        self,
-        *,
-        url: str,
-        type: str,
-        delegated_to: Optional[str] = None,
-    ) -> None:
-        response = await self._invoke(
-            operation="delete_requested_secret",
-            input=_DeleteRequestedSecretRequest(
-                url=url,
-                type=type,
-                delegated_to=delegated_to,
-            ).model_dump(mode="json"),
-        )
-        if isinstance(response, (EmptyContent, JsonContent)):
-            return
-        raise self._unexpected_response_error(operation="delete_requested_secret")
-
-    async def request_secret(
-        self,
-        *,
-        url: str,
-        type: str,
-        timeout: int = 60 * 5,
-        from_participant_id: str,
-        delegate_to: Optional[str] = None,
-    ) -> bytes:
-        req = SecretRequestInfo(
-            url=url,
-            type=type,
-            participant_id=from_participant_id,
-            timeout=timeout,
-            delegate_to=delegate_to,
-        )
-        response = await self._invoke(
-            operation="request_secret",
-            input=req.model_dump(mode="json"),
-        )
-        if isinstance(response, FileContent):
-            return response.data
-        raise self._unexpected_response_error(operation="request_secret")
-
-    async def set_secret(
-        self,
-        *,
-        secret_id: Optional[str] = None,
-        type: Optional[str] = None,
-        name: Optional[str] = None,
-        delegated_to: Optional[str] = None,
-        for_identity: Optional[str] = None,
-        data: Optional[bytes] = None,
-    ) -> None:
-        """
-        Store/update a secret for the current user (or delegated target).
-        """
-        req = _SetSecretRequest(
-            secret_id=secret_id,
-            type=type,
-            name=name,
-            delegated_to=delegated_to,
-            for_identity=for_identity,
-        )
-        if data is None:
-            raise RoomException(
-                "secret data is required",
-                code=ErrorCode.INVALID_REQUEST,
-            )
-
-        response = await self._invoke(
-            operation="set_secret",
-            input=BinaryContent(
-                data=data,
-                headers={**req.model_dump(mode="json"), "has_data": True},
-            ),
-        )
-
-        if isinstance(response, (EmptyContent, JsonContent)):
-            return
-        raise self._unexpected_response_error(operation="set_secret")
-
-    async def get_secret(
-        self,
-        *,
-        secret_id: Optional[str] = None,
-        type: Optional[str] = None,
-        name: Optional[str] = None,
-        delegated_to: Optional[str] = None,
-    ) -> Optional[FileContent]:
-        """
-        Fetch secret bytes. Returns FileContent (name/mime_type/data) or None if not found.
-        """
-        req = _GetSecretRequest(
-            secret_id=secret_id,
-            type=type,
-            name=name,
-            delegated_to=delegated_to,
-        )
-
-        response = await self._invoke(
-            operation="get_secret",
-            input=req.model_dump(mode="json"),
-        )
-
-        if isinstance(response, EmptyContent):
-            return None
-
-        if isinstance(response, FileContent):
-            return response
-
-        raise self._unexpected_response_error(operation="get_secret")

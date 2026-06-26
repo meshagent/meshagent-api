@@ -1,7 +1,7 @@
 import json
 import asyncio
 
-from typing import Optional
+from typing import Literal, Optional
 
 import logging
 import signal
@@ -9,6 +9,7 @@ from aiohttp import web
 import os
 import hashlib
 import jwt
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from meshagent.api.room_server_client import RoomClient
 
@@ -18,6 +19,49 @@ from meshagent.api.websocket_protocol import (
 )
 
 logger = logging.getLogger("webhooks")
+
+
+class CallEventData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    room_name: str
+    room_url: str
+    token: str
+    arguments: Optional[dict] = None
+
+
+class CallWebhookPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    event: Literal["room.call"]
+    data: CallEventData
+
+
+class RoomStartedEventData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    room_name: str
+    room_url: str
+
+
+class RoomStartedWebhookPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    event: Literal["room.started"]
+    data: RoomStartedEventData
+
+
+class RoomEndedEventData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    room_name: str
+
+
+class RoomEndedWebhookPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    event: Literal["room.ended"]
+    data: RoomEndedEventData
 
 
 class RoomStartedEvent:
@@ -176,6 +220,10 @@ class WebhookServer:
                     logger.warning(f"received invalid event on websocket {req}")
 
                     raise web.HTTPBadRequest()
+                try:
+                    call_payload = CallWebhookPayload.model_validate(req)
+                except ValidationError as e:
+                    raise web.HTTPBadRequest(reason="invalid request body") from e
 
                 ws = web.WebSocketResponse(
                     heartbeat=resolve_websocket_heartbeat(),
@@ -185,8 +233,8 @@ class WebhookServer:
                 async with RoomClient(
                     protocol_factory=WebSocketServerProtocol(
                         socket=ws,
-                        token=req["data"]["token"],
-                        url=req["data"]["room_url"],
+                        token=call_payload.data.token,
+                        url=call_payload.data.room_url,
                     ).create_factory()
                 ) as room:
                     await self.on_call_answered(room=room)
@@ -211,25 +259,28 @@ class WebhookServer:
 
     async def on_webhook(self, *, payload: dict):
         event = payload["event"]
-        data = payload["data"]
 
         if event == "room.started":
-            url = data["room_url"]
+            parsed = RoomStartedWebhookPayload.model_validate(payload)
             await self.on_room_started(
-                RoomStartedEvent(room_name=data["room_name"], room_url=url)
+                RoomStartedEvent(
+                    room_name=parsed.data.room_name,
+                    room_url=parsed.data.room_url,
+                )
             )
 
         elif event == "room.ended":
-            await self.on_room_ended(RoomEndedEvent(room_name=data["room_name"]))
+            parsed = RoomEndedWebhookPayload.model_validate(payload)
+            await self.on_room_ended(RoomEndedEvent(room_name=parsed.data.room_name))
 
         elif event == "room.call":
-            url = data["room_url"]
+            parsed = CallWebhookPayload.model_validate(payload)
             await self.on_call(
                 CallEvent(
-                    room_name=data["room_name"],
-                    room_url=url,
-                    token=data["token"],
-                    arguments=data["arguments"],
+                    room_name=parsed.data.room_name,
+                    room_url=parsed.data.room_url,
+                    token=parsed.data.token,
+                    arguments=parsed.data.arguments,
                 )
             )
 

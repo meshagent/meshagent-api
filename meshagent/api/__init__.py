@@ -32,11 +32,9 @@ from .room_server_client import (
     StorageEntry,
 )
 from .client import (
-    AgentRoomGrant,
     Meshagent,
     CreateProjectRepositoryRequest,
     CreateRepositoryTokenRequest,
-    ProjectAgentRoomGrant,
     UpdateProjectRepositoryRequest,
     ProjectInfo,
     ProjectRepository,
@@ -47,6 +45,9 @@ from .participant_token import (
     ParticipantGrant,
     ApiScope,
     DatasetGrant,
+    SqliteDatabaseGrant,
+    SqliteGrant,
+    SqliteTableGrant,
     LLMGrant,
 )
 from .managed_agents import (
@@ -55,6 +56,7 @@ from .managed_agents import (
     AllowedOpenAIModel,
     ManagedAgentImageGeneration,
     ManagedAgentMetadata,
+    ManagedAgentRunAs,
     ManagedAgentSpec,
     ManagedAgentToolkit,
     ManagedAgentWebFetch,
@@ -101,11 +103,9 @@ from .error_codes import ErrorCode
 from .dataset_schema import LANCE_COMPRESSION_METADATA_KEY, LANCE_ZSTD_FIELD_METADATA
 
 __all__ = [
-    AgentRoomGrant,
     Meshagent,
     CreateProjectRepositoryRequest,
     CreateRepositoryTokenRequest,
-    ProjectAgentRoomGrant,
     UpdateProjectRepositoryRequest,
     ProjectInfo,
     ProjectRepository,
@@ -145,12 +145,16 @@ __all__ = [
     ParticipantGrant,
     ApiScope,
     DatasetGrant,
+    SqliteDatabaseGrant,
+    SqliteGrant,
+    SqliteTableGrant,
     LLMGrant,
     AllowedAnthropicModel,
     AllowedModel,
     AllowedOpenAIModel,
     ManagedAgentImageGeneration,
     ManagedAgentMetadata,
+    ManagedAgentRunAs,
     ManagedAgentSpec,
     ManagedAgentToolkit,
     ManagedAgentWebFetch,

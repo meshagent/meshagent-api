@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import datetime
 
@@ -11,7 +12,12 @@ from meshagent.api.managed_agents import (
     ManagedAgentSpec,
 )
 from meshagent.api.participant_token import ApiScope
-from meshagent.api.client import AccessResource, AccessSubject, Meshagent
+from meshagent.api.client import (
+    AccessResource,
+    AccessSubject,
+    Meshagent,
+    room_scope_for_role_compat,
+)
 from meshagent.api.specs.service import (
     RouteBackendSpec,
     RouteMetadata,
@@ -57,6 +63,10 @@ class _FakeSession:
         self.calls.append(("put", url, json))
         return self._responses.pop(0)
 
+    def patch(self, url: str, *, headers=None, json=None):
+        self.calls.append(("patch", url, json))
+        return self._responses.pop(0)
+
     def get(self, url: str, *, headers=None, params=None):
         self.calls.append(("get", url, params))
         return self._responses.pop(0)
@@ -67,6 +77,13 @@ class _FakeSession:
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.parametrize("role", ["operator", "developer", "admin"])
+def test_room_scope_for_role_compat_includes_sqlite(role):
+    scope = room_scope_for_role_compat(role)
+
+    assert scope.sqlite is not None
 
 
 @pytest.mark.asyncio
@@ -832,285 +849,559 @@ async def test_get_config_returns_typed_deployment_config():
     ]
 
 
+def _secret_payload(**overrides):
+    payload = {
+        "id": "secret-1",
+        "project_id": "proj_123",
+        "owner_user_id": "user-1",
+        "owner_service_account_id": None,
+        "created_by_user_id": "user-1",
+        "created_by_service_account_id": None,
+        "name": "registry",
+        "type": "opaque",
+        "http_only": False,
+        "metadata": {"service": "github"},
+        "annotations": {"meshagent.io/secret.account": "alice"},
+        "current_version_id": None,
+        "created_at": "2026-06-10T00:00:00+00:00",
+        "updated_at": "2026-06-10T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _secret_version_payload(**overrides):
+    payload = {
+        "id": "version-1",
+        "secret_id": "secret-1",
+        "version": 1,
+        "encryption_key_id": "key-1",
+        "value_sha256": None,
+        "created_by_user_id": "user-1",
+        "created_by_service_account_id": None,
+        "created_at": "2026-06-10T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
 @pytest.mark.asyncio
-async def test_create_project_secret_sends_base64_payload():
-    session = _FakeSession([_FakeResponse(status=200, payload={"id": "secret-1"})])
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    secret_id = await client.create_project_secret(
-        project_id="proj_123",
-        name="registry",
-        type="docker",
-        data=b'{"server":"registry.example.com"}',
-    )
-
-    assert secret_id == "secret-1"
-    assert session.calls == [
-        (
-            "post",
-            "http://example.test/accounts/projects/proj_123/secrets",
-            {
-                "name": "registry",
-                "type": "docker",
-                "data_base64": "eyJzZXJ2ZXIiOiJyZWdpc3RyeS5leGFtcGxlLmNvbSJ9",
-            },
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_list_secrets_compatibility_wrapper_fetches_secret_payloads():
+async def test_user_secret_methods_use_new_user_scoped_routes():
     session = _FakeSession(
         [
+            _FakeResponse(status=200, payload=_secret_payload(http_only=True)),
             _FakeResponse(
                 status=200,
                 payload={
-                    "secrets": [
+                    "secrets": [_secret_payload()],
+                    "continuation_token": "next-page",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secrets": [_secret_payload(name="github-token")],
+                    "continuation_token": "next-search-page",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload=_secret_payload(
+                    value_base64=base64.b64encode(b"value").decode()
+                ),
+            ),
+            _FakeResponse(status=200, payload=_secret_payload(name="renamed")),
+            _FakeResponse(
+                status=200,
+                payload={"versions": [_secret_version_payload()]},
+            ),
+            _FakeResponse(
+                status=200,
+                payload=_secret_version_payload(
+                    id="version-2",
+                    value_sha256=base64.b64encode(b"hash").decode(),
+                ),
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secret_id": "secret-1",
+                    "version_id": "version-1",
+                    "value_base64": base64.b64encode(b"version value").decode(),
+                },
+            ),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "access_grants": [
                         {
-                            "id": "secret-1",
-                            "name": "registry",
-                            "type": "docker",
-                            "delegated_to": None,
-                        }
-                    ]
-                },
-            ),
-            _FakeResponse(
-                status=200,
-                payload={
-                    "id": "secret-1",
-                    "name": "registry",
-                    "type": "docker",
-                    "data_base64": "eyJzZXJ2ZXIiOiJyZWdpc3RyeS5leGFtcGxlLmNvbSIsInVzZXJuYW1lIjoiYWxpY2UiLCJwYXNzd29yZCI6InNlY3JldCIsImVtYWlsIjoibm9uZUBleGFtcGxlLmNvbSJ9",
-                },
-            ),
-        ]
-    )
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    secrets = await client.list_secrets("proj_123")
-
-    assert len(secrets) == 1
-    assert secrets[0].id == "secret-1"
-    assert secrets[0].name == "registry"
-    assert secrets[0].type == "docker"
-    assert session.calls == [
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/secrets",
-            {"view": "all"},
-        ),
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/secrets/secret-1",
-            None,
-        ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_list_project_secrets_sends_selected_view():
-    session = _FakeSession(
-        [
-            _FakeResponse(
-                status=200,
-                payload={
-                    "secrets": [
-                        {
-                            "id": "secret-1",
-                            "name": "registry",
-                            "type": "docker",
-                            "delegated_to": None,
-                        }
-                    ]
-                },
-            ),
-        ]
-    )
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    secrets = await client.list_project_secrets(project_id="proj_123", view="my")
-
-    assert [secret.id for secret in secrets] == ["secret-1"]
-    assert session.calls == [
-        (
-            "get",
-            "http://example.test/accounts/projects/proj_123/secrets",
-            {"view": "my"},
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_room_secret_and_external_oauth_methods_pass_query_parameters():
-    session = _FakeSession(
-        [
-            _FakeResponse(
-                status=200,
-                payload={
-                    "id": "secret-1",
-                    "name": "api-key",
-                    "type": "application/octet-stream",
-                    "delegated_to": "agent",
-                    "data_base64": "c2VjcmV0",
-                },
-            ),
-            _FakeResponse(
-                status=200,
-                payload={
-                    "registrations": [
-                        {
-                            "id": "registration-1",
-                            "delegated_to": "agent",
-                            "connector": None,
-                            "oauth": {
-                                "authorization_endpoint": "https://auth.example.com/authorize",
-                                "token_endpoint": "https://auth.example.com/token",
-                                "client_id": "client-id",
-                                "client_secret": None,
-                                "scopes": ["openid"],
+                            "subject": {
+                                "type": "service_account",
+                                "id": "service-account-1",
+                                "name": "GitHub proxy",
                             },
-                            "client_id": "client-id",
-                            "client_secret": "client-secret",
+                            "roles": ["use_proxy"],
                         }
-                    ]
+                    ],
+                    "continuation_token": "next-grants-page",
                 },
             ),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
             _FakeResponse(status=200, payload={}),
         ]
     )
     client = Meshagent(base_url="http://example.test", token="token", session=session)
 
-    secret = await client.get_room_secret(
+    created = await client.create_user_secret(
         project_id="proj_123",
-        room_name="room-a",
+        name="registry",
+        type="oauth",
+        http_only=True,
+        metadata={"service": "github"},
+        annotations={"meshagent.io/secret.account": "alice"},
+    )
+    page = await client.list_user_secrets(
+        page_size=25,
+        continuation_token="cursor",
+        filter="github",
+    )
+    search_page = await client.search_user_secrets(
+        name="token",
+        type="oauth",
+        http_only=True,
+        metadata={"service": "github"},
+        annotations={"meshagent.io/secret.account": "alice"},
+        provider="github",
+        email="alice@example.com",
+        oauth_provider="github-oauth",
+        page_size=10,
+        continuation_token="search-cursor",
+    )
+    fetched = await client.get_user_secret(secret_id="secret-1", include_value=True)
+    updated = await client.update_user_secret(secret_id="secret-1", name="renamed")
+    versions = await client.list_user_secret_versions(secret_id="secret-1")
+    created_version = await client.create_user_secret_version(
         secret_id="secret-1",
-        delegated_to="agent",
-        for_identity="agent",
+        value=b"secret value",
+        set_current=False,
     )
-    registrations = await client.list_room_external_oauth_registrations(
-        project_id="proj_123",
-        room_name="room-a",
-        delegated_to="agent",
+    version_value = await client.access_user_secret_version(
+        secret_id="secret-1",
+        version_id="version-1",
     )
-    await client.delete_room_external_oauth_registration(
-        project_id="proj_123",
-        room_name="room-a",
-        registration_id="registration-1",
-        delegated_to="agent",
+    await client.delete_user_secret_version(
+        secret_id="secret-1",
+        version_id="version-1",
     )
+    proxy_access = await client.list_user_secret_proxy_access(
+        secret_id="secret-1",
+        page_size=10,
+        continuation_token="grants-cursor",
+    )
+    await client.grant_user_secret_proxy_access(
+        secret_id="secret-1",
+        service_account_id="service-account-1",
+    )
+    await client.revoke_user_secret_proxy_access(
+        secret_id="secret-1",
+        service_account_id="service-account-1",
+    )
+    await client.delete_user_secret(secret_id="secret-1")
 
-    assert secret.data == b"secret"
-    assert registrations[0].id == "registration-1"
+    assert created.http_only is True
+    assert page.continuation_token == "next-page"
+    assert page.secrets[0].metadata == {"service": "github"}
+    assert search_page.continuation_token == "next-search-page"
+    assert fetched.name == "registry"
+    assert fetched.value_base64 == base64.b64encode(b"value").decode()
+    assert updated.name == "renamed"
+    assert versions[0].version == 1
+    assert created_version.value_sha256 == base64.b64encode(b"hash").decode()
+    assert version_value == b"version value"
+    assert proxy_access.continuation_token == "next-grants-page"
+    assert proxy_access.access_grants[0].subject.type == "service_account"
+    assert proxy_access.access_grants[0].roles == ["use_proxy"]
     assert session.calls == [
         (
-            "get",
-            "http://example.test/accounts/projects/proj_123/rooms/room-a/secrets/secret-1",
-            {"delegated_to": "agent", "for_identity": "agent"},
+            "post",
+            "http://example.test/accounts/users/me/secrets",
+            {
+                "project_id": "proj_123",
+                "name": "registry",
+                "type": "oauth",
+                "http_only": True,
+                "metadata": {"service": "github"},
+                "annotations": {"meshagent.io/secret.account": "alice"},
+            },
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/rooms/room-a/external-oauth",
-            {"delegated_to": "agent"},
+            "http://example.test/accounts/users/me/secrets",
+            {
+                "page_size": 25,
+                "continuation_token": "cursor",
+                "filter": "github",
+            },
+        ),
+        (
+            "post",
+            "http://example.test/accounts/users/me/secrets:search",
+            {
+                "page_size": 10,
+                "name": "token",
+                "type": "oauth",
+                "http_only": True,
+                "metadata": {"service": "github"},
+                "annotations": {"meshagent.io/secret.account": "alice"},
+                "provider": "github",
+                "email": "alice@example.com",
+                "oauth_provider": "github-oauth",
+                "continuation_token": "search-cursor",
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/users/me/secrets/secret-1",
+            {"include_value": "true"},
+        ),
+        (
+            "patch",
+            "http://example.test/accounts/users/me/secrets/secret-1",
+            {"name": "renamed"},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/users/me/secrets/secret-1/versions",
+            None,
+        ),
+        (
+            "post",
+            "http://example.test/accounts/users/me/secrets/secret-1/versions",
+            {
+                "value_base64": base64.b64encode(b"secret value").decode(),
+                "set_current": False,
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/users/me/secrets/secret-1/versions/version-1:access",
+            None,
         ),
         (
             "delete",
-            "http://example.test/accounts/projects/proj_123/rooms/room-a/external-oauth/registration-1",
-            {"delegated_to": "agent"},
+            "http://example.test/accounts/users/me/secrets/secret-1/versions/version-1",
+            None,
         ),
+        (
+            "get",
+            "http://example.test/accounts/users/me/secrets/secret-1/access",
+            {"page_size": 10, "continuation_token": "grants-cursor"},
+        ),
+        (
+            "post",
+            "http://example.test/accounts/users/me/secrets/secret-1/access:grant-proxy",
+            {
+                "subject": {
+                    "type": "service_account",
+                    "id": "service-account-1",
+                }
+            },
+        ),
+        (
+            "post",
+            "http://example.test/accounts/users/me/secrets/secret-1/access:revoke-proxy",
+            {
+                "subject": {
+                    "type": "service_account",
+                    "id": "service-account-1",
+                }
+            },
+        ),
+        ("delete", "http://example.test/accounts/users/me/secrets/secret-1", None),
     ]
 
 
+def test_external_oauth_registration_methods_are_removed_from_client():
+    removed = {
+        "create_project_external_oauth_registration",
+        "update_project_external_oauth_registration",
+        "list_project_external_oauth_registrations",
+        "delete_project_external_oauth_registration",
+        "create_room_external_oauth_registration",
+        "update_room_external_oauth_registration",
+        "list_room_external_oauth_registrations",
+        "delete_room_external_oauth_registration",
+    }
+
+    assert removed.isdisjoint(Meshagent.__dict__)
+
+
 @pytest.mark.asyncio
-async def test_agent_secret_methods_use_agent_secret_routes():
+async def test_service_account_secret_methods_use_service_account_scoped_routes():
     session = _FakeSession(
         [
-            _FakeResponse(status=200, payload={"id": "secret-1"}),
+            _FakeResponse(
+                status=200,
+                payload=_secret_payload(
+                    owner_user_id=None,
+                    owner_service_account_id="sa-1",
+                    created_by_user_id=None,
+                    created_by_service_account_id="sa-1",
+                ),
+            ),
             _FakeResponse(
                 status=200,
                 payload={
                     "secrets": [
-                        {
-                            "id": "secret-1",
-                            "name": "api-key",
-                            "type": "keys",
-                            "agent_id": "agent-1",
-                        }
+                        _secret_payload(
+                            owner_user_id=None,
+                            owner_service_account_id="sa-1",
+                            created_by_user_id=None,
+                            created_by_service_account_id="sa-1",
+                        )
                     ]
                 },
             ),
             _FakeResponse(
                 status=200,
                 payload={
-                    "id": "secret-1",
-                    "name": "api-key",
-                    "type": "keys",
-                    "agent_id": "agent-1",
-                    "data_base64": "c2VjcmV0",
+                    "secrets": [
+                        _secret_payload(
+                            owner_user_id=None,
+                            owner_service_account_id="sa-1",
+                            created_by_user_id=None,
+                            created_by_service_account_id="sa-1",
+                            name="github-token",
+                        )
+                    ]
                 },
             ),
+            _FakeResponse(
+                status=200,
+                payload=_secret_payload(
+                    owner_user_id=None,
+                    owner_service_account_id="sa-1",
+                    created_by_user_id=None,
+                    created_by_service_account_id="sa-1",
+                    value_base64=base64.b64encode(b"service value").decode(),
+                ),
+            ),
+            _FakeResponse(
+                status=200,
+                payload=_secret_payload(
+                    owner_user_id=None,
+                    owner_service_account_id="sa-1",
+                    created_by_user_id=None,
+                    created_by_service_account_id="sa-1",
+                    http_only=True,
+                ),
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "versions": [
+                        _secret_version_payload(
+                            created_by_user_id=None,
+                            created_by_service_account_id="sa-1",
+                        )
+                    ]
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload=_secret_version_payload(
+                    id="version-2",
+                    created_by_user_id=None,
+                    created_by_service_account_id="sa-1",
+                ),
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secret_id": "secret-1",
+                    "version_id": "version-1",
+                    "value_base64": base64.b64encode(b"service version value").decode(),
+                },
+            ),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "secrets": [
+                        _secret_payload(
+                            owner_user_id=None,
+                            owner_service_account_id="sa-1",
+                            created_by_user_id=None,
+                            created_by_service_account_id="sa-1",
+                        )
+                    ]
+                },
+            ),
+            _FakeResponse(status=200, payload={}),
             _FakeResponse(status=200, payload={}),
             _FakeResponse(status=200, payload={}),
         ]
     )
     client = Meshagent(base_url="http://example.test", token="token", session=session)
 
-    created_id = await client.create_agent_secret(
+    created = await client.create_service_account_secret(
         project_id="proj_123",
-        agent_id="agent-1",
-        secret_id="secret-1",
-        name="api-key",
-        type="keys",
-        data=b"secret",
+        service_account_id="sa-1",
+        name="registry",
     )
-    listed = await client.list_agent_secrets(project_id="proj_123", agent_id="agent-1")
-    fetched = await client.get_agent_secret(
-        project_id="proj_123", agent_id="agent-1", secret_id="secret-1"
-    )
-    await client.update_agent_secret(
+    listed = await client.list_service_account_secrets(
         project_id="proj_123",
-        agent_id="agent-1",
-        secret_id="secret-1",
-        name="api-key",
-        type="keys",
-        data=b"new",
+        service_account_id="sa-1",
     )
-    await client.delete_agent_secret(
-        project_id="proj_123", agent_id="agent-1", secret_id="secret-1"
+    search_page = await client.search_service_account_secrets(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        name="token",
+        metadata={"service": "github"},
+        service="github",
+        url="https://github.com",
+        page_size=25,
+    )
+    fetched = await client.get_service_account_secret(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+        include_value=True,
+    )
+    updated = await client.update_service_account_secret(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+        http_only=True,
+    )
+    versions = await client.list_service_account_secret_versions(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+    )
+    created_version = await client.create_service_account_secret_version(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+        value=b"secret value",
+    )
+    version_value = await client.access_service_account_secret_version(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+        version_id="version-1",
+    )
+    await client.delete_service_account_secret_version(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+        version_id="version-1",
+    )
+    pull_secrets = await client.list_service_account_pull_secrets(
+        project_id="proj_123",
+        service_account_id="sa-1",
+    )
+    await client.add_service_account_pull_secret(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+    )
+    await client.remove_service_account_pull_secret(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
+    )
+    await client.delete_service_account_secret(
+        project_id="proj_123",
+        service_account_id="sa-1",
+        secret_id="secret-1",
     )
 
-    assert created_id == "secret-1"
-    assert listed[0].agent_id == "agent-1"
-    assert fetched.data == b"secret"
+    assert created.owner_service_account_id == "sa-1"
+    assert listed.secrets[0].owner_service_account_id == "sa-1"
+    assert search_page.secrets[0].name == "github-token"
+    assert fetched.id == "secret-1"
+    assert fetched.value_base64 == base64.b64encode(b"service value").decode()
+    assert updated.http_only is True
+    assert versions[0].created_by_service_account_id == "sa-1"
+    assert created_version.id == "version-2"
+    assert version_value == b"service version value"
+    assert pull_secrets[0].owner_service_account_id == "sa-1"
     assert session.calls == [
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets",
+            {"name": "registry", "type": "opaque", "http_only": False},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets",
+            {"page_size": 100},
+        ),
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets:search",
             {
-                "data_base64": "c2VjcmV0",
-                "secret_id": "secret-1",
-                "name": "api-key",
-                "type": "keys",
+                "page_size": 25,
+                "name": "token",
+                "metadata": {"service": "github"},
+                "service": "github",
+                "url": "https://github.com",
             },
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1",
+            {"include_value": "true"},
+        ),
+        (
+            "patch",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1",
+            {"http_only": True},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1/versions",
+            None,
+        ),
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1/versions",
+            {
+                "value_base64": base64.b64encode(b"secret value").decode(),
+                "set_current": True,
+            },
+        ),
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1/versions/version-1:access",
+            None,
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1/versions/version-1",
             None,
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets/secret-1",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/pull-secrets",
             None,
         ),
         (
             "put",
-            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets/secret-1",
-            {"data_base64": "bmV3", "name": "api-key", "type": "keys"},
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/pull-secrets/secret-1",
+            None,
         ),
         (
             "delete",
-            "http://example.test/accounts/projects/proj_123/agents/agent-1/secrets/secret-1",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/pull-secrets/secret-1",
+            None,
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/service-accounts/sa-1/secrets/secret-1",
             None,
         ),
     ]
@@ -1186,6 +1477,10 @@ async def test_agent_crud_methods_use_agent_routes():
         id="agent-1",
         metadata=ManagedAgentMetadata(name="planner"),
         allowed_models=[AllowedOpenAIModel(model="gpt-4.1")],
+        run_as={
+            "email": "Agent@Service.Project.Example.test",
+            "scopes": ["secrets:proxy", "llm_proxy", "llm_proxy", ""],
+        },
     )
     agent_payload = {
         "id": "agent-1",
@@ -1222,6 +1517,9 @@ async def test_agent_crud_methods_use_agent_routes():
     assert created.name == "planner"
     assert fetched.id == "agent-1"
     assert page.total == 1
+    assert configuration.run_as is not None
+    assert configuration.run_as.email == "agent@service.project.example.test"
+    assert configuration.run_as.scopes == ["secrets:proxy", "llm_proxy"]
     assert session.calls == [
         (
             "post",
@@ -1402,9 +1700,9 @@ async def test_service_account_and_scoped_api_key_methods_return_typed_models():
 async def test_resource_policy_methods_use_iam_policy_routes():
     grant_payload = {
         "resource": {
-            "type": "agent",
-            "id": "agent-1",
-            "name": "planner",
+            "type": "room",
+            "id": "room-1",
+            "name": "demo",
         },
         "subject": {"type": "user", "id": "user-1"},
         "direct_roles": ["operator", "list"],
@@ -1415,7 +1713,7 @@ async def test_resource_policy_methods_use_iam_policy_routes():
             _FakeResponse(
                 status=200,
                 payload={
-                    "resource": {"type": "agent", "id": "agent-1", "name": "planner"},
+                    "resource": {"type": "room", "id": "room-1", "name": "demo"},
                     "access_grants": [grant_payload],
                     "continuation_token": "next-token",
                 },
@@ -1423,7 +1721,7 @@ async def test_resource_policy_methods_use_iam_policy_routes():
             _FakeResponse(
                 status=200,
                 payload={
-                    "resource": {"type": "agent", "id": "agent-1", "name": "planner"},
+                    "resource": {"type": "room", "id": "room-1", "name": "demo"},
                     "access_grants": [grant_payload],
                 },
             ),
@@ -1434,26 +1732,26 @@ async def test_resource_policy_methods_use_iam_policy_routes():
 
     await client.grant_resource_policy(
         project_id="proj_123",
-        resource_type="agent",
-        resource_id="agent-1",
+        resource_type="room",
+        resource_id="room-1",
         subject=AccessSubject(type="user", id="user-1"),
         roles=["operator", "list"],
     )
     page = await client.get_resource_policy_page(
         project_id="proj_123",
-        resource_type="agent",
-        resource_id="agent-1",
+        resource_type="room",
+        resource_id="room-1",
         continuation_token="cursor-1",
     )
     grants = await client.get_resource_policy(
         project_id="proj_123",
-        resource_type="agent",
-        resource_id="agent-1",
+        resource_type="room",
+        resource_id="room-1",
     )
     await client.revoke_resource_policy(
         project_id="proj_123",
-        resource_type="agent",
-        resource_id="agent-1",
+        resource_type="room",
+        resource_id="room-1",
         subject=AccessSubject(type="user", id="user-1"),
     )
 
@@ -1464,7 +1762,7 @@ async def test_resource_policy_methods_use_iam_policy_routes():
     assert session.calls == [
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy:grant",
+            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy:grant",
             {
                 "subject": {
                     "type": "user",
@@ -1475,17 +1773,17 @@ async def test_resource_policy_methods_use_iam_policy_routes():
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy",
+            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy",
             {"page_size": "50", "continuation_token": "cursor-1"},
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy",
+            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy",
             {"page_size": "50"},
         ),
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/iam/agent/agent-1/policy:revoke",
+            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy:revoke",
             {
                 "subject": {
                     "type": "user",
@@ -1494,6 +1792,38 @@ async def test_resource_policy_methods_use_iam_policy_routes():
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_resource_policy_methods_reject_managed_agent_policies():
+    session = _FakeSession([])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    with pytest.raises(ValueError, match="managed agent resource policies"):
+        await client.grant_resource_policy(
+            project_id="proj_123",
+            resource_type="agent",
+            resource_id="agent-1",
+            subject=AccessSubject(type="user", id="user-1"),
+            roles=["operator", "list"],
+        )
+
+    with pytest.raises(ValueError, match="managed agent resource policies"):
+        await client.get_resource_policy_page(
+            project_id="proj_123",
+            resource_type="agent",
+            resource_id="agent-1",
+        )
+
+    with pytest.raises(ValueError, match="managed agent resource policies"):
+        await client.revoke_resource_policy(
+            project_id="proj_123",
+            resource_type="agent",
+            resource_id="agent-1",
+            subject=AccessSubject(type="user", id="user-1"),
+        )
+
+    assert session.calls == []
 
 
 @pytest.mark.asyncio

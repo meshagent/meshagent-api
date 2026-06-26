@@ -351,8 +351,6 @@ class Element(EventEmitter):
 
         results: list["Element"] = []
         if matches(self):
-            add_element(self)
-
             if (before > 0 or after > 0) and self.parent is not None:
                 siblings = [
                     child
@@ -369,6 +367,10 @@ class Element(EventEmitter):
                     end = min(len(siblings) - 1, index + after)
                     for sibling in siblings[start : end + 1]:
                         add_element(sibling)
+                else:
+                    add_element(self)
+            else:
+                add_element(self)
 
         for child in self.get_children():
             if isinstance(child, Element):

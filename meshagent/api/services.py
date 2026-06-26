@@ -387,16 +387,15 @@ async def send_webhook(
             {"sha256": hash.hexdigest()}, key=secret, algorithm="HS256"
         )
 
-    else:
-        async with session.post(url, headers=headers, data=payload) as resp:
-            try:
-                resp.raise_for_status()
+    async with session.post(url, headers=headers, data=payload) as resp:
+        try:
+            resp.raise_for_status()
 
-            except asyncio.CancelledError:
-                raise
+        except asyncio.CancelledError:
+            raise
 
-            except Exception as e:
-                logger.warning("webhook call failed %s %s", event, url, exc_info=e)
-                raise RoomException(
-                    f"error status returned from webhook call {url}, http status code: {resp.status}"
-                )
+        except Exception as e:
+            logger.warning("webhook call failed %s %s", event, url, exc_info=e)
+            raise RoomException(
+                f"error status returned from webhook call {url}, http status code: {resp.status}"
+            )

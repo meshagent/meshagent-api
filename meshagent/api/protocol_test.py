@@ -62,25 +62,3 @@ async def test_protocol():
 
             for i in range(size):
                 assert last_data[i] == 1
-
-
-@pytest.mark.asyncio
-async def test_wait_for_close_does_not_cancel_protocol_on_waiter_cancellation() -> None:
-    input = Chan[bytes]()
-    output = Chan[bytes]()
-
-    async with MemoryClientProtocol(input=input, output=output, token="") as client:
-        waiter = asyncio.create_task(client.wait_for_close())
-        await asyncio.sleep(0)
-        waiter.cancel()
-
-        with pytest.raises(asyncio.CancelledError):
-            await waiter
-
-        follow_up_waiter = asyncio.create_task(client.wait_for_close())
-        await asyncio.sleep(0)
-        assert follow_up_waiter.done() is False
-        follow_up_waiter.cancel()
-
-        with pytest.raises(asyncio.CancelledError):
-            await follow_up_waiter

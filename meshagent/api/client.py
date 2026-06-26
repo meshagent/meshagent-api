@@ -16,9 +16,8 @@ from pydantic import (
 )
 from meshagent.api import RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
-from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.helpers import is_valid_room_name, meshagent_base_url
 from meshagent.api.http import new_client_session
-from meshagent.api.oauth import ConnectorRef, OAuthClientConfig
 from datetime import datetime
 from meshagent.api.specs.service import (
     ContainerSpec,
@@ -150,6 +149,7 @@ AccessResourceType = Literal[
     "repository",
     "feed",
     "secret",
+    "service_account",
 ]
 ProjectRole = Literal[
     "member",
@@ -174,12 +174,6 @@ ProjectRole = Literal[
     "api_key_creator",
     "api_key_inventory",
     "api_key_manager",
-    "secret_creator",
-    "secret_inventory",
-    "secret_manager",
-    "external_oauth_client_creator",
-    "external_oauth_client_inventory",
-    "external_oauth_client_manager",
     "service_creator",
     "service_inventory",
     "service_manager",
@@ -209,8 +203,29 @@ ProjectRole = Literal[
 ]
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
 FeedRole = Literal["reader", "subscriber", "publisher", "manager"]
-SecretRole = Literal["secret_accessor", "secret_manager", "secret_list"]
-AccessRole = ProjectRole | ResourceRole | FeedRole | SecretRole | Literal["list"]
+SecretRole = Literal["use_proxy"]
+ServiceAccountRole = Literal[
+    "run_service_as",
+    "secret_accessor",
+    "secret_manager",
+    "secret_list",
+    "use_proxy_secrets",
+]
+AccessRole = (
+    ProjectRole
+    | ResourceRole
+    | FeedRole
+    | SecretRole
+    | ServiceAccountRole
+    | Literal["list"]
+)
+
+
+def _validate_resource_policy_type(resource_type: AccessResourceType) -> None:
+    if resource_type == "agent":
+        raise ValueError(
+            "managed agent resource policies are not supported; use agent run_as instead"
+        )
 
 
 class AccessSubject(BaseModel):
@@ -221,7 +236,9 @@ class AccessSubject(BaseModel):
     last_name: Optional[str] = None
     email: Optional[str] = None
     object_type: Optional[Literal["project"]] = None
-    relation: Optional[Literal["member", "developer", "agent"]] = None
+    relation: Optional[Literal["member", "developer", "agent", "service_account"]] = (
+        None
+    )
 
 
 class AccessResource(BaseModel):
@@ -274,6 +291,16 @@ class ResourceAccessSummary(BaseModel):
 
 class AccessTestResult(BaseModel):
     allowed: bool
+
+
+class SecretProxyAccessGrant(BaseModel):
+    subject: AccessSubject
+    roles: list[SecretRole] = Field(default_factory=list)
+
+
+class SecretProxyAccessGrantsPage(BaseModel):
+    access_grants: list[SecretProxyAccessGrant]
+    continuation_token: Optional[str] = None
 
 
 class Group(BaseModel):
@@ -418,53 +445,12 @@ class AgentsPage(BaseModel):
     continuation_token: Optional[str] = None
 
 
-class ManagedAgentGrant(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    admin: bool = False
-
-
-class ProjectAgentGrant(RoleGrant):
-    @property
-    def agent(self) -> ManagedAgent:
-        return ManagedAgent(
-            id=self.resource.id,
-            name=self.resource.name or self.resource.id,
-            configuration=ManagedAgentSpec.model_construct(),
-        )
-
-    @property
-    def user_id(self) -> str:
-        return self.subject.id
-
-    @property
-    def permissions(self) -> ManagedAgentGrant:
-        return ManagedAgentGrant(admin="admin" in self.direct_roles)
-
-
-class AgentRoomGrant(ApiScope):
-    pass
-
-
-class ProjectAgentRoomGrant(RoleGrant):
-    pass
-
-
 class ProjectRepositoryGrant(RoleGrant):
     pass
 
 
 class ProjectFeedGrant(RoleGrant):
     pass
-
-
-class AgentGrantsPage(BaseModel):
-    agent_grants: list[ProjectAgentGrant]
-    continuation_token: Optional[str] = None
-
-
-class AgentRoomGrantsPage(BaseModel):
-    agent_room_grants: list[ProjectAgentRoomGrant]
-    continuation_token: Optional[str] = None
 
 
 class RoomGrantsPage(BaseModel):
@@ -540,134 +526,48 @@ class UserRoomGrant(BaseModel):
     permissions: ApiScope
 
 
-class UserAgentGrant(BaseModel):
-    agent: ManagedAgent
-    user: User
-    permissions: ManagedAgentGrant = Field(default_factory=ManagedAgentGrant)
-
-
-class _BaseSecret(BaseModel):
-    """Common fields shared by all secrets."""
-
+class Secret(BaseModel):
     id: str
-    name: str
-
-
-class PullSecret(_BaseSecret):
-    """
-    A Docker-registry credential.
-
-    When you call `model_dump() / dict()` this object produces the same
-    structure consumed by `map_secret_data("docker", …)` in the room
-    provisioner.
-    """
-
-    type: Literal["docker"] = "docker"
-
-    server: str = Field(..., description="Registry host (e.g. registry-1.docker.io)")
-    username: str
-    password: str
-    email: str = Field(
-        "none@example.com",
-        description="Email is required by the Docker spec, but is unused",
-    )
-
-    def to_payload(self) -> Dict[str, str]:
-        return {
-            "server": self.server,
-            "username": self.username,
-            "password": self.password,
-            "email": self.email,
-        }
-
-
-class KeysSecret(_BaseSecret):
-    """
-    An *opaque* secret that will be exposed to containers as individual
-    environment variables.
-
-    Example:
-        KeysSecret(
-            id="sec-123",
-            name="openai",
-            data={"OPENAI_API_KEY": "sk-...", "ORG": "myorg"}
-        )
-    """
-
-    type: Literal["keys"] = "keys"
-    data: Dict[str, str]
-
-    def to_payload(self) -> Dict[str, str]:
-        return self.data
-
-
-SecretLike = PullSecret | KeysSecret
-
-
-class ManagedSecretInfo(BaseModel):
-    id: str
+    project_id: str
+    owner_user_id: Optional[str] = None
+    owner_service_account_id: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_by_service_account_id: Optional[str] = None
     type: str
     name: str
-    delegated_to: Optional[str] = None
-    agent_id: Optional[str] = None
+    http_only: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
+    current_version_id: Optional[str] = None
+    value_base64: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
 
-class ManagedSecret(ManagedSecretInfo):
-    data_base64: str
-
-    @property
-    def data(self) -> bytes:
-        return base64.b64decode(self.data_base64.encode("ascii"))
-
-
-class _ListManagedSecretsResponse(BaseModel):
-    secrets: list[ManagedSecretInfo]
-
-
-class ExternalOAuthClientRegistration(BaseModel):
+class SecretVersion(BaseModel):
     id: str
-    delegated_to: str
-    connector: Optional[ConnectorRef] = None
-    oauth: Optional[OAuthClientConfig] = None
-    client_id: str
-    client_secret: Optional[str] = None
+    secret_id: str
+    version: int
+    encryption_key_id: str
+    value_sha256: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_by_service_account_id: Optional[str] = None
+    created_at: datetime
 
 
-class _ListExternalOAuthClientRegistrationsResponse(BaseModel):
-    registrations: list[ExternalOAuthClientRegistration]
+class SecretsPage(BaseModel):
+    secrets: list[Secret]
+    continuation_token: Optional[str] = None
 
 
-def _encode_secret_bytes(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
+class _ListSecretVersionsResponse(BaseModel):
+    versions: list[SecretVersion]
 
 
-def _parse_secret_payload(*, secret: ManagedSecretInfo, raw_data: bytes) -> SecretLike:
-    try:
-        payload = json.loads(raw_data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RoomException(f"Invalid secret payload for {secret.id}") from exc
-
-    if not isinstance(payload, dict):
-        raise RoomException(f"Invalid secret payload for {secret.id}")
-
-    if secret.type == "docker":
-        return PullSecret.model_validate(
-            {
-                "id": secret.id,
-                "name": secret.name,
-                "type": secret.type,
-                **payload,
-            }
-        )
-
-    return KeysSecret.model_validate(
-        {
-            "id": secret.id,
-            "name": secret.name,
-            "type": secret.type,
-            "data": payload,
-        }
-    )
+class _SecretVersionValueResponse(BaseModel):
+    secret_id: str
+    version_id: str
+    value_base64: str
 
 
 class _CreateMailboxRequest(BaseModel):
@@ -781,8 +681,11 @@ class _FeedRequestBase(BaseModel):
     @classmethod
     def validate_name(cls, value: str) -> str:
         normalized = value.strip()
-        if normalized == "":
-            raise ValueError("name must not be empty")
+        if not is_valid_room_name(normalized):
+            raise ValueError(
+                "name must be 1-63 lowercase letters, numbers, or hyphens, "
+                "and start and end with a letter or number"
+            )
         return normalized
 
     @field_validator("description")
@@ -2096,6 +1999,18 @@ class Meshagent:
         async with self._session.post(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
+    async def kill_session(self, project_id: str, session_id: str) -> None:
+        """
+        Corresponds to: POST /accounts/projects/{project_id}/sessions/{session_id}/kill
+        Forcefully terminates the backing session instance.
+        """
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/sessions/{session_id}/kill"
+        )
+
+        async with self._session.post(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
     async def list_session_spans(
         self, project_id: str, session_id: str
     ) -> list[Dict[str, Any]]:
@@ -2938,14 +2853,9 @@ class Meshagent:
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
           {
-            "name": "...",
-            "image": "...",
-            "pull_secret": "...",
-            "environment": {...},
-            "environment_secrets": [...],
-            "runtime_secrets": {...},
-            "command": "...",
-            "ports": {...}
+            "metadata": {"name": "..."},
+            "container": {"image": "...", "environment": [...]},
+            "ports": [...]
           }
         Returns: created service spec
         """
@@ -2988,14 +2898,9 @@ class Meshagent:
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
           {
-            "name": "...",
-            "image": "...",
-            "pull_secret": "...",
-            "environment": {...},
-            "environment_secrets": [...],
-            "runtime_secrets": {...},
-            "command": "...",
-            "ports": {...}
+            "metadata": {"name": "..."},
+            "container": {"image": "...", "environment": [...]},
+            "ports": [...]
           }
         Returns: created service spec
         """
@@ -3106,14 +3011,9 @@ class Meshagent:
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
           {
-            "name": "...",
-            "image": "...",
-            "pull_secret": "...",
-            "environment": {...},
-            "environment_secrets": [...],
-            "runtime_secrets": {...},
-            "command": "...",
-            "ports": {...}
+            "metadata": {"name": "..."},
+            "container": {"image": "...", "environment": [...]},
+            "ports": [...]
           }
         Returns: { "id": "<service_id>" }
         """
@@ -3161,14 +3061,9 @@ class Meshagent:
         POST /accounts/projects/{project_id}/services
         Body: full service spec, e.g.
           {
-            "name": "...",
-            "image": "...",
-            "pull_secret": "...",
-            "environment": {...},
-            "environment_secrets": [...],
-            "runtime_secrets": {...},
-            "command": "...",
-            "ports": {...}
+            "metadata": {"name": "..."},
+            "container": {"image": "...", "environment": [...]},
+            "ports": [...]
           }
         Returns: { "id": "<service_id>" }
         """
@@ -3400,210 +3295,628 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await self._read_model(resp, RepositoryToken)
 
-    async def create_project_secret(
+    def _secret_payload(
+        self,
+        *,
+        project_id: str | None = None,
+        name: str | None = None,
+        type: str | None = None,
+        http_only: bool | None = None,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if project_id is not None:
+            payload["project_id"] = project_id
+        if name is not None:
+            payload["name"] = name
+        if type is not None:
+            payload["type"] = type
+        if http_only is not None:
+            payload["http_only"] = http_only
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if annotations is not None:
+            payload["annotations"] = annotations
+        return payload
+
+    def _secret_search_payload(
+        self,
+        *,
+        filter: str | None = None,
+        name: str | None = None,
+        type: str | None = None,
+        http_only: bool | None = None,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+        provider: str | None = None,
+        service: str | None = None,
+        account: str | None = None,
+        username: str | None = None,
+        email: str | None = None,
+        url: str | None = None,
+        oauth_provider: str | None = None,
+        oauth_scopes: str | None = None,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"page_size": page_size}
+        if filter is not None:
+            payload["filter"] = filter
+        if name is not None:
+            payload["name"] = name
+        if type is not None:
+            payload["type"] = type
+        if http_only is not None:
+            payload["http_only"] = http_only
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if annotations is not None:
+            payload["annotations"] = annotations
+        for key, value in {
+            "provider": provider,
+            "service": service,
+            "account": account,
+            "username": username,
+            "email": email,
+            "url": url,
+            "oauth_provider": oauth_provider,
+            "oauth_scopes": oauth_scopes,
+        }.items():
+            if value is not None:
+                payload[key] = value
+        if continuation_token is not None:
+            payload["continuation_token"] = continuation_token
+        return payload
+
+    def _secret_version_payload(
+        self,
+        *,
+        value: bytes,
+        set_current: bool = True,
+    ) -> dict[str, Any]:
+        return {
+            "value_base64": base64.b64encode(value).decode(),
+            "set_current": set_current,
+        }
+
+    async def create_user_secret(
         self,
         *,
         project_id: str,
         name: str,
-        type: str,
-        data: bytes,
-    ) -> str:
-        url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
-        payload = {
-            "name": name,
-            "type": type,
-            "data_base64": _encode_secret_bytes(data),
-        }
+        type: str = "opaque",
+        http_only: bool = False,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+    ) -> Secret:
+        url = f"{self.base_url}/accounts/users/me/secrets"
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json=payload,
+            json=self._secret_payload(
+                project_id=project_id,
+                name=name,
+                type=type,
+                http_only=http_only,
+                metadata=metadata,
+                annotations=annotations,
+            ),
         ) as resp:
             await self._raise_for_status(resp)
-            return (await resp.json())["id"]
+            return await self._read_model(resp, Secret)
 
-    async def update_project_secret(
+    async def list_user_secrets(
         self,
         *,
-        project_id: str,
-        secret_id: str,
-        name: str,
-        type: str,
-        data: bytes,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret_id}"
-        payload = {
-            "name": name,
-            "type": type,
-            "data_base64": _encode_secret_bytes(data),
-        }
-        async with self._session.put(
+        page_size: int = 100,
+        continuation_token: str | None = None,
+        filter: str | None = None,
+    ) -> SecretsPage:
+        url = f"{self.base_url}/accounts/users/me/secrets"
+        params: dict[str, Any] = {"page_size": page_size}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        if filter is not None:
+            params["filter"] = filter
+        async with self._session.get(
             url,
             headers=self._get_headers(),
-            json=payload,
+            params=params,
         ) as resp:
             await self._raise_for_status(resp)
+            return await self._read_model(resp, SecretsPage)
 
-    async def get_project_secret(
+    async def search_user_secrets(
         self,
         *,
-        project_id: str,
-        secret_id: str,
-    ) -> ManagedSecret:
-        url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret_id}"
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        filter: str | None = None,
+        name: str | None = None,
+        type: str | None = None,
+        http_only: bool | None = None,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+        provider: str | None = None,
+        service: str | None = None,
+        account: str | None = None,
+        username: str | None = None,
+        email: str | None = None,
+        url: str | None = None,
+        oauth_provider: str | None = None,
+        oauth_scopes: str | None = None,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+    ) -> SecretsPage:
+        endpoint_url = f"{self.base_url}/accounts/users/me/secrets:search"
+        async with self._session.post(
+            endpoint_url,
+            headers=self._get_headers(),
+            json=self._secret_search_payload(
+                filter=filter,
+                name=name,
+                type=type,
+                http_only=http_only,
+                metadata=metadata,
+                annotations=annotations,
+                provider=provider,
+                service=service,
+                account=account,
+                username=username,
+                email=email,
+                url=url,
+                oauth_provider=oauth_provider,
+                oauth_scopes=oauth_scopes,
+                page_size=page_size,
+                continuation_token=continuation_token,
+            ),
+        ) as resp:
             await self._raise_for_status(resp)
-            try:
-                return ManagedSecret.model_validate(await resp.json())
-            except ValidationError as exc:
-                raise RoomException(f"Invalid secret payload: {exc}") from exc
+            return await self._read_model(resp, SecretsPage)
 
-    async def list_project_secrets(
-        self,
-        *,
-        project_id: str,
-        view: str = "all",
-    ) -> list[ManagedSecretInfo]:
-        url = f"{self.base_url}/accounts/projects/{project_id}/secrets"
+    async def get_user_secret(
+        self, *, secret_id: str, include_value: bool = False
+    ) -> Secret:
+        url = f"{self.base_url}/accounts/users/me/secrets/{secret_id}"
+        params = {"include_value": "true"} if include_value else None
         async with self._session.get(
-            url, headers=self._get_headers(), params={"view": view}
+            url,
+            headers=self._get_headers(),
+            params=params,
         ) as resp:
             await self._raise_for_status(resp)
-            try:
-                return _ListManagedSecretsResponse.model_validate(
-                    await resp.json()
-                ).secrets
-            except ValidationError as exc:
-                raise RoomException(f"Invalid secrets payload: {exc}") from exc
+            return await self._read_model(resp, Secret)
 
-    async def delete_project_secret(
+    async def update_user_secret(
         self,
         *,
-        project_id: str,
         secret_id: str,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/secrets/{secret_id}"
+        name: str | None = None,
+        type: str | None = None,
+        http_only: bool | None = None,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+    ) -> Secret:
+        url = f"{self.base_url}/accounts/users/me/secrets/{secret_id}"
+        async with self._session.patch(
+            url,
+            headers=self._get_headers(),
+            json=self._secret_payload(
+                name=name,
+                type=type,
+                http_only=http_only,
+                metadata=metadata,
+                annotations=annotations,
+            ),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, Secret)
+
+    async def delete_user_secret(self, *, secret_id: str) -> None:
+        url = f"{self.base_url}/accounts/users/me/secrets/{secret_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
-    async def create_room_secret(
+    async def list_user_secret_versions(
         self,
         *,
-        project_id: str,
-        room_name: str,
-        data: bytes,
-        secret_id: str | None = None,
-        name: str | None = None,
-        type: str | None = None,
-        delegated_to: str | None = None,
-        for_identity: str | None = None,
-    ) -> str:
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/secrets"
-        )
-        payload: dict[str, Any] = {
-            "data_base64": _encode_secret_bytes(data),
-        }
-        if secret_id is not None:
-            payload["secret_id"] = secret_id
-        if name is not None:
-            payload["name"] = name
-        if type is not None:
-            payload["type"] = type
-        if delegated_to is not None:
-            payload["delegated_to"] = delegated_to
-        if for_identity is not None:
-            payload["for_identity"] = for_identity
+        secret_id: str,
+    ) -> list[SecretVersion]:
+        url = f"{self.base_url}/accounts/users/me/secrets/{secret_id}/versions"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return (await self._read_model(resp, _ListSecretVersionsResponse)).versions
+
+    async def create_user_secret_version(
+        self,
+        *,
+        secret_id: str,
+        value: bytes,
+        set_current: bool = True,
+    ) -> SecretVersion:
+        url = f"{self.base_url}/accounts/users/me/secrets/{secret_id}/versions"
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json=payload,
+            json=self._secret_version_payload(
+                value=value,
+                set_current=set_current,
+            ),
         ) as resp:
             await self._raise_for_status(resp)
-            return (await resp.json())["id"]
+            return await self._read_model(resp, SecretVersion)
 
-    async def update_room_secret(
+    async def access_user_secret_version(
+        self,
+        *,
+        secret_id: str,
+        version_id: str,
+    ) -> bytes:
+        url = (
+            f"{self.base_url}/accounts/users/me/secrets/{secret_id}/versions/"
+            f"{version_id}:access"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            value = await self._read_model(resp, _SecretVersionValueResponse)
+            return base64.b64decode(value.value_base64)
+
+    async def delete_user_secret_version(
+        self,
+        *,
+        secret_id: str,
+        version_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/users/me/secrets/{secret_id}/versions/"
+            f"{version_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def list_user_secret_proxy_access(
+        self,
+        *,
+        secret_id: str,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+    ) -> SecretProxyAccessGrantsPage:
+        url = f"{self.base_url}/accounts/users/me/secrets/{secret_id}/access"
+        params: dict[str, Any] = {"page_size": page_size}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, SecretProxyAccessGrantsPage)
+
+    async def grant_user_secret_proxy_access(
+        self,
+        *,
+        secret_id: str,
+        service_account_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/users/me/secrets/{secret_id}/access:grant-proxy"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json={
+                "subject": {
+                    "type": "service_account",
+                    "id": service_account_id,
+                }
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def revoke_user_secret_proxy_access(
+        self,
+        *,
+        secret_id: str,
+        service_account_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/users/me/secrets/{secret_id}/access:revoke-proxy"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json={
+                "subject": {
+                    "type": "service_account",
+                    "id": service_account_id,
+                }
+            },
+        ) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_service_account_secret(
         self,
         *,
         project_id: str,
-        room_name: str,
-        secret_id: str,
-        data: bytes,
+        service_account_id: str,
+        name: str,
+        type: str = "opaque",
+        http_only: bool = False,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+    ) -> Secret:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=self._secret_payload(
+                name=name,
+                type=type,
+                http_only=http_only,
+                metadata=metadata,
+                annotations=annotations,
+            ),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, Secret)
+
+    async def list_service_account_secrets(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+        filter: str | None = None,
+    ) -> SecretsPage:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets"
+        )
+        params: dict[str, Any] = {"page_size": page_size}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        if filter is not None:
+            params["filter"] = filter
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, SecretsPage)
+
+    async def search_service_account_secrets(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        filter: str | None = None,
         name: str | None = None,
         type: str | None = None,
-        delegated_to: str | None = None,
-        for_identity: str | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/secrets/{secret_id}"
-        payload: dict[str, Any] = {
-            "data_base64": _encode_secret_bytes(data),
-        }
-        if name is not None:
-            payload["name"] = name
-        if type is not None:
-            payload["type"] = type
-        if delegated_to is not None:
-            payload["delegated_to"] = delegated_to
-        if for_identity is not None:
-            payload["for_identity"] = for_identity
-        async with self._session.put(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def get_room_secret(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        secret_id: str,
-        delegated_to: str | None = None,
-        for_identity: str | None = None,
-    ) -> ManagedSecret:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/secrets/{secret_id}"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        if for_identity is not None:
-            params["for_identity"] = for_identity
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-            try:
-                return ManagedSecret.model_validate(await resp.json())
-            except ValidationError as exc:
-                raise RoomException(f"Invalid room secret payload: {exc}") from exc
-
-    async def list_room_secrets(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        for_identity: str | None = None,
-    ) -> list[ManagedSecretInfo]:
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/secrets"
+        http_only: bool | None = None,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+        provider: str | None = None,
+        service: str | None = None,
+        account: str | None = None,
+        username: str | None = None,
+        email: str | None = None,
+        url: str | None = None,
+        oauth_provider: str | None = None,
+        oauth_scopes: str | None = None,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+    ) -> SecretsPage:
+        endpoint_url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets:search"
         )
-        params: dict[str, str] = {}
-        if for_identity is not None:
-            params["for_identity"] = for_identity
+        async with self._session.post(
+            endpoint_url,
+            headers=self._get_headers(),
+            json=self._secret_search_payload(
+                filter=filter,
+                name=name,
+                type=type,
+                http_only=http_only,
+                metadata=metadata,
+                annotations=annotations,
+                provider=provider,
+                service=service,
+                account=account,
+                username=username,
+                email=email,
+                url=url,
+                oauth_provider=oauth_provider,
+                oauth_scopes=oauth_scopes,
+                page_size=page_size,
+                continuation_token=continuation_token,
+            ),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, SecretsPage)
+
+    async def get_service_account_secret(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+        include_value: bool = False,
+    ) -> Secret:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}"
+        )
+        params = {"include_value": "true"} if include_value else None
         async with self._session.get(
             url,
             headers=self._get_headers(),
-            params=params or None,
+            params=params,
         ) as resp:
             await self._raise_for_status(resp)
-            try:
-                return _ListManagedSecretsResponse.model_validate(
-                    await resp.json()
-                ).secrets
-            except ValidationError as exc:
-                raise RoomException(f"Invalid room secrets payload: {exc}") from exc
+            return await self._read_model(resp, Secret)
+
+    async def update_service_account_secret(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+        name: str | None = None,
+        type: str | None = None,
+        http_only: bool | None = None,
+        metadata: dict[str, Any] | None = None,
+        annotations: dict[str, Any] | None = None,
+    ) -> Secret:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}"
+        )
+        async with self._session.patch(
+            url,
+            headers=self._get_headers(),
+            json=self._secret_payload(
+                name=name,
+                type=type,
+                http_only=http_only,
+                metadata=metadata,
+                annotations=annotations,
+            ),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, Secret)
+
+    async def delete_service_account_secret(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def list_service_account_secret_versions(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+    ) -> list[SecretVersion]:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}/versions"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return (await self._read_model(resp, _ListSecretVersionsResponse)).versions
+
+    async def create_service_account_secret_version(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+        value: bytes,
+        set_current: bool = True,
+    ) -> SecretVersion:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}/versions"
+        )
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=self._secret_version_payload(
+                value=value,
+                set_current=set_current,
+            ),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, SecretVersion)
+
+    async def access_service_account_secret_version(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+        version_id: str,
+    ) -> bytes:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}/versions/{version_id}:access"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            value = await self._read_model(resp, _SecretVersionValueResponse)
+            return base64.b64decode(value.value_base64)
+
+    async def delete_service_account_secret_version(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+        version_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/secrets/{secret_id}/versions/{version_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def list_service_account_pull_secrets(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+    ) -> list[Secret]:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/pull-secrets"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return (await self._read_model(resp, SecretsPage)).secrets
+
+    async def add_service_account_pull_secret(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/pull-secrets/{secret_id}"
+        )
+        async with self._session.put(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def remove_service_account_pull_secret(
+        self,
+        *,
+        project_id: str,
+        service_account_id: str,
+        secret_id: str,
+    ) -> None:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"{service_account_id}/pull-secrets/{secret_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
 
     async def validate_participant_token(
         self,
@@ -3626,413 +3939,6 @@ class Meshagent:
                 raise RoomException(
                     f"Invalid participant token payload: {exc}"
                 ) from exc
-
-    async def delete_room_secret(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        secret_id: str,
-        delegated_to: str | None = None,
-        for_identity: str | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/secrets/{secret_id}"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        if for_identity is not None:
-            params["for_identity"] = for_identity
-        async with self._session.delete(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def create_agent_secret(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        data: bytes,
-        secret_id: str | None = None,
-        name: str | None = None,
-        type: str | None = None,
-        delegated_to: str | None = None,
-    ) -> str:
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets"
-        )
-        payload: dict[str, Any] = {
-            "data_base64": _encode_secret_bytes(data),
-        }
-        if secret_id is not None:
-            payload["secret_id"] = secret_id
-        if name is not None:
-            payload["name"] = name
-        if type is not None:
-            payload["type"] = type
-        if delegated_to is not None:
-            payload["delegated_to"] = delegated_to
-        async with self._session.post(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-            return (await resp.json())["id"]
-
-    async def update_agent_secret(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        secret_id: str,
-        data: bytes,
-        name: str | None = None,
-        type: str | None = None,
-        delegated_to: str | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets/{secret_id}"
-        payload: dict[str, Any] = {
-            "data_base64": _encode_secret_bytes(data),
-        }
-        if name is not None:
-            payload["name"] = name
-        if type is not None:
-            payload["type"] = type
-        if delegated_to is not None:
-            payload["delegated_to"] = delegated_to
-        async with self._session.put(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def get_agent_secret(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        secret_id: str,
-        delegated_to: str | None = None,
-    ) -> ManagedSecret:
-        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets/{secret_id}"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-            try:
-                return ManagedSecret.model_validate(await resp.json())
-            except ValidationError as exc:
-                raise RoomException(f"Invalid agent secret payload: {exc}") from exc
-
-    async def list_agent_secrets(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-    ) -> list[ManagedSecretInfo]:
-        url = (
-            f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets"
-        )
-        async with self._session.get(url, headers=self._get_headers()) as resp:
-            await self._raise_for_status(resp)
-            try:
-                return _ListManagedSecretsResponse.model_validate(
-                    await resp.json()
-                ).secrets
-            except ValidationError as exc:
-                raise RoomException(f"Invalid agent secrets payload: {exc}") from exc
-
-    async def delete_agent_secret(
-        self,
-        *,
-        project_id: str,
-        agent_id: str,
-        secret_id: str,
-        delegated_to: str | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent_id}/secrets/{secret_id}"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        async with self._session.delete(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def create_secret(
-        self,
-        *,
-        project_id: str,
-        secret: SecretLike,
-    ) -> str:
-        """
-        POST /accounts/projects/{project_id}/secrets
-        Returns the new secret_id.
-        """
-        return await self.create_project_secret(
-            project_id=project_id,
-            name=secret.name,
-            type=secret.type,
-            data=json.dumps(secret.to_payload(), sort_keys=True).encode("utf-8"),
-        )
-
-    async def update_secret(
-        self,
-        *,
-        project_id: str,
-        secret: SecretLike,
-    ) -> None:
-        """
-        PUT /accounts/projects/{project_id}/secrets/{secret.id}
-        Body ➜ { "name", "type", "data" }
-        """
-        await self.update_project_secret(
-            project_id=project_id,
-            secret_id=secret.id,
-            name=secret.name,
-            type=secret.type,
-            data=json.dumps(secret.to_payload(), sort_keys=True).encode("utf-8"),
-        )
-
-    async def delete_secret(self, *, project_id: str, secret_id: str) -> None:
-        """
-        DELETE /accounts/projects/{project_id}/secrets/{secret_id}
-        Returns {} (or 204 No Content) on success.
-        """
-        await self.delete_project_secret(project_id=project_id, secret_id=secret_id)
-
-    async def list_secrets(self, project_id: str) -> List[SecretLike]:
-        """
-        GET /accounts/projects/{project_id}/secrets
-        Returns [PullSecret | KeysSecret, …]
-        """
-        secret_infos = await self.list_project_secrets(project_id=project_id)
-        secrets: list[SecretLike] = []
-        for secret in secret_infos:
-            secret_value = await self.get_project_secret(
-                project_id=project_id,
-                secret_id=secret.id,
-            )
-            secrets.append(
-                _parse_secret_payload(
-                    secret=secret_value,
-                    raw_data=secret_value.data,
-                )
-            )
-        return secrets
-
-    async def create_project_external_oauth_registration(
-        self,
-        *,
-        project_id: str,
-        oauth: OAuthClientConfig,
-        client_id: str,
-        client_secret: str | None = None,
-        delegated_to: str | None = None,
-        connector: ConnectorRef | None = None,
-    ) -> str:
-        url = f"{self.base_url}/accounts/projects/{project_id}/external-oauth"
-        payload: dict[str, Any] = {
-            "oauth": oauth.model_dump(mode="json"),
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "connector": (
-                connector.model_dump(mode="json") if connector is not None else None
-            ),
-            "delegated_to": delegated_to,
-        }
-        async with self._session.post(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-            return (await resp.json())["id"]
-
-    async def update_project_external_oauth_registration(
-        self,
-        *,
-        project_id: str,
-        registration_id: str,
-        oauth: OAuthClientConfig,
-        client_id: str,
-        client_secret: str | None = None,
-        delegated_to: str | None = None,
-        connector: ConnectorRef | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/external-oauth/{registration_id}"
-        payload: dict[str, Any] = {
-            "oauth": oauth.model_dump(mode="json"),
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "connector": (
-                connector.model_dump(mode="json") if connector is not None else None
-            ),
-            "delegated_to": delegated_to,
-        }
-        async with self._session.put(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def list_project_external_oauth_registrations(
-        self,
-        *,
-        project_id: str,
-        delegated_to: str | None = None,
-    ) -> list[ExternalOAuthClientRegistration]:
-        url = f"{self.base_url}/accounts/projects/{project_id}/external-oauth"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-            try:
-                return _ListExternalOAuthClientRegistrationsResponse.model_validate(
-                    await resp.json()
-                ).registrations
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid external oauth registrations payload: {exc}"
-                ) from exc
-
-    async def delete_project_external_oauth_registration(
-        self,
-        *,
-        project_id: str,
-        registration_id: str,
-        delegated_to: str | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/external-oauth/{registration_id}"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        async with self._session.delete(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def create_room_external_oauth_registration(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        oauth: OAuthClientConfig,
-        client_id: str,
-        client_secret: str | None = None,
-        delegated_to: str | None = None,
-        connector: ConnectorRef | None = None,
-    ) -> str:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/external-oauth"
-        payload: dict[str, Any] = {
-            "oauth": oauth.model_dump(mode="json"),
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "connector": (
-                connector.model_dump(mode="json") if connector is not None else None
-            ),
-            "delegated_to": delegated_to,
-        }
-        async with self._session.post(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-            return (await resp.json())["id"]
-
-    async def update_room_external_oauth_registration(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        registration_id: str,
-        oauth: OAuthClientConfig,
-        client_id: str,
-        client_secret: str | None = None,
-        delegated_to: str | None = None,
-        connector: ConnectorRef | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/external-oauth/{registration_id}"
-        payload: dict[str, Any] = {
-            "oauth": oauth.model_dump(mode="json"),
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "connector": (
-                connector.model_dump(mode="json") if connector is not None else None
-            ),
-            "delegated_to": delegated_to,
-        }
-        async with self._session.put(
-            url,
-            headers=self._get_headers(),
-            json=payload,
-        ) as resp:
-            await self._raise_for_status(resp)
-
-    async def list_room_external_oauth_registrations(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        delegated_to: str | None = None,
-    ) -> list[ExternalOAuthClientRegistration]:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/external-oauth"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        async with self._session.get(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
-            try:
-                return _ListExternalOAuthClientRegistrationsResponse.model_validate(
-                    await resp.json()
-                ).registrations
-            except ValidationError as exc:
-                raise RoomException(
-                    f"Invalid room external oauth registrations payload: {exc}"
-                ) from exc
-
-    async def delete_room_external_oauth_registration(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        registration_id: str,
-        delegated_to: str | None = None,
-    ) -> None:
-        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/external-oauth/{registration_id}"
-        params: dict[str, str] = {}
-        if delegated_to is not None:
-            params["delegated_to"] = delegated_to
-        async with self._session.delete(
-            url,
-            headers=self._get_headers(),
-            params=params or None,
-        ) as resp:
-            await self._raise_for_status(resp)
 
     async def create_room(
         self,
@@ -4600,6 +4506,7 @@ class Meshagent:
         continuation_token: str | None = None,
     ) -> ResourcePolicyPage:
         """GET /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy."""
+        _validate_resource_policy_type(resource_type)
         params = {"page_size": str(page_size)}
         if continuation_token is not None:
             params["continuation_token"] = continuation_token
@@ -4652,6 +4559,7 @@ class Meshagent:
         invite_redirect_url: str | None = None,
     ) -> None:
         """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:grant."""
+        _validate_resource_policy_type(resource_type)
         payload = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
             "roles": roles,
@@ -4679,6 +4587,7 @@ class Meshagent:
         subject: AccessSubject,
     ) -> None:
         """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:revoke."""
+        _validate_resource_policy_type(resource_type)
         payload = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
         }

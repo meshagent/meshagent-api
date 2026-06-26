@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import aiohttp
 import pyarrow as pa
 import pytest
+from pydantic import ValidationError
 
 import meshagent.api.room_server_client as room_server_client
 from meshagent.api.messaging import (
@@ -33,7 +34,6 @@ from meshagent.api.protocol import (
     ProtocolReconnectUnsupportedError,
 )
 from meshagent.api import ErrorCode
-from meshagent.api.oauth import OAuthClientConfig
 from meshagent.api.room_server_client import (
     AgentsClient,
     ContainersClient,
@@ -53,8 +53,9 @@ from meshagent.api.room_server_client import (
     RoomMessage,
     RoomClient,
     RoomException,
-    SecretsClient,
     ServicesClient,
+    SqliteClient,
+    SqliteSqlStatement,
     StorageClient,
     SyncClient,
     decode_records,
@@ -218,18 +219,6 @@ class _CloseableProtocol(_FakeProtocol):
 
     def close_reason(self) -> str | None:
         return self._close_reason
-
-
-class _SlowExitProtocol(_FakeProtocol):
-    def __init__(self) -> None:
-        super().__init__()
-        self.exit_started = asyncio.Event()
-        self.allow_exit = asyncio.Event()
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        self.exit_started.set()
-        await self.allow_exit.wait()
-        await super().__aexit__(exc_type, exc, tb)
 
 
 def test_room_exception_defaults_to_invalid_request_code() -> None:
@@ -483,6 +472,16 @@ class _BadResponseRoom:
         return {}
 
 
+class _StaticInvokeRoom:
+    def __init__(self, response: Content):
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+
+    async def invoke(self, **kwargs) -> Content:
+        self.requests.append(kwargs)
+        return self.response
+
+
 async def _cancel_close_watcher(room: _FakeRoom) -> None:
     task = room._close_watcher_task
     if task is None:
@@ -594,12 +593,24 @@ class _StreamingStorageRoom:
         raise AssertionError(f"unexpected tool: {tool}")
 
 
+class _StaticStorageInvokeRoom:
+    def __init__(self, response: Content):
+        self.protocol = _FakeProtocol()
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+
+    async def invoke(self, **kwargs) -> Content:
+        self.requests.append(kwargs)
+        return self.response
+
+
 class _StreamingBuildRoom:
-    def __init__(self) -> None:
+    def __init__(self, *, stream_response: bool = False) -> None:
         self.protocol = _FakeProtocol()
         self.requests: list[dict[str, object]] = []
         self.start_chunk: BinaryContent | None = None
         self.data_chunks: list[BinaryContent] = []
+        self.stream_response = stream_response
 
     async def invoke(self, **kwargs):
         self.requests.append(kwargs)
@@ -613,6 +624,13 @@ class _StreamingBuildRoom:
         async for chunk in iterator:
             assert isinstance(chunk, BinaryContent)
             self.data_chunks.append(chunk)
+        if self.stream_response:
+
+            async def stream() -> AsyncIterator[Content]:
+                yield JsonContent(json={"build_id": "build-1"})
+                yield _ControlContent(method="close")
+
+            return stream()
         return JsonContent(json={"build_id": "build-1"})
 
 
@@ -2064,26 +2082,6 @@ async def test_room_client_exit_fails_pending_requests_and_cancels_close_watcher
 
 
 @pytest.mark.asyncio
-async def test_room_client_exit_shields_protocol_close_from_cancellation() -> None:
-    protocol = _SlowExitProtocol()
-    client = RoomClient(protocol_factory=protocol.create_factory())
-
-    exit_task = asyncio.create_task(client.__aexit__(None, None, None))
-    await asyncio.wait_for(protocol.exit_started.wait(), timeout=1)
-
-    exit_task.cancel()
-    await asyncio.sleep(0)
-    assert not exit_task.done()
-
-    protocol.allow_exit.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(exit_task, timeout=1)
-
-    assert protocol.exited is True
-    assert client._close_watcher_task is None
-
-
-@pytest.mark.asyncio
 async def test_room_client_wait_for_close_ignores_unexpected_disconnects() -> None:
     controller = _ReconnectRoomController(schema=_simple_thread_schema())
     room = RoomClient(protocol_factory=controller.protocol_factory)
@@ -2392,65 +2390,6 @@ async def test_room_client_unexpected_disconnect_warns_once_before_retrying_reco
 
 
 @pytest.mark.asyncio
-async def test_room_client_reconnect_resynchronizes_offline_sync_document_changes_from_both_participants() -> (
-    None
-):
-    controller = _SharedReconnectRoomController(schema=_shared_document_schema())
-    alice = RoomClient(protocol_factory=controller.make_protocol_factory("alice"))
-    bob = RoomClient(protocol_factory=controller.make_protocol_factory("bob"))
-    await alice.__aenter__()
-    await bob.__aenter__()
-
-    try:
-        path = "thread.thread"
-        alice_doc = await alice.sync.open(path=path)
-        bob_doc = await bob.sync.open(path=path)
-
-        alice_protocol = controller._active_protocols["alice"]
-        alice_protocol.close_unexpected(reason="alice transport error")
-        await _wait_until(lambda: alice.is_connected is False)
-
-        alice_doc.root.append_child("item", {"text": "alice-offline"})
-        bob_doc.root.append_child("item", {"text": "bob-online"})
-        await _wait_until(
-            lambda: controller.document_item_texts(path) == ["bob-online"]
-        )
-        await _wait_until(lambda: alice.is_connected)
-        await _wait_until(
-            lambda: (
-                _document_item_texts(alice_doc) == ["alice-offline", "bob-online"]
-                and _document_item_texts(bob_doc) == ["alice-offline", "bob-online"]
-            )
-        )
-
-        bob_protocol = controller._active_protocols["bob"]
-        bob_protocol.close_unexpected(reason="bob transport error")
-        await _wait_until(lambda: bob.is_connected is False)
-
-        bob_doc.root.append_child("item", {"text": "bob-offline"})
-        alice_doc.root.append_child("item", {"text": "alice-online"})
-        await _wait_until(
-            lambda: (
-                controller.document_item_texts(path)
-                == ["alice-offline", "alice-online", "bob-online"]
-            )
-        )
-        await _wait_until(lambda: bob.is_connected)
-        await _wait_until(
-            lambda: (
-                _document_item_texts(alice_doc)
-                == ["alice-offline", "alice-online", "bob-offline", "bob-online"]
-                and _document_item_texts(bob_doc)
-                == ["alice-offline", "alice-online", "bob-offline", "bob-online"]
-            )
-        )
-    finally:
-        await alice.__aexit__(None, None, None)
-        await bob.__aexit__(None, None, None)
-        controller.cleanup()
-
-
-@pytest.mark.asyncio
 async def test_room_client_reconnect_resynchronizes_offline_local_participant_attributes_from_both_participants() -> (
     None
 ):
@@ -2535,6 +2474,41 @@ async def test_tool_call_response_chunk_unpacks_json_chunk_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_call_response_chunk_protocol_error_closes_stream() -> None:
+    room = _OpenResponseRoom()
+    client = AgentsClient(room=room)  # type: ignore[arg-type]
+
+    response = await client.invoke_tool(
+        toolkit="test-toolkit",
+        tool="streaming-tool",
+        input={"a": 1},
+    )
+    assert isinstance(response, AsyncIterator)
+    tool_call_id = room.requests[0][1]["tool_call_id"]
+
+    await room._handle_tool_call_response_chunk(
+        protocol=room.protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="room.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": tool_call_id,
+                "chunk": {"type": "json"},
+            }
+        ),
+    )
+
+    with pytest.raises(RoomException) as ex:
+        await response.__anext__()
+
+    assert str(ex.value) == (
+        "unable to unpack tool call response chunk payload: "
+        "json content is missing required field 'json'"
+    )
+    assert ex.value.code == ErrorCode.INVALID_REQUEST
+
+
+@pytest.mark.asyncio
 async def test_list_toolkits_preserves_strict_tool_metadata() -> None:
     room = _FakeRoom()
     room.list_toolkits_response = {
@@ -2581,6 +2555,24 @@ async def test_memory_client_unexpected_response_uses_error_code() -> None:
         RoomException, match="unexpected return type from memory.list"
     ) as ex:
         await client.list()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_memory_client_list_validates_typed_response() -> None:
+    client = MemoryClient(room=_StaticInvokeRoom(JsonContent(json={})))  # type: ignore[arg-type]
+
+    assert await client.list() == []
+
+    malformed_client = MemoryClient(
+        room=_StaticInvokeRoom(JsonContent(json={"memories": ["graph", 123]}))
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from memory.list"
+    ) as ex:
+        await malformed_client.list()
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
@@ -2947,167 +2939,6 @@ async def test_messaging_client_marks_participant_offline_when_send_returns_not_
 
 
 @pytest.mark.asyncio
-async def test_secrets_client_uses_room_invoke_for_commands() -> None:
-    class _FakeSecretsRoom(_FakeRoom):
-        async def send_request(
-            self, typ: str, request: dict, data: bytes | None = None
-        ) -> Content | dict:
-            self.requests.append((typ, request, data))
-            if typ != "room.invoke_tool":
-                return {}
-
-            tool = request["tool"]
-            if tool == "get_secret":
-                return FileContent(
-                    data=b"secret",
-                    name="secret.txt",
-                    mime_type="text/plain",
-                )
-            if tool == "request_secret":
-                return FileContent(
-                    data=b"delegated",
-                    name="delegated.txt",
-                    mime_type="text/plain",
-                )
-            if tool == "list_secrets":
-                return JsonContent(
-                    json={
-                        "secrets": [
-                            {
-                                "id": "secret-1",
-                                "type": "text/plain",
-                                "name": "secret.txt",
-                                "delegated_to": None,
-                            }
-                        ]
-                    }
-                )
-            if tool == "exists":
-                return JsonContent(json={"exists": True})
-            if tool == "request_oauth_token":
-                return JsonContent(json={"access_token": "oauth-token"})
-            if tool == "get_offline_oauth_token":
-                return JsonContent(json={"access_token": "offline-token"})
-            return EmptyContent()
-
-    room = _FakeSecretsRoom()
-    client = SecretsClient(room=room)  # type: ignore[arg-type]
-
-    await client.provide_oauth_authorization(request_id="req-1", code="code-1")
-    await client.reject_oauth_authorization(request_id="req-2", error="nope")
-    await client.provide_secret(request_id="req-3", data=b"secret-bytes")
-    await client.reject_secret(request_id="req-4", error="declined")
-    assert (
-        await client.get_offline_oauth_token(
-            oauth=OAuthClientConfig(
-                client_id="client-id",
-                authorization_endpoint="https://example.com/authorize",
-                token_endpoint="https://example.com/token",
-            ),
-            delegated_by="provider",
-        )
-        == "offline-token"
-    )
-    assert (
-        await client.request_oauth_token(
-            oauth=OAuthClientConfig(
-                client_id="client-id",
-                authorization_endpoint="https://example.com/authorize",
-                token_endpoint="https://example.com/token",
-            ),
-            from_participant_id="provider-id",
-            redirect_uri="http://localhost/callback",
-        )
-        == "oauth-token"
-    )
-    secrets = await client.list_secrets()
-    assert len(secrets) == 1
-    assert (
-        await client.exists(
-            secret_id="secret-1",
-            for_identity="service-agent",
-        )
-        is True
-    )
-    await client.delete_secret(id="secret-1")
-    await client.delete_requested_secret(
-        url="https://example.com/secret", type="text/plain"
-    )
-    assert (
-        await client.request_secret(
-            url="https://example.com/secret",
-            type="text/plain",
-            from_participant_id="provider-id",
-        )
-        == b"delegated"
-    )
-    await client.set_secret(secret_id="secret-1", data=b"payload")
-    secret = await client.get_secret(secret_id="secret-1")
-    assert isinstance(secret, FileContent)
-    assert secret.data == b"secret"
-
-    assert [request[0] for request in room.requests] == ["room.invoke_tool"] * 13
-    assert [request[1]["toolkit"] for request in room.requests] == ["secrets"] * 13
-    assert [request[1]["tool"] for request in room.requests] == [
-        "provide_oauth_authorization",
-        "provide_oauth_authorization",
-        "provide_secret",
-        "provide_secret",
-        "get_offline_oauth_token",
-        "request_oauth_token",
-        "list_secrets",
-        "exists",
-        "delete_secret",
-        "delete_requested_secret",
-        "request_secret",
-        "set_secret",
-        "get_secret",
-    ]
-
-    provide_secret_arguments = room.requests[2][1]["arguments"]
-    assert isinstance(provide_secret_arguments, dict)
-    assert provide_secret_arguments == {
-        "type": "binary",
-        "headers": {"request_id": "req-3", "error": None},
-    }
-    assert room.requests[2][2] == b"secret-bytes"
-
-    reject_secret_arguments = room.requests[3][1]["arguments"]
-    assert isinstance(reject_secret_arguments, dict)
-    assert reject_secret_arguments == {
-        "type": "binary",
-        "headers": {"request_id": "req-4", "error": "declined"},
-    }
-    assert room.requests[3][2] == b""
-
-    exists_arguments = room.requests[7][1]["arguments"]
-    assert isinstance(exists_arguments, dict)
-    assert exists_arguments == {
-        "type": "json",
-        "json": {
-            "secret_id": "secret-1",
-            "delegated_to": None,
-            "for_identity": "service-agent",
-        },
-    }
-
-    set_secret_arguments = room.requests[11][1]["arguments"]
-    assert isinstance(set_secret_arguments, dict)
-    assert set_secret_arguments == {
-        "type": "binary",
-        "headers": {
-            "secret_id": "secret-1",
-            "type": None,
-            "name": None,
-            "delegated_to": None,
-            "for_identity": None,
-            "has_data": True,
-        },
-    }
-    assert room.requests[11][2] == b"payload"
-
-
-@pytest.mark.asyncio
 async def test_storage_client_unexpected_response_uses_error_code() -> None:
     client = StorageClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
 
@@ -3127,6 +2958,34 @@ async def test_datasets_client_unexpected_response_uses_error_code() -> None:
         RoomException, match="unexpected return type from datasets.list_tables"
     ) as ex:
         await client.list_tables()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_datasets_client_validates_list_tables_and_inspect_responses() -> None:
+    list_client = DatasetsClient(room=_StaticInvokeRoom(JsonContent(json={})))  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from datasets.list_tables"
+    ) as ex:
+        await list_client.list_tables()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    inspect_client = DatasetsClient(
+        room=_StaticInvokeRoom(
+            BinaryContent(
+                data=room_server_client._schema_to_arrow_ipc(pa.schema([])),
+                headers={"kind": "data"},
+            )
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from datasets.inspect"
+    ) as ex:
+        await inspect_client.inspect(table="records")
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
@@ -3343,6 +3202,8 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
                                 "name": "idx_records_id",
                                 "columns": ["id"],
                                 "type": "btree",
+                                "details_json": json.dumps({}),
+                                "statistics_json": json.dumps({}),
                             }
                         ]
                     }
@@ -3551,6 +3412,283 @@ async def test_datasets_client_uses_room_invoke_for_commands() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sqlite_client_uses_room_invoke_for_commands() -> None:
+    inspect_schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("payload", pa.string()),
+        ]
+    )
+
+    class _StreamingSqliteRoom:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.write_starts: dict[str, dict[str, object]] = {}
+            self.write_chunks: dict[str, list[pa.Table]] = {
+                "create_table": [],
+                "insert": [],
+            }
+            self.read_starts: dict[str, dict[str, object]] = {}
+
+        async def invoke(self, **kwargs) -> Content | AsyncIterator[Content]:
+            self.calls.append(kwargs)
+            tool = kwargs["tool"]
+            tool_input = kwargs["input"]
+
+            if tool in self.write_chunks:
+                assert isinstance(tool_input, AsyncIterable)
+
+                async def write_stream() -> AsyncIterator[Content]:
+                    iterator = tool_input.__aiter__()
+                    start_chunk = await iterator.__anext__()
+                    assert isinstance(start_chunk, BinaryContent)
+                    self.write_starts[tool] = dict(start_chunk.headers)
+                    yield BinaryContent(data=b"", headers={"kind": "pull"})
+                    async for chunk in iterator:
+                        assert isinstance(chunk, BinaryContent)
+                        self.write_chunks[tool].append(
+                            room_server_client._table_from_arrow_ipc(chunk.data)
+                        )
+                        yield BinaryContent(data=b"", headers={"kind": "pull"})
+                    yield _ControlContent(method="close")
+
+                return write_stream()
+
+            if tool in {"search", "read_sql_query"}:
+                assert isinstance(tool_input, AsyncIterable)
+
+                async def read_stream() -> AsyncIterator[Content]:
+                    iterator = tool_input.__aiter__()
+                    start_chunk = await iterator.__anext__()
+                    assert isinstance(start_chunk, BinaryContent)
+                    self.read_starts[tool] = dict(start_chunk.headers)
+                    pull_count = 0
+                    async for chunk in iterator:
+                        assert isinstance(chunk, BinaryContent)
+                        pull_count += 1
+                        if pull_count > 1:
+                            yield _ControlContent(method="close")
+                            return
+                        yield BinaryContent(
+                            data=room_server_client._table_to_arrow_ipc(
+                                pa.table({"id": [1], "payload": ["hello"]})
+                            ),
+                            headers={"kind": "data"},
+                        )
+                    yield _ControlContent(method="close")
+
+                return read_stream()
+
+            if tool in {"open_sql_query", "execute_sql"}:
+                assert isinstance(tool_input, BinaryContent)
+                return BinaryContent(
+                    data=room_server_client._schema_to_arrow_ipc(
+                        pa.schema([pa.field("id", pa.int64())])
+                    ),
+                    headers={"kind": "query", "query_id": "sqlite-query-1"},
+                )
+            if tool == "execute_sql_statement":
+                assert isinstance(tool_input, BinaryContent)
+                return JsonContent(json={"rows_affected": 3})
+            if tool == "list_databases":
+                return JsonContent(json={"databases": ["app"]})
+            if tool == "create_database":
+                return EmptyContent()
+            if tool == "drop_database":
+                return EmptyContent()
+            if tool == "inspect_database":
+                return JsonContent(
+                    json={
+                        "name": "app",
+                        "namespace": ["team"],
+                        "tables": 1,
+                        "size_bytes": 1024,
+                    }
+                )
+            if tool == "list_tables":
+                return JsonContent(json={"tables": ["records"]})
+            if tool == "inspect":
+                return BinaryContent(
+                    data=room_server_client._schema_to_arrow_ipc(inspect_schema)
+                )
+            if tool == "add_columns":
+                assert isinstance(tool_input, BinaryContent)
+                return EmptyContent()
+            if tool in {"drop_table", "rename_table", "drop_columns"}:
+                return EmptyContent()
+            if tool in {"update", "delete"}:
+                return JsonContent(json={"rows_affected": 2})
+            if tool == "count":
+                return JsonContent(json={"count": 1})
+            if tool == "close_sql_query":
+                return EmptyContent()
+            if tool == "cancel_sql_query":
+                return JsonContent(json={"status": "not_cancellable"})
+            raise AssertionError(f"unexpected sqlite tool {tool}")
+
+    room = _StreamingSqliteRoom()
+    client = SqliteClient(room=room)  # type: ignore[arg-type]
+    db = client.database("app", namespace=["team"])
+
+    databases = await client.list_databases(namespace=["team"])
+    await client.create_database(name="app", namespace=["team"])
+    details = await client.inspect_database(name="app", namespace=["team"])
+    await client.drop_database(name="old", namespace=["team"], ignore_missing=True)
+    tables = await db.list_tables()
+    await db.create_table_with_schema(
+        name="records",
+        schema=inspect_schema,
+        data=pa.table({"id": [1], "payload": ["hello"]}),
+    )
+    await db.create_table_from_data(
+        name="inferred",
+        data=pa.table({"id": [2], "payload": ["created"]}),
+    )
+    await db.add_columns(table="records", new_columns={"extra": pa.string()})
+    await db.drop_columns(table="records", columns=["extra"])
+    await db.rename_table(name="records", new_name="renamed_records")
+    schema = await db.inspect(table="records")
+    await db.insert(table="records", records=pa.table({"id": [1], "payload": ["x"]}))
+    rows_updated = await db.update(
+        table="records",
+        where="id = ?",
+        values={"payload": "updated"},
+        params=[1],
+    )
+    rows_deleted = await db.delete(table="records", where="id = ?", params=[2])
+    rows = await db.search(table="records", where={"id": 1}, limit=10)
+    count = await db.count(table="records", where="id = ?", params=[1])
+    sql_rows = await db.sql(
+        query="SELECT * FROM records WHERE id = ?",
+        params=[1],
+    )
+    statement_rows = await db.execute_sql_statement(
+        query="DELETE FROM records WHERE id = ?",
+        params=[1],
+    )
+    execution = await db.execute_sql(query="SELECT id FROM records")
+    cancel_result = await client.cancel_sql_query(query_id="sqlite-query-1")
+    await db.drop_table(name="renamed_records", ignore_missing=True)
+
+    assert databases == ["app"]
+    assert details.name == "app"
+    assert details.namespace == ["team"]
+    assert tables == ["records"]
+    assert schema.equals(inspect_schema)
+    assert rows_updated == 2
+    assert rows_deleted == 2
+    assert rows.to_pylist() == [{"id": 1, "payload": "hello"}]
+    assert count == 1
+    assert sql_rows.to_pylist() == [{"id": 1, "payload": "hello"}]
+    assert statement_rows == 3
+    assert not isinstance(execution, SqliteSqlStatement)
+    assert execution.query_id == "sqlite-query-1"
+    assert cancel_result.status == "not_cancellable"
+
+    assert room.write_starts["create_table"]["database"] == "app"
+    assert room.write_starts["create_table"]["namespace"] == ["team"]
+    assert room.write_chunks["create_table"][0].to_pylist() == [
+        {"id": 1, "payload": "hello"}
+    ]
+    assert room.write_chunks["insert"][0].to_pylist() == [{"id": 1, "payload": "x"}]
+    assert room.read_starts["search"]["where"] == {"id": 1}
+    assert room.read_starts["search"]["limit"] == 10
+
+    assert [call["tool"] for call in room.calls] == [
+        "list_databases",
+        "create_database",
+        "inspect_database",
+        "drop_database",
+        "list_tables",
+        "create_table",
+        "create_table",
+        "add_columns",
+        "drop_columns",
+        "rename_table",
+        "inspect",
+        "insert",
+        "update",
+        "delete",
+        "search",
+        "count",
+        "execute_sql",
+        "read_sql_query",
+        "close_sql_query",
+        "execute_sql_statement",
+        "execute_sql",
+        "cancel_sql_query",
+        "drop_table",
+    ]
+    assert all(call["toolkit"] == "sqlite" for call in room.calls)
+    assert room.calls[12]["input"]["params"] == [1]
+    assert room.calls[12]["input"]["values"] == [
+        {"column": "payload", "value_json": '"updated"'}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_client_unexpected_response_uses_error_code() -> None:
+    class _UnexpectedSqliteRoom:
+        async def invoke(self, **kwargs) -> Content:
+            return TextContent(text="unexpected")
+
+    client = SqliteClient(room=_UnexpectedSqliteRoom())  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.list_databases"
+    ) as ex:
+        await client.list_databases()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_sqlite_client_validates_typed_responses() -> None:
+    malformed_databases_client = SqliteClient(
+        room=_StaticInvokeRoom(JsonContent(json={"databases": ["app", 2]}))
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.list_databases"
+    ) as ex:
+        await malformed_databases_client.list_databases()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    malformed_tables_client = SqliteClient(
+        room=_StaticInvokeRoom(JsonContent(json={"tables": ["records"], "extra": True}))
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.list_tables"
+    ) as ex:
+        await malformed_tables_client.list_tables(database="app")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    malformed_query_client = SqliteClient(
+        room=_StaticInvokeRoom(
+            BinaryContent(
+                data=room_server_client._schema_to_arrow_ipc(
+                    pa.schema([pa.field("id", pa.int64())])
+                ),
+                headers={"query_id": "sqlite-query-1"},
+            )
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.open_sql_query"
+    ) as ex:
+        await malformed_query_client.open_sql_query(
+            database="app",
+            query="SELECT * FROM records",
+        )
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("operation", "invoke"),
     [
@@ -3581,6 +3719,64 @@ async def test_storage_client_all_methods_use_unexpected_response_error_code(
         await invoke(client)
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_storage_client_metadata_responses_reject_extra_fields() -> None:
+    cases = [
+        (
+            "exists",
+            StorageClient(
+                room=_StaticStorageInvokeRoom(
+                    JsonContent(json={"exists": True, "extra": "ignored"})
+                )
+            ).exists(path="file.txt"),
+        ),
+        (
+            "stat",
+            StorageClient(
+                room=_StaticStorageInvokeRoom(
+                    JsonContent(
+                        json={
+                            "exists": True,
+                            "name": "file.txt",
+                            "is_folder": False,
+                            "extra": "ignored",
+                        }
+                    )
+                )
+            ).stat(path="file.txt"),
+        ),
+        (
+            "download_url",
+            StorageClient(
+                room=_StaticStorageInvokeRoom(
+                    JsonContent(
+                        json={
+                            "url": "https://example.test/file.txt",
+                            "extra": "ignored",
+                        }
+                    )
+                )
+            ).download_url(path="file.txt"),
+        ),
+        (
+            "list",
+            StorageClient(
+                room=_StaticStorageInvokeRoom(
+                    JsonContent(json={"files": [], "extra": "ignored"})
+                )
+            ).list(path="."),
+        ),
+    ]
+
+    for operation, call in cases:
+        with pytest.raises(
+            RoomException, match=f"unexpected return type from storage.{operation}"
+        ) as ex:
+            await call
+
+        assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
 
 @pytest.mark.asyncio
@@ -3737,6 +3933,36 @@ async def test_developer_client_uses_room_invoke_for_commands() -> None:
 
 
 @pytest.mark.asyncio
+async def test_developer_client_direct_log_non_string_type_defaults_to_unknown() -> (
+    None
+):
+    room = _DeveloperLogRoom()
+    client = DeveloperClient(room=room)  # type: ignore[arg-type]
+    events: list[dict[str, object]] = []
+    client.on("log", lambda **event: events.append(event))
+
+    handler = room.protocol.get_handler("developer.log")
+    assert handler is not None
+    await handler(
+        room.protocol,
+        1,
+        "developer.log",
+        pack_message({"type": 123, "data": {"message": "hello"}}),
+    )
+    await handler(
+        room.protocol,
+        2,
+        "developer.log",
+        pack_message({"data": {"message": "missing type"}}),
+    )
+
+    assert events == [
+        {"type": "unknown", "data": {"message": "hello"}},
+        {"type": "unknown", "data": {"message": "missing type"}},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_containers_client_build_streams_tar_chunks() -> None:
     room = _StreamingBuildRoom()
     client = ContainersClient(room=room)  # type: ignore[arg-type]
@@ -3782,6 +4008,23 @@ async def test_containers_client_build_streams_tar_chunks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_containers_client_build_accepts_streamed_build_id_response() -> None:
+    room = _StreamingBuildRoom(stream_response=True)
+    client = ContainersClient(room=room)  # type: ignore[arg-type]
+
+    build_id = await client.build(
+        tags=["repo/example:latest"],
+        mount_path="/context",
+        context_path="/context",
+        chunks=_bytes_chunks([b"hello"]),
+    )
+
+    assert build_id == "build-1"
+    assert room.start_chunk is not None
+    assert b"".join(chunk.data for chunk in room.data_chunks) == b"hello"
+
+
+@pytest.mark.asyncio
 async def test_developer_client_emits_streamed_log_events() -> None:
     room = _DeveloperLogRoom()
     client = DeveloperClient(room=room)  # type: ignore[arg-type]
@@ -3814,6 +4057,49 @@ async def test_developer_client_emits_streamed_log_events() -> None:
     assert event.type == "custom"
     assert event.data == {"hello": "world"}
 
+    await stream.aclose()
+    await asyncio.sleep(0)
+    await _cancel_close_watcher(room)
+
+
+@pytest.mark.asyncio
+async def test_developer_client_logs_missing_type_uses_specific_protocol_error() -> (
+    None
+):
+    room = _DeveloperLogRoom()
+    client = DeveloperClient(room=room)  # type: ignore[arg-type]
+    stream = client.logs()
+    next_task = asyncio.create_task(stream.__anext__())
+    while not room.requests:
+        await asyncio.sleep(0)
+
+    invoke_request = next(
+        request for request in room.requests if request[0] == "room.invoke_tool"
+    )
+    tool_call_id = invoke_request[1]["tool_call_id"]
+    await room._handle_tool_call_response_chunk(
+        protocol=room.protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="room.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": tool_call_id,
+                "chunk": BinaryContent(
+                    data=json.dumps({"hello": "world"}).encode("utf-8"),
+                    headers={"type": 123},
+                ).to_json(),
+            },
+            data=json.dumps({"hello": "world"}).encode("utf-8"),
+        ),
+    )
+
+    with pytest.raises(
+        RoomException,
+        match="developer.logs returned a chunk without a valid type",
+    ) as ex:
+        await next_task
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
     await stream.aclose()
     await asyncio.sleep(0)
     await _cancel_close_watcher(room)
@@ -3887,6 +4173,80 @@ async def test_services_client_uses_room_invoke_and_translates_service_states() 
 
 
 @pytest.mark.asyncio
+async def test_services_client_rejects_nested_service_spec_invalid_payloads() -> None:
+    invalid_services = [
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "svc-1"},
+            "agents": [{"name": "agent", "email": {"address": "   "}}],
+        },
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "svc-1"},
+            "agents": [
+                {
+                    "name": "agent",
+                    "heartbeat": {
+                        "queue": " ",
+                        "minutes": 1,
+                        "prompt": [{"type": "text", "text": "hi"}],
+                    },
+                }
+            ],
+        },
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "svc-1"},
+            "container": {
+                "image": "meshagent/cli:default",
+                "storage": {"room": [{"path": "/data", "extra": True}]},
+            },
+        },
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "svc-1"},
+            "ports": [
+                {
+                    "endpoints": [
+                        {
+                            "path": "/mcp",
+                            "mcp": {
+                                "label": "mcp",
+                                "require_approval": "sometimes",
+                            },
+                        }
+                    ]
+                }
+            ],
+        },
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "svc-1"},
+            "ports": [{"endpoints": [{"path": "/agent", "meshagent": {}}]}],
+        },
+    ]
+
+    for service in invalid_services:
+        client = ServicesClient(
+            room=_StaticInvokeRoom(
+                JsonContent(json={"services_json": [json.dumps(service)]})
+            )
+        )  # type: ignore[arg-type]
+
+        with pytest.raises(
+            RoomException, match="unexpected return type from services.list"
+        ) as ex:
+            await client.list_with_state()
+
+        assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
 async def test_services_client_restart_uses_room_invoke() -> None:
     class _InvokeRoom:
         def __init__(self) -> None:
@@ -3951,6 +4311,20 @@ async def test_livekit_client_unexpected_response_uses_error_code() -> None:
 
 
 @pytest.mark.asyncio
+async def test_livekit_client_malformed_payload_uses_error_code() -> None:
+    client = LivekitClient(
+        room=_StaticInvokeRoom(JsonContent(json={"url": "wss://livekit.example"}))
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from livekit.connect"
+    ) as ex:
+        await client.get_connection_info()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
 async def test_queues_client_list_unexpected_response_uses_error_code() -> None:
     client = QueuesClient(room=_BadResponseRoom())  # type: ignore[arg-type]
 
@@ -3958,6 +4332,68 @@ async def test_queues_client_list_unexpected_response_uses_error_code() -> None:
         RoomException, match="unexpected return type from queues.list"
     ) as ex:
         await client.list(name="jobs", message={})
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_queues_client_list_coerces_size_like_python_int() -> None:
+    room = _StaticInvokeRoom(
+        JsonContent(
+            json={
+                "queues": [
+                    {"name": "numeric", "size": 3},
+                    {"name": "string", "size": " 4 "},
+                    {"name": "true", "size": True},
+                    {"name": "negative", "size": -2},
+                    {"name": "float", "size": 5.9},
+                    {"name": "underscore", "size": "+1_000", "ignored": True},
+                ]
+            }
+        )
+    )
+    client = QueuesClient(room=room)  # type: ignore[arg-type]
+
+    queues = await client.list(name="ignored", message={"ignored": True}, create=False)
+
+    assert [(queue.name, queue.size) for queue in queues] == [
+        ("numeric", 3),
+        ("string", 4),
+        ("true", 1),
+        ("negative", -2),
+        ("float", 5),
+        ("underscore", 1000),
+    ]
+    assert room.requests == [
+        {
+            "toolkit": "queues",
+            "tool": "list",
+            "input": {},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_queues_client_list_malformed_payload_uses_error_code() -> None:
+    client = QueuesClient(
+        room=_StaticInvokeRoom(JsonContent(json={"queues": [{"name": "bad"}]}))
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from queues.list"
+    ) as ex:
+        await client.list()
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = QueuesClient(
+        room=_StaticInvokeRoom(JsonContent(json={"queues": [], "extra": True}))
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from queues.list"
+    ) as ex:
+        await client.list()
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
@@ -4377,6 +4813,28 @@ async def test_containers_client_exec_and_logs_use_streamed_invoke() -> None:
     assert room.build_log_requests[0]["kind"] == "start"
 
 
+def test_container_status_from_bytes_rejects_malformed_protocol_status() -> None:
+    with pytest.raises(
+        RoomException,
+        match="containers.exec returned an invalid status payload",
+    ) as bool_status:
+        room_server_client._container_status_from_bytes(
+            operation="exec",
+            data=b'{"status": true}',
+        )
+    assert bool_status.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    with pytest.raises(
+        RoomException,
+        match="containers.get_build_logs returned an invalid status payload",
+    ) as invalid_json:
+        room_server_client._container_status_from_bytes(
+            operation="get_build_logs",
+            data=b"\xff",
+        )
+    assert invalid_json.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
 @pytest.mark.asyncio
 async def test_containers_client_run_unexpected_response_uses_error_code() -> None:
     client = ContainersClient(room=_BadStorageResponseRoom())  # type: ignore[arg-type]
@@ -4399,6 +4857,90 @@ async def test_containers_client_list_unexpected_response_uses_error_code() -> N
         await client.list()
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_containers_client_validates_typed_json_responses() -> None:
+    client = ContainersClient(
+        room=_StaticInvokeRoom(JsonContent(json={"container_id": "c1", "extra": True}))
+    )  # type: ignore[arg-type]
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.run"
+    ) as ex:
+        await client.run(image="alpine:latest")
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(JsonContent(json={"build_id": "b1", "extra": True}))
+    )  # type: ignore[arg-type]
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.build"
+    ) as ex:
+        await client.build(
+            tags=["example:latest"],
+            mount_path="/context",
+            context_path="/workspace",
+            chunks=_bytes_chunks([b"hello"]),
+        )
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(JsonContent(json={"images": [], "extra": True}))
+    )  # type: ignore[arg-type]
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.list_images"
+    ) as ex:
+        await client.list_images()
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(
+            JsonContent(json={"images": [{"id": "img-1", "references": [123]}]})
+        )
+    )  # type: ignore[arg-type]
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.list_images"
+    ) as ex:
+        await client.list_images()
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(JsonContent(json={"image": {"id": "img-1"}}))
+    )  # type: ignore[arg-type]
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.inspect_image"
+    ) as ex:
+        await client.inspect_image(image_id="img-1")
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(JsonContent(json={"resolved_ref": "demo:loaded"}))
+    )  # type: ignore[arg-type]
+    loaded = await client.load(archive_path="/images/example.tar")
+    assert loaded.refs == []
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(JsonContent(json={"builds": [], "extra": True}))
+    )  # type: ignore[arg-type]
+    with pytest.raises(
+        RoomException, match="unexpected return type from containers.list_builds"
+    ) as ex:
+        await client.list_builds()
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    client = ContainersClient(
+        room=_StaticInvokeRoom(
+            JsonContent(
+                json={
+                    "containers": [
+                        {"id": "container-1", "state": "RUNNING", "private": False}
+                    ]
+                }
+            )
+        )
+    )  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        await client.list()
 
 
 @pytest.mark.asyncio
@@ -4622,25 +5164,6 @@ async def test_invoke_tool_sends_control_chunks_for_request_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_invoke_tool_rejects_non_content_stream_items() -> None:
-    room = _FakeRoom()
-    client = AgentsClient(room=room)  # type: ignore[arg-type]
-
-    async def input_stream():
-        yield {"step": 1}
-
-    with pytest.raises(
-        RoomException,
-        match="invoke_tool input stream items must be Content values",
-    ):
-        await client.invoke_tool(
-            toolkit="test-toolkit",
-            tool="streaming-tool",
-            input=input_stream(),
-        )
-
-
-@pytest.mark.asyncio
 async def test_invoke_tool_does_not_send_stream_flag() -> None:
     room = _FakeRoom()
     client = AgentsClient(room=room)  # type: ignore[arg-type]
@@ -4694,23 +5217,6 @@ async def test_invoke_tool_upgrades_str_input_to_text_content() -> None:
     assert request[0] == "room.invoke_tool"
     assert request[1]["arguments"] == {"type": "text", "text": "hello"}
     assert request[2] is None
-
-
-@pytest.mark.asyncio
-async def test_invoke_tool_rejects_attachment_keyword() -> None:
-    room = _FakeRoom()
-    client = AgentsClient(room=room)  # type: ignore[arg-type]
-
-    with pytest.raises(
-        TypeError,
-        match="invoke_tool\\(\\) got unexpected keyword argument\\(s\\): attachment",
-    ):
-        await client.invoke_tool(
-            toolkit="test-toolkit",
-            tool="streaming-tool",
-            input={"a": 1},
-            attachment=b"bytes",
-        )
 
 
 class _OpenResponseRoom(_FakeRoom):

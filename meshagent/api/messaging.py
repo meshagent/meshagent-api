@@ -5,25 +5,51 @@ from typing import Any, Literal
 
 from opentelemetry.propagate import extract, inject
 
+from meshagent.api.error_codes import ErrorCode
+
+
+class MessageProtocolError(Exception):
+    def __init__(self, message: str):
+        self.code = ErrorCode.INVALID_REQUEST
+        super().__init__(message)
+
 
 def split_message_payload(data: bytes) -> bytes:
+    if len(data) < 8:
+        raise MessageProtocolError("message is too short")
     header_size = int.from_bytes(data[0:8], "big")
+    if len(data) < 8 + header_size:
+        raise MessageProtocolError("message header is incomplete")
     return data[8 + header_size :]
 
 
 def split_message_header(data: bytes) -> str:
+    if len(data) < 8:
+        raise MessageProtocolError("message is too short")
     header_size = int.from_bytes(data[0:8], "big")
-    return data[8 : 8 + header_size].decode("utf-8")
+    if len(data) < 8 + header_size:
+        raise MessageProtocolError("message header is incomplete")
+    try:
+        return data[8 : 8 + header_size].decode("utf-8")
+    except UnicodeDecodeError as ex:
+        raise MessageProtocolError(f"invalid message header: {ex}") from ex
 
 
 def unpack_message(data: bytes) -> tuple[dict, bytes]:
-    header: dict = json.loads(split_message_header(data=data))
+    try:
+        header = json.loads(split_message_header(data=data))
+    except json.JSONDecodeError as ex:
+        raise MessageProtocolError(f"invalid message header: {ex}") from ex
+
+    if not isinstance(header, dict):
+        raise MessageProtocolError("message header must be an object")
+
     payload = split_message_payload(data=data)
 
-    meshagent_data: dict = header.get("__meshagent__")
+    meshagent_data = header.get("__meshagent__")
     if meshagent_data is not None:
         del header["__meshagent__"]
-        otel = meshagent_data.get("otel")
+        otel = meshagent_data.get("otel") if isinstance(meshagent_data, dict) else None
         if otel is not None:
             extract(otel)
 
@@ -384,13 +410,19 @@ def pack_content(content: Content) -> bytes:
 def unpack_content_parts(header: dict, payload: bytes) -> Content:
     content_type = header.get("type")
     if not isinstance(content_type, str):
-        raise Exception("content header is missing required 'type'")
+        raise MessageProtocolError("content header is missing required 'type'")
 
     parser = content_types.get(content_type)
     if parser is None:
-        raise Exception(f"unsupported content type: {content_type}")
+        raise MessageProtocolError(f"unsupported content type: {content_type}")
 
-    return parser.unpack(header=header, payload=payload)
+    try:
+        return parser.unpack(header=header, payload=payload)
+    except KeyError as ex:
+        field = ex.args[0] if ex.args else str(ex)
+        raise MessageProtocolError(
+            f"{content_type} content is missing required field {field!r}"
+        ) from ex
 
 
 def unpack_content(data: bytes) -> Content:

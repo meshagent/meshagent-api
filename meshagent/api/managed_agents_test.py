@@ -124,7 +124,7 @@ def test_managed_agent_spec_rejects_shell_toolkit():
         )
 
 
-def test_managed_agent_spec_accepts_mcp_agent_secret_authorization():
+def test_managed_agent_spec_accepts_mcp_proxy_secret():
     spec = ManagedAgentSpec.model_validate(
         {
             "version": "v1",
@@ -138,13 +138,7 @@ def test_managed_agent_spec_accepts_mcp_agent_secret_authorization():
                         {
                             "server_label": "github",
                             "server_url": "https://mcp.example.test",
-                            "authorization": {
-                                "type": "bearer",
-                                "secret": {
-                                    "type": "agent",
-                                    "secret_id": "github-token",
-                                },
-                            },
+                            "use_proxy_secret": "github-token",
                         }
                     ],
                 }
@@ -155,10 +149,10 @@ def test_managed_agent_spec_accepts_mcp_agent_secret_authorization():
     assert spec.toolkits is not None
     toolkit = spec.toolkits[0]
     assert toolkit.type == "mcp"
-    assert toolkit.servers[0].authorization.secret.secret_id == "github-token"
+    assert toolkit.servers[0].use_proxy_secret == "github-token"
 
 
-def test_managed_agent_spec_accepts_mcp_user_secret_header_authorization():
+def test_managed_agent_spec_drops_legacy_mcp_secret_authorization():
     spec = ManagedAgentSpec.model_validate(
         {
             "version": "v1",
@@ -178,13 +172,6 @@ def test_managed_agent_spec_accepts_mcp_user_secret_header_authorization():
                                 "secret": {
                                     "type": "user",
                                     "secret_name": "linear-token",
-                                    "prompt": "Linear API key",
-                                    "oauth": {
-                                        "secret_name": "linear-token",
-                                        "scopes": ["read"],
-                                        "registration_endpoint": "https://mcp.example.test/register",
-                                        "redirect_uri": "meshagent-studio://oauth2/callback",
-                                    },
                                 },
                             },
                         }
@@ -195,11 +182,8 @@ def test_managed_agent_spec_accepts_mcp_user_secret_header_authorization():
     )
 
     assert spec.toolkits is not None
-    auth = spec.toolkits[0].servers[0].authorization
-    assert auth.name == "X-API-Key"
-    assert auth.secret.secret_name == "linear-token"
-    assert auth.secret.oauth.scopes == ["read"]
-    assert (
-        auth.secret.oauth.registration_endpoint == "https://mcp.example.test/register"
-    )
-    assert auth.secret.oauth.redirect_uri == "meshagent-studio://oauth2/callback"
+    toolkit = spec.toolkits[0]
+    assert toolkit.type == "mcp"
+    server_data = toolkit.servers[0].model_dump(mode="json")
+    assert server_data["server_label"] == "linear"
+    assert "authorization" not in server_data

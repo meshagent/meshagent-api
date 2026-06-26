@@ -7,7 +7,9 @@ from meshagent.api.agent_content import (
 )
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.api.specs.service import (
+    EnvironmentVariable,
     PortSpec,
+    SecretValue,
     ServiceFileSpec,
     ServiceSpec,
     ServiceTemplateSpec,
@@ -124,6 +126,97 @@ container:
     assert restored.files[0].text == "Review recent room activity before acting."
 
 
+def test_secret_value_rejects_identity_field() -> None:
+    secret = SecretValue.model_validate({"id": "secret-1"})
+
+    assert secret.model_dump(mode="json") == {"id": "secret-1"}
+    with pytest.raises(ValidationError):
+        SecretValue.model_validate({"id": "secret-1", "identity": "agent"})
+    with pytest.raises(ValidationError):
+        EnvironmentVariable.model_validate(
+            {
+                "name": "TOKEN",
+                "secret": {"id": "secret-1", "identity": "agent"},
+            }
+        )
+
+
+def test_secret_value_environment_requires_container_run_as() -> None:
+    with pytest.raises(ValidationError, match="container.run_as is required"):
+        ServiceSpec.model_validate(
+            {
+                "version": "v1",
+                "kind": "Service",
+                "metadata": {"name": "secret-service"},
+                "container": {
+                    "image": "meshagent/example",
+                    "environment": [
+                        {"name": "TOKEN", "secret": {"id": "secret-1"}},
+                    ],
+                },
+            }
+        )
+
+
+def test_secret_value_environment_accepts_container_run_as() -> None:
+    service = ServiceSpec.model_validate(
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "secret-service"},
+            "container": {
+                "image": "meshagent/example",
+                "run_as": {"email": "agent@example.com"},
+                "environment": [
+                    {"name": "TOKEN", "secret": {"id": "secret-1"}},
+                ],
+            },
+        }
+    )
+
+    assert service.container is not None
+    assert service.container.run_as is not None
+    assert service.container.run_as.email == "agent@example.com"
+    assert service.container.run_as.scopes == ["secrets:proxy"]
+
+
+def test_container_run_as_rejects_legacy_string() -> None:
+    with pytest.raises(ValidationError):
+        ServiceSpec.model_validate(
+            {
+                "version": "v1",
+                "kind": "Service",
+                "metadata": {"name": "legacy-service"},
+                "container": {
+                    "image": "meshagent/example",
+                    "run_as": "agent@example.com",
+                },
+            }
+        )
+
+
+def test_container_run_as_accepts_custom_scopes() -> None:
+    service = ServiceSpec.model_validate(
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "scoped-service"},
+            "container": {
+                "image": "meshagent/example",
+                "run_as": {
+                    "email": " Agent@Example.com ",
+                    "scopes": ["secrets:proxy", "llm_proxy", "llm_proxy", ""],
+                },
+            },
+        }
+    )
+
+    assert service.container is not None
+    assert service.container.run_as is not None
+    assert service.container.run_as.email == "agent@example.com"
+    assert service.container.run_as.scopes == ["secrets:proxy", "llm_proxy"]
+
+
 def test_service_template_spec_preserves_agent_channels() -> None:
     yaml_spec = """
 version: v1
@@ -193,6 +286,39 @@ container:
     assert isinstance(service.files[0], ServiceFileSpec)
     assert service.files[0].path == "/agents/helper/heartbeat.md"
     assert service.files[0].text == "Summarize unresolved room work."
+
+
+def test_mcp_endpoint_spec_preserves_proxy_secret() -> None:
+    service = ServiceSpec.model_validate(
+        {
+            "version": "v1",
+            "kind": "Service",
+            "metadata": {"name": "external-mcp"},
+            "external": {"url": "https://mcp.example.com"},
+            "ports": [
+                {
+                    "num": 443,
+                    "endpoints": [
+                        {
+                            "path": "/mcp",
+                            "mcp": {
+                                "label": "Proxy MCP",
+                                "use_proxy_secret": "secret-123",
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+
+    endpoint = service.ports[0].endpoints[0]
+    assert endpoint.mcp is not None
+    assert endpoint.mcp.use_proxy_secret == "secret-123"
+    payload = service.model_dump(mode="json", exclude_none=True)
+    assert payload["ports"][0]["endpoints"][0]["mcp"]["use_proxy_secret"] == (
+        "secret-123"
+    )
 
 
 def test_port_spec_rejects_reserved_room_infrastructure_port() -> None:

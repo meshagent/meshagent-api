@@ -2,10 +2,16 @@ import os
 import jwt
 from typing import Optional, List, Literal
 from datetime import datetime
-from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 import logging
 from .keys import parse_api_key
-from .oauth import OAuthClientConfig, ConnectorRef
 from .version import __version__
 
 logger = logging.getLogger("participant-token")
@@ -113,6 +119,236 @@ class DatasetGrant(BaseModel):
             self.can_read(table, namespace=namespace)
             or self.can_write(table, namespace=namespace)
             or self.can_alter(table, namespace=namespace)
+        )
+
+
+class SqliteTableGrant(BaseModel):
+    database: str
+    table: str
+    namespace: Optional[list[str]] = None
+    write: bool = False
+    read: bool = True
+    alter: bool = False
+
+
+class SqliteDatabaseGrant(BaseModel):
+    name: str
+    namespace: Optional[list[str]] = None
+    create_table: bool = True
+    drop: bool = False
+    inspect: bool = True
+    list_tables: bool = True
+    execute: bool = True
+    tables: Optional[list[SqliteTableGrant]] = None
+
+
+class SqliteGrant(BaseModel):
+    databases: Optional[list[SqliteDatabaseGrant]] = None
+    create_database: bool = True
+    list_databases: bool = True
+
+    def _matching_databases(
+        self, *, database: str, namespace: Optional[list[str]]
+    ) -> list[SqliteDatabaseGrant]:
+        if self.databases is None:
+            return []
+
+        requested_namespace = _normalize_namespace(namespace)
+        matches = list[SqliteDatabaseGrant]()
+        for database_grant in self.databases:
+            if database_grant.name != database:
+                continue
+            if database_grant.namespace is None:
+                matches.append(database_grant)
+                continue
+            if _normalize_namespace(database_grant.namespace) == requested_namespace:
+                matches.append(database_grant)
+
+        return matches
+
+    def _matching_tables(
+        self,
+        *,
+        database: str,
+        table: str,
+        namespace: Optional[list[str]],
+    ) -> list[SqliteTableGrant]:
+        if self.databases is None:
+            return []
+
+        requested_namespace = _normalize_namespace(namespace)
+        matches = list[SqliteTableGrant]()
+        for database_grant in self._matching_databases(
+            database=database,
+            namespace=namespace,
+        ):
+            if database_grant.tables is None:
+                continue
+            for table_grant in database_grant.tables:
+                if table_grant.database != database or table_grant.table != table:
+                    continue
+                if table_grant.namespace is None:
+                    matches.append(table_grant)
+                    continue
+                if _normalize_namespace(table_grant.namespace) == requested_namespace:
+                    matches.append(table_grant)
+
+        return matches
+
+    def can_create_database(self) -> bool:
+        return self.create_database
+
+    def can_list_databases(self) -> bool:
+        return self.list_databases
+
+    def can_drop_database(
+        self, *, database: str, namespace: Optional[list[str]] = None
+    ) -> bool:
+        if self.databases is None:
+            return True
+        return any(
+            database_grant.drop
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_inspect_database(
+        self, *, database: str, namespace: Optional[list[str]] = None
+    ) -> bool:
+        if self.databases is None:
+            return True
+        return any(
+            database_grant.inspect
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_list_tables(
+        self, *, database: str, namespace: Optional[list[str]] = None
+    ) -> bool:
+        if self.databases is None:
+            return True
+        return any(
+            database_grant.list_tables
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_create_table(
+        self, *, database: str, namespace: Optional[list[str]] = None
+    ) -> bool:
+        if self.databases is None:
+            return True
+        return any(
+            database_grant.create_table
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_execute(
+        self, *, database: str, namespace: Optional[list[str]] = None
+    ) -> bool:
+        if self.databases is None:
+            return True
+        return any(
+            database_grant.execute
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_read(
+        self,
+        *,
+        database: str,
+        table: str,
+        namespace: Optional[list[str]] = None,
+    ) -> bool:
+        if self.databases is None:
+            return True
+        matches = self._matching_tables(
+            database=database,
+            table=table,
+            namespace=namespace,
+        )
+        if len(matches) > 0:
+            return any(table_grant.read for table_grant in matches)
+        return any(
+            database_grant.tables is None
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_write(
+        self,
+        *,
+        database: str,
+        table: str,
+        namespace: Optional[list[str]] = None,
+    ) -> bool:
+        if self.databases is None:
+            return True
+        matches = self._matching_tables(
+            database=database,
+            table=table,
+            namespace=namespace,
+        )
+        if len(matches) > 0:
+            return any(table_grant.write for table_grant in matches)
+        return any(
+            database_grant.tables is None
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_alter(
+        self,
+        *,
+        database: str,
+        table: str,
+        namespace: Optional[list[str]] = None,
+    ) -> bool:
+        if self.databases is None:
+            return True
+        matches = self._matching_tables(
+            database=database,
+            table=table,
+            namespace=namespace,
+        )
+        if len(matches) > 0:
+            return any(table_grant.alter for table_grant in matches)
+        return any(
+            database_grant.tables is None
+            for database_grant in self._matching_databases(
+                database=database,
+                namespace=namespace,
+            )
+        )
+
+    def can_access(
+        self,
+        *,
+        database: str,
+        table: str,
+        namespace: Optional[list[str]] = None,
+    ) -> bool:
+        return (
+            self.can_read(database=database, table=table, namespace=namespace)
+            or self.can_write(database=database, table=table, namespace=namespace)
+            or self.can_alter(database=database, table=table, namespace=namespace)
         )
 
 
@@ -451,43 +687,8 @@ class AdminGrant(BaseModel):
     config: bool = True
 
 
-class OAuthEndpoint(BaseModel):
-    endpoint: str
-    client_id: str
-
-
 class SecretsGrant(BaseModel):
-    request_oauth_token: Optional[list[OAuthEndpoint]] = None
-
-    def can_request_oauth_token(
-        self,
-        *,
-        connector: Optional[ConnectorRef] = None,
-        oauth: Optional[OAuthClientConfig],
-    ):
-        if self.request_oauth_token is None:
-            return True
-
-        for t in self.request_oauth_token:
-            if oauth is not None:
-                authorization_endpoint = (
-                    oauth.authorization_endpoint.strip()
-                    if isinstance(oauth.authorization_endpoint, str)
-                    else ""
-                )
-                client_id = (
-                    oauth.client_id.strip() if isinstance(oauth.client_id, str) else ""
-                )
-                if authorization_endpoint == "" or client_id == "":
-                    continue
-                if (
-                    t.endpoint == authorization_endpoint
-                    or t.endpoint.endswith("*")
-                    and authorization_endpoint.startswith(t.endpoint.removesuffix("*"))
-                ) and t.client_id == client_id:
-                    return True
-
-        return False
+    model_config = ConfigDict(extra="forbid")
 
 
 class TunnelsGrant(BaseModel):
@@ -537,6 +738,7 @@ class ApiScope(BaseModel):
         default=None,
         validation_alias=AliasChoices("dataset", "database", "datasets"),
     )
+    sqlite: Optional[SqliteGrant] = None
     memory: Optional[MemoryGrant] = None
     sync: Optional[SyncGrant] = None
     storage: Optional[StorageGrant] = None
@@ -557,6 +759,7 @@ class ApiScope(BaseModel):
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
             dataset=DatasetGrant(),
+            sqlite=SqliteGrant(),
             memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
@@ -564,7 +767,6 @@ class ApiScope(BaseModel):
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
             llm=LLMGrant(),
-            secrets=SecretsGrant(),
             services=ServicesGrant(),
             tunnels=TunnelsGrant() if tunnels else None,
         )
@@ -576,13 +778,13 @@ class ApiScope(BaseModel):
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
             dataset=DatasetGrant(),
+            sqlite=SqliteGrant(),
             memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
             containers=ContainersGrant(),
             developer=DeveloperGrant(),
             agents=AgentsGrant(),
-            secrets=SecretsGrant(),
             services=ServicesGrant(),
         )
 
@@ -593,6 +795,7 @@ class ApiScope(BaseModel):
             queues=QueuesGrant(),
             messaging=MessagingGrant(),
             dataset=DatasetGrant(),
+            sqlite=SqliteGrant(),
             memory=MemoryGrant(),
             sync=SyncGrant(),
             storage=StorageGrant(),
@@ -601,7 +804,6 @@ class ApiScope(BaseModel):
             agents=AgentsGrant(),
             llm=LLMGrant(),
             admin=AdminGrant(),
-            secrets=SecretsGrant(),
             tunnels=TunnelsGrant(),
             services=ServicesGrant(),
         )

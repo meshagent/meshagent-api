@@ -71,7 +71,7 @@ def _yaml_support():
 
 
 class SecretValue(BaseModel):
-    identity: str = Field(..., description="the identity for the secret")
+    model_config = ConfigDict(extra="forbid")
     id: str = Field(..., description="the id of the secret")
 
 
@@ -97,6 +97,43 @@ class TokenValue(BaseModel):
         return ApiScope.agent_default()
 
 
+class ServiceRunAs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(
+        ..., description="the service account email this service runs as"
+    )
+    scopes: list[str] = Field(
+        default_factory=lambda: ["secrets:proxy"],
+        description=(
+            "OAuth scopes to grant to the runtime service account token. "
+            "The project scope is always added by the server."
+        ),
+    )
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized == "":
+            raise ValueError("run_as.email must not be empty")
+        return normalized
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: list[str]) -> list[str]:
+        normalized_scopes: list[str] = []
+        seen: set[str] = set()
+        for scope in value:
+            normalized_scope = scope.strip()
+            if normalized_scope == "":
+                continue
+            if normalized_scope not in seen:
+                normalized_scopes.append(normalized_scope)
+                seen.add(normalized_scope)
+        return normalized_scopes
+
+
 class EnvironmentVariable(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -117,20 +154,6 @@ class RoomStorageMountSpec(BaseModel):
         None, description="mount only a portion of the rooms storage"
     )
     read_only: bool = False
-
-
-class ProjectStorageMountSpec(BaseModel):
-    """mounts shared project storage at the specified path using a FUSE mount"""
-
-    model_config = ConfigDict(extra="forbid")
-    path: str = Field(
-        ...,
-        description="the path within the container for the project storage to be mounted to",
-    )
-    subpath: Optional[str] = Field(
-        None, description="mount only a portion of the project's storage"
-    )
-    read_only: bool = True
 
 
 class ImageStorageMountSpec(BaseModel):
@@ -181,7 +204,6 @@ class ConfigMountSpec(BaseModel):
 class ContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
-    project: Optional[list[ProjectStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
     empty_dirs: Optional[list[EmptyDirMountSpec]] = None
@@ -226,6 +248,26 @@ ANNOTATION_REQUEST_QUEUE = "meshagent.request.queue"
 ANNOTATION_REQUEST_VALIDATION_METHOD = "meshagent.request.validation.method"
 ANNOTATION_REQUEST_VALIDATION_SECRET = "meshagent.request.validation.secret"
 ANNOTATION_STORAGE_CLASS = "meshagent.storage.class"
+ANNOTATION_STORAGE_CAPACITY = "meshagent.storage.capacity"
+ANNOTATION_STORAGE_ZEROFS_FORMAT = "meshagent.storage.zerofs.format"
+ANNOTATION_STORAGE_JUICE_WRITE_SYNC_INTERVAL = (
+    "meshagent.storage.juice.write-sync-interval"
+)
+ANNOTATION_STORAGE_JUICE_SNAPSHOT_INTERVAL = "meshagent.storage.juice.snapshot-interval"
+ANNOTATION_STORAGE_JUICE_SNAPSHOT_RETENTION = (
+    "meshagent.storage.juice.snapshot-retention"
+)
+ANNOTATION_STORAGE_JUICE_L0_RETENTION = "meshagent.storage.juice.l0-retention"
+ANNOTATION_STORAGE_JUICE_POLL_INTERVAL = "meshagent.storage.juice.poll-interval"
+ANNOTATION_STORAGE_JUICE_CACHE_SIZE_MB = "meshagent.storage.juice.cache-size-mb"
+ANNOTATION_STORAGE_JUICE_COMPACTION_LEVELS = "meshagent.storage.juice.compaction-levels"
+ANNOTATION_SQLITE_WRITE_SYNC_INTERVAL = "meshagent.sqlite.write-sync-interval"
+ANNOTATION_SQLITE_SNAPSHOT_INTERVAL = "meshagent.sqlite.snapshot-interval"
+ANNOTATION_SQLITE_SNAPSHOT_RETENTION = "meshagent.sqlite.snapshot-retention"
+ANNOTATION_SQLITE_L0_RETENTION = "meshagent.sqlite.l0-retention"
+ANNOTATION_SQLITE_POLL_INTERVAL = "meshagent.sqlite.poll-interval"
+ANNOTATION_SQLITE_CACHE_SIZE_MB = "meshagent.sqlite.cache-size-mb"
+ANNOTATION_SQLITE_COMPACTION_LEVELS = "meshagent.sqlite.compaction-levels"
 ANNOTATION_ROOM_MAX_RUNTIME_SECONDS = "meshagent.room.max-runtime-seconds"
 ANNOTATION_ROOM_EMPTY_ROOM_TIMEOUT = "meshagent.room.empty-room-timeout"
 
@@ -341,6 +383,13 @@ class ServiceMetadata(BaseModel):
 class ContainerSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     image: str
+    run_as: Optional[ServiceRunAs] = Field(
+        None,
+        description=(
+            "service account runtime identity. Required when using SecretValue "
+            "environment variables"
+        ),
+    )
     template: Optional[ContainerTemplate] = Field(
         "agent",
         description=(
@@ -354,22 +403,22 @@ class ContainerSpec(BaseModel):
     command: Optional[str] = None
     working_dir: Optional[str] = None
     environment: Optional[list[EnvironmentVariable]] = None
-    secrets: Optional[list[str]] = Field(
-        None,
-        description="ids of secrets that contains environment variables for this service to use",
-    )
-    pull_secret: Optional[str] = Field(
-        None,
-        description=(
-            "the id of a pull secret, can be used to pull private container images"
-        ),
-    )
     storage: Optional[ContainerMountSpec] = Field(
         None, description="storage mounts that should be provided to this container"
     )
     on_demand: Optional[bool] = Field(None, description="an on demand service")
     writable_root_fs: Optional[bool] = None
     private: bool = True
+
+    @model_validator(mode="after")
+    def validate_secret_values_require_run_as(self) -> "ContainerSpec":
+        if self.environment is None:
+            return self
+        if self.run_as is not None:
+            return self
+        if any(env.secret is not None for env in self.environment):
+            raise ValueError("container.run_as is required when using SecretValue")
+        return self
 
 
 class ScheduledTaskMetadata(BaseModel):
@@ -621,6 +670,7 @@ class MCPEndpointSpec(BaseModel):
     require_approval: Optional[Literal["always", "never"]] = None
     oauth: Optional[OAuthClientConfig] = None
     openai_connector_id: Optional[str] = None
+    use_proxy_secret: Optional[str] = None
 
 
 class EndpointSpec(BaseModel):
@@ -705,7 +755,6 @@ class ServiceTemplateVariable(BaseModel):
 class ServiceTemplateContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
-    project: Optional[list[ProjectStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
     empty_dirs: Optional[list[EmptyDirMountSpec]] = None
@@ -743,6 +792,13 @@ class ContainerTemplateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     environment: Optional[list[TemplateEnvironmentVariable]] = None
     image: Optional[str] = None
+    run_as: Optional[ServiceRunAs] = Field(
+        None,
+        description=(
+            "service account runtime identity. Required when using SecretValue "
+            "environment variables"
+        ),
+    )
     template: Optional[ContainerTemplate] = Field(
         "agent",
         description=(
@@ -851,11 +907,11 @@ class ServiceTemplateSpec(BaseModel):
                 command=self.container.command,
                 working_dir=self.container.working_dir,
                 image=self.container.image,
+                run_as=self.container.run_as,
                 template=self.container.template,
                 environment=env,
                 storage=ContainerMountSpec(
                     room=self.container.storage.room,
-                    project=self.container.storage.project,
                     images=self.container.storage.images,
                     files=self.container.storage.files,
                     empty_dirs=self.container.storage.empty_dirs,

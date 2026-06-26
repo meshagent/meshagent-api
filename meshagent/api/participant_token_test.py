@@ -16,6 +16,9 @@ from .participant_token import (  # noqa: E402, F401
     MessagingGrant,
     TableGrant,
     DatasetGrant,
+    SqliteDatabaseGrant,
+    SqliteGrant,
+    SqliteTableGrant,
     MemoryEntryGrant,
     MemoryGrant,
     MemoryPermissions,
@@ -26,6 +29,7 @@ from .participant_token import (  # noqa: E402, F401
     ContainersGrant,
     LLMGrant,
     ServicesGrant,
+    SecretsGrant,
     ApiScope,
     ParticipantToken,
     ParticipantTokenSpec,
@@ -45,28 +49,44 @@ def test_agents_grant_defaults() -> None:
     assert g.use_tools
 
 
-def test_api_scope_agent_default_includes_secrets_without_admin_or_tunnels() -> None:
+def test_api_scope_agent_default_excludes_legacy_secrets_admin_and_tunnels() -> None:
     scope = ApiScope.agent_default()
 
     assert scope.livekit is not None
     assert scope.llm is not None
     assert scope.memory is not None
+    assert scope.sqlite is not None
     assert scope.services is not None
-    assert scope.secrets is not None
+    assert scope.secrets is None
     assert scope.admin is None
     assert scope.tunnels is None
 
 
-def test_api_scope_user_default_includes_secrets_without_admin_or_tunnels() -> None:
+def test_api_scope_user_default_excludes_legacy_secrets_admin_and_tunnels() -> None:
     scope = ApiScope.user_default()
 
     assert scope.livekit is not None
     assert scope.llm is None
     assert scope.memory is not None
+    assert scope.sqlite is not None
     assert scope.services is not None
-    assert scope.secrets is not None
+    assert scope.secrets is None
     assert scope.admin is None
     assert scope.tunnels is None
+
+
+def test_secrets_grant_rejects_legacy_oauth_token_request_grant() -> None:
+    with pytest.raises(ValidationError, match="request_oauth_token"):
+        SecretsGrant.model_validate(
+            {
+                "request_oauth_token": [
+                    {
+                        "endpoint": "https://accounts.example/authorize",
+                        "client_id": "client-1",
+                    }
+                ]
+            }
+        )
 
 
 def test_llm_grant_model_and_provider_restrictions() -> None:
@@ -156,6 +176,98 @@ def test_dataset_grant() -> None:
     assert not g.can_write("write_only", namespace=["default"])
     assert not g.can_read("write_only", namespace=["analytics"])
     assert not g.can_read("unknown") and not g.can_write("unknown")
+
+
+def test_sqlite_grant() -> None:
+    unrestricted = SqliteGrant()
+    assert unrestricted.can_list_databases()
+    assert unrestricted.can_create_database()
+    assert unrestricted.can_drop_database(database="app")
+    assert unrestricted.can_inspect_database(database="app")
+    assert unrestricted.can_list_tables(database="app")
+    assert unrestricted.can_create_table(database="app")
+    assert unrestricted.can_execute(database="app")
+    assert unrestricted.can_read(database="app", table="users")
+    assert unrestricted.can_write(database="app", table="users")
+    assert unrestricted.can_alter(database="app", table="users")
+
+    restricted = SqliteGrant(
+        create_database=False,
+        list_databases=False,
+        databases=[
+            SqliteDatabaseGrant(
+                name="app",
+                namespace=["analytics"],
+                create_table=True,
+                drop=False,
+                inspect=True,
+                list_tables=True,
+                execute=False,
+                tables=[
+                    SqliteTableGrant(
+                        database="app",
+                        table="read_only",
+                        namespace=["analytics"],
+                        read=True,
+                        write=False,
+                        alter=False,
+                    ),
+                    SqliteTableGrant(
+                        database="app",
+                        table="write_only",
+                        namespace=["analytics"],
+                        read=False,
+                        write=True,
+                        alter=False,
+                    ),
+                    SqliteTableGrant(
+                        database="app",
+                        table="schema",
+                        read=False,
+                        write=False,
+                        alter=True,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    assert not restricted.can_list_databases()
+    assert not restricted.can_create_database()
+    assert restricted.can_inspect_database(database="app", namespace=["analytics"])
+    assert restricted.can_list_tables(database="app", namespace=["analytics"])
+    assert restricted.can_create_table(database="app", namespace=["analytics"])
+    assert not restricted.can_drop_database(database="app", namespace=["analytics"])
+    assert not restricted.can_execute(database="app", namespace=["analytics"])
+    assert restricted.can_read(
+        database="app", table="read_only", namespace=["analytics"]
+    )
+    assert not restricted.can_write(
+        database="app", table="read_only", namespace=["analytics"]
+    )
+    assert restricted.can_write(
+        database="app", table="write_only", namespace=["analytics"]
+    )
+    assert not restricted.can_read(
+        database="app", table="write_only", namespace=["analytics"]
+    )
+    assert restricted.can_alter(database="app", table="schema", namespace=["analytics"])
+    assert not restricted.can_alter(database="app", table="schema", namespace=["other"])
+    assert not restricted.can_read(
+        database="app", table="unknown", namespace=["analytics"]
+    )
+    assert not restricted.can_read(
+        database="app", table="read_only", namespace=["other"]
+    )
+    assert not restricted.can_inspect_database(
+        database="other", namespace=["analytics"]
+    )
+
+
+def test_api_scope_defaults_include_sqlite_grant() -> None:
+    assert ApiScope.agent_default().sqlite == SqliteGrant()
+    assert ApiScope.user_default().sqlite == SqliteGrant()
+    assert ApiScope.full().sqlite == SqliteGrant()
 
 
 @pytest.mark.parametrize("legacy_key", ["database", "datasets"])
@@ -323,9 +435,11 @@ def test_token_json_round_trip() -> None:
 
 def test_token_jwt_round_trip() -> None:
     pt = ParticipantToken(name="dave")
-    jwt_str = pt.to_jwt()
+    jwt_str = pt.to_jwt(token="test-secret-0123456789abcdef012345")
 
-    recovered = ParticipantToken.from_jwt(jwt_str)
+    recovered = ParticipantToken.from_jwt(
+        jwt_str, token="test-secret-0123456789abcdef012345"
+    )
     assert recovered.name == "dave"
 
 
