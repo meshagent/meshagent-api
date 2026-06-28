@@ -3143,6 +3143,15 @@ class ToolkitDescription:
         }
 
 
+class ServiceRuntimeEvent(BaseModel):
+    type: str
+    reason: str
+    message: str
+    count: int = 1
+    first_timestamp: float
+    last_timestamp: float
+
+
 class ServiceRuntimeState(BaseModel):
     service_id: str
     state: str
@@ -3152,6 +3161,9 @@ class ServiceRuntimeState(BaseModel):
     restart_count: int = 0
     last_exit_code: Optional[int] = None
     last_exit_at: Optional[float] = None
+    last_start_error: Optional[str] = None
+    last_start_error_at: Optional[float] = None
+    events: list[ServiceRuntimeEvent] = Field(default_factory=list)
 
 
 class ListServicesResult(BaseModel):

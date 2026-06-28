@@ -249,7 +249,9 @@ ANNOTATION_REQUEST_VALIDATION_METHOD = "meshagent.request.validation.method"
 ANNOTATION_REQUEST_VALIDATION_SECRET = "meshagent.request.validation.secret"
 ANNOTATION_STORAGE_CLASS = "meshagent.storage.class"
 ANNOTATION_STORAGE_CAPACITY = "meshagent.storage.capacity"
-ANNOTATION_STORAGE_ZEROFS_FORMAT = "meshagent.storage.zerofs.format"
+ANNOTATION_FILES_ROOT = "meshagent.files.root"
+ANNOTATION_DATASETS_ROOT = "meshagent.datasets.root"
+ANNOTATION_SQLLITE_ROOT = "meshagent.sqllite.root"
 ANNOTATION_STORAGE_JUICE_WRITE_SYNC_INTERVAL = (
     "meshagent.storage.juice.write-sync-interval"
 )
@@ -402,6 +404,13 @@ class ContainerSpec(BaseModel):
 
     command: Optional[str] = None
     working_dir: Optional[str] = None
+    pull_secret: Optional[SecretValue] = Field(
+        None,
+        description=(
+            "service account secret containing Docker registry credentials for "
+            "pulling this container image"
+        ),
+    )
     environment: Optional[list[EnvironmentVariable]] = None
     storage: Optional[ContainerMountSpec] = Field(
         None, description="storage mounts that should be provided to this container"

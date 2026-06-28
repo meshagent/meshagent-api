@@ -320,6 +320,7 @@ class ServiceAccount(BaseModel):
     project_id: str
     key: str
     name: str
+    email: Optional[str] = None
     display_name: Optional[str] = None
     description: str = ""
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
@@ -350,6 +351,14 @@ class ApiKeysPage(BaseModel):
 
 class ApiKeysRevocationResult(BaseModel):
     revoked: list[str] = Field(default_factory=list)
+
+
+class Whoami(BaseModel):
+    id: str
+    email: str
+    type: Literal["user", "service_account"]
+    service_account: Optional[ServiceAccount] = None
+    user: Optional["User"] = None
 
 
 class GroupMember(BaseModel):
@@ -878,11 +887,6 @@ class UpdateProjectRepositoryRequest(_RepositoryRequestBase):
     pass
 
 
-# Backward-compatible aliases for older internal imports.
-_CreateProjectRepositoryRequest = CreateProjectRepositoryRequest
-_UpdateProjectRepositoryRequest = UpdateProjectRepositoryRequest
-
-
 class ProjectRepository(BaseModel):
     id: str
     project_id: str
@@ -1374,6 +1378,13 @@ class Meshagent:
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             return await self._read_model(resp, ProjectInfo)
+
+    async def whoami(self) -> Whoami:
+        """GET /accounts/whoami."""
+        url = f"{self.base_url}/accounts/whoami"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, Whoami)
 
     async def list_service_accounts(
         self,

@@ -4149,6 +4149,23 @@ async def test_services_client_uses_room_invoke_and_translates_service_states() 
                             "restart_count": 2,
                             "last_exit_code": 137,
                             "last_exit_at": 122.0,
+                            "last_start_error": (
+                                "container.environment.token.identity is required"
+                            ),
+                            "last_start_error_at": 124.0,
+                            "events": [
+                                {
+                                    "type": "Warning",
+                                    "reason": "FailedStart",
+                                    "message": (
+                                        "Unable to start service svc-1: "
+                                        "container.environment.token.identity is required"
+                                    ),
+                                    "count": 2,
+                                    "first_timestamp": 123.0,
+                                    "last_timestamp": 124.0,
+                                }
+                            ],
                         }
                     ],
                 }
@@ -4170,6 +4187,36 @@ async def test_services_client_uses_room_invoke_and_translates_service_states() 
     assert result.services[0].id == "svc-1"
     assert result.service_states["svc-1"].state == "running"
     assert result.service_states["svc-1"].container_id == "container-123"
+    assert (
+        result.service_states["svc-1"].last_start_error
+        == "container.environment.token.identity is required"
+    )
+    assert result.service_states["svc-1"].events[0].reason == "FailedStart"
+    assert "token.identity" in result.service_states["svc-1"].events[0].message
+
+
+@pytest.mark.asyncio
+async def test_services_client_defaults_missing_service_events() -> None:
+    client = ServicesClient(
+        room=_StaticInvokeRoom(
+            JsonContent(
+                json={
+                    "service_states": [
+                        {
+                            "service_id": "svc-1",
+                            "state": "running",
+                        }
+                    ],
+                }
+            )
+        )
+    )  # type: ignore[arg-type]
+
+    result = await client.list_with_state()
+
+    assert result.service_states["svc-1"].restart_count == 0
+    assert result.service_states["svc-1"].last_start_error is None
+    assert result.service_states["svc-1"].events == []
 
 
 @pytest.mark.asyncio

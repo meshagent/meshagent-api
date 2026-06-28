@@ -170,6 +170,47 @@ async def test_get_current_user_llm_proxy_usage_builds_request_and_reads_usage()
 
 
 @pytest.mark.asyncio
+async def test_whoami_reads_typed_service_account_response():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "service-account-1",
+                    "email": "worker@service.project.api.example.com",
+                    "type": "service_account",
+                    "service_account": {
+                        "id": "service-account-1",
+                        "project_id": "project-1",
+                        "key": "service-account-key",
+                        "name": "worker",
+                        "email": "worker@service.project.api.example.com",
+                        "display_name": "Worker",
+                        "description": "",
+                        "metadata": {},
+                        "annotations": {},
+                    },
+                    "user": None,
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    identity = await client.whoami()
+
+    assert identity.type == "service_account"
+    assert identity.id == "service-account-1"
+    assert identity.email == "worker@service.project.api.example.com"
+    assert identity.service_account is not None
+    assert identity.service_account.email == identity.email
+    assert identity.user is None
+    assert session.calls == [
+        ("get", "http://example.test/accounts/whoami", None),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_render_template_accepts_decoded_json_response():
     session = _FakeSession(
         [

@@ -126,17 +126,17 @@ container:
     assert restored.files[0].text == "Review recent room activity before acting."
 
 
-def test_secret_value_rejects_identity_field() -> None:
+def test_secret_value_is_id_only() -> None:
     secret = SecretValue.model_validate({"id": "secret-1"})
 
     assert secret.model_dump(mode="json") == {"id": "secret-1"}
     with pytest.raises(ValidationError):
-        SecretValue.model_validate({"id": "secret-1", "identity": "agent"})
+        SecretValue.model_validate({"id": "secret-1", "name": "secret-name"})
     with pytest.raises(ValidationError):
         EnvironmentVariable.model_validate(
             {
                 "name": "TOKEN",
-                "secret": {"id": "secret-1", "identity": "agent"},
+                "secret": {"id": "secret-1", "name": "secret-name"},
             }
         )
 
