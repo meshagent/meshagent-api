@@ -1,4 +1,3 @@
-import json
 import logging
 from jsonschema import validate
 
@@ -52,7 +51,7 @@ def test_document_to_json_from_json_produces_valid_json():
 
         validate(expected, schema=schema.to_json())
 
-        assert json.dumps(to_json) == json.dumps(expected)
+        assert to_json == expected
 
 
 def test_append_single_json():
@@ -63,7 +62,7 @@ def test_append_single_json():
         # copy.root["attr"] = "test"
         copy.root.append_json(expected["root"]["children"][0])
 
-        assert json.dumps(copy.root.to_json()) == json.dumps(expected)
+        assert copy.root.to_json() == expected
 
 
 def test_get_children_by_tag_name_():
@@ -105,4 +104,4 @@ def test_doc_from_json():
     with DocumentRuntime() as rt:
         copy = rt.new_document(schema=schema, json=expected)
 
-        assert json.dumps(copy.root.to_json()) == json.dumps(expected)
+        assert copy.root.to_json() == expected

@@ -394,4 +394,4 @@ def test_roudntrip_schema_json():
 
     json2 = s2.to_json()
 
-    assert json.dumps(json1) == json.dumps(json2)
+    assert json1 == json2
