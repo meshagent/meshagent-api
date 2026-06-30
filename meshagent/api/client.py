@@ -1393,6 +1393,7 @@ class Meshagent:
         page_size: int | None = None,
         continuation_token: str | None = None,
         filter: str | None = None,
+        view: str | None = None,
     ) -> ServiceAccountsPage:
         """GET /accounts/projects/{project_id}/service-accounts."""
         url = f"{self.base_url}/accounts/projects/{project_id}/service-accounts"
@@ -1403,6 +1404,8 @@ class Meshagent:
             params["continuation_token"] = continuation_token
         if filter is not None:
             params["filter"] = filter
+        if view is not None:
+            params["view"] = view
 
         async with self._session.get(
             url,
