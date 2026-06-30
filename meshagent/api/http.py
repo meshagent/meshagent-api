@@ -2,19 +2,69 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+import os
 import ssl
 
 from aiohttp import ClientSession, TCPConnector
+from aiohttp.abc import AbstractResolver
+from aiohttp.resolver import DefaultResolver
 import certifi
 
 LLM_ANNOTATION_HEADER_PREFIX = "X-Meshagent-Annotation-"
 _LLM_ANNOTATION_HEADER_PREFIX_LOWER = LLM_ANNOTATION_HEADER_PREFIX.lower()
 
 
+class _HostAliasResolver(AbstractResolver):
+    def __init__(self, aliases: Mapping[str, str]) -> None:
+        self._aliases = aliases
+        self._resolver = DefaultResolver()
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: int = 0,
+    ) -> list[dict[str, Any]]:
+        return await self._resolver.resolve(
+            self._aliases.get(host, host),
+            port=port,
+            family=family,
+        )
+
+    async def close(self) -> None:
+        await self._resolver.close()
+
+
+def _http_host_aliases() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for item in os.environ.get("MESHAGENT_HTTP_HOST_ALIASES", "").split(","):
+        source, separator, target = item.partition("=")
+        if separator != "=":
+            continue
+        source = source.strip()
+        target = target.strip()
+        if source and target:
+            aliases[source] = target
+    return aliases
+
+
+def new_tcp_connector(*args: Any, **kwargs: Any) -> TCPConnector:
+    if "ssl" not in kwargs:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        extra_ca_file = os.environ.get("MESHAGENT_EXTRA_CA_FILE", "").strip()
+        if extra_ca_file:
+            ssl_context.load_verify_locations(cafile=extra_ca_file)
+        kwargs["ssl"] = ssl_context
+    if "resolver" not in kwargs:
+        aliases = _http_host_aliases()
+        if aliases:
+            kwargs["resolver"] = _HostAliasResolver(aliases)
+    return TCPConnector(*args, **kwargs)
+
+
 def new_client_session(*args: Any, **kwargs: Any) -> ClientSession:
     if "connector" not in kwargs:
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        kwargs["connector"] = TCPConnector(ssl=ssl_context)
+        kwargs["connector"] = new_tcp_connector()
     return ClientSession(*args, **kwargs)
 
 
