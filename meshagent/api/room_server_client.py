@@ -25,6 +25,7 @@ from pydantic import (
     Field,
     JsonValue,
     ConfigDict,
+    PositiveInt,
     ValidationError,
     field_validator,
 )
@@ -3152,6 +3153,18 @@ class ServiceRuntimeEvent(BaseModel):
     last_timestamp: float
 
 
+class ServicePortRuntimeState(BaseModel):
+    num: Literal["*"] | PositiveInt
+    liveness: Optional[str] = None
+    liveness_status: Literal["not_configured", "not_ready", "ready"] = "not_configured"
+    last_checked_at: Optional[float] = None
+    last_error: Optional[str] = None
+
+
+class ServiceRuntimeStatus(BaseModel):
+    ports: list[ServicePortRuntimeState] = Field(default_factory=list)
+
+
 class ServiceRuntimeState(BaseModel):
     service_id: str
     state: str
@@ -3163,6 +3176,7 @@ class ServiceRuntimeState(BaseModel):
     last_exit_at: Optional[float] = None
     last_start_error: Optional[str] = None
     last_start_error_at: Optional[float] = None
+    status: ServiceRuntimeStatus = Field(default_factory=ServiceRuntimeStatus)
     events: list[ServiceRuntimeEvent] = Field(default_factory=list)
 
 

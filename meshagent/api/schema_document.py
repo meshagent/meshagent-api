@@ -491,7 +491,8 @@ class Document(EventEmitter):
                         self._root.append_json(c)
 
                 else:
-                    self._root[k] = v
+                    self._root.schema.property(k)
+                    self._root._data["attributes"][k] = v
 
         else:
             self._root = Element(

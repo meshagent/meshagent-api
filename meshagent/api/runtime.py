@@ -96,7 +96,7 @@ class DocumentRuntime(AbstractContextManager):
         self._docs[doc.id] = doc
 
         def send_update_to_backend(bytes: str):
-            runtime.on_document_sync(
+            self.on_document_sync(
                 document_id=doc.id, base64=b64.b64encode(bytes).decode()
             )
 

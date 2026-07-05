@@ -2577,6 +2577,64 @@ async def test_memory_client_list_validates_typed_response() -> None:
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
 
+def test_memory_ingest_request_temperature_uses_pydantic_float_coercion() -> None:
+    request_model = room_server_client._MemoryIngestTextRequest
+
+    assert (
+        request_model.model_validate(
+            {"name": "graph", "text": "Alice", "llm_temperature": "0.4"}
+        ).llm_temperature
+        == 0.4
+    )
+    assert (
+        request_model.model_validate(
+            {"name": "graph", "text": "Alice", "llm_temperature": 1}
+        ).llm_temperature
+        == 1.0
+    )
+    assert (
+        request_model.model_validate(
+            {"name": "graph", "text": "Alice", "llm_temperature": True}
+        ).llm_temperature
+        == 1.0
+    )
+    assert (
+        request_model.model_validate(
+            {"name": "graph", "text": "Alice", "llm_temperature": None}
+        ).llm_temperature
+        is None
+    )
+
+    with pytest.raises(ValidationError):
+        request_model.model_validate(
+            {"name": "graph", "text": "Alice", "llm_temperature": ""}
+        )
+
+
+def test_memory_integer_limits_use_pydantic_int_coercion() -> None:
+    ingest_request_model = room_server_client._MemoryIngestFromTableRequest
+    recall_request_model = room_server_client._MemoryRecallRequest
+
+    for value in ["5", "5.0", 5.0, True, False, -1, "-1.0", None]:
+        assert ingest_request_model.model_validate(
+            {"name": "graph", "table": "Entity", "limit": value}
+        ).limit == (value if value is None else int(float(value)))
+
+    for value in ["5", "5.0", 5.0, True, False, -1, "-1.0"]:
+        assert recall_request_model.model_validate(
+            {"name": "graph", "query": "Alice", "limit": value}
+        ).limit == int(float(value))
+
+    with pytest.raises(ValidationError):
+        ingest_request_model.model_validate(
+            {"name": "graph", "table": "Entity", "limit": "5.5"}
+        )
+    with pytest.raises(ValidationError):
+        recall_request_model.model_validate(
+            {"name": "graph", "query": "Alice", "limit": None}
+        )
+
+
 @pytest.mark.asyncio
 async def test_memory_client_uses_room_invoke_for_commands() -> None:
     class _FakeMemoryRoom(_FakeRoom):

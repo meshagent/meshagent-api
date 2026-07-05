@@ -73,7 +73,7 @@ class ServerXmlDocument:
             doc["xml"] = XmlFragment()
         self._root: XmlFragment = doc["xml"]  # fragment not element
         self.doc = doc
-        self._undo_mgr = UndoManager(self._root) if undo else None
+        self._undo_mgr = UndoManager(scopes=[self._root]) if undo else None
         self._notify = notify_changes
 
         # Deep observation (all element / text descendants):contentReference[oaicite:0]{index=0}
