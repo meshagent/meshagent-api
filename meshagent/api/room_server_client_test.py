@@ -3702,6 +3702,20 @@ async def test_sqlite_client_unexpected_response_uses_error_code() -> None:
 
 @pytest.mark.asyncio
 async def test_sqlite_client_validates_typed_responses() -> None:
+    async def assert_unexpected_response(call: Callable[[], object]) -> None:
+        with pytest.raises(
+            RoomException,
+            match=r"unexpected return type from sqlite\.",
+        ) as ex:
+            result = call()
+            if hasattr(result, "__await__"):
+                await result
+            else:
+                async for _ in result:  # type: ignore[union-attr]
+                    pass
+
+        assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
     malformed_databases_client = SqliteClient(
         room=_StaticInvokeRoom(JsonContent(json={"databases": ["app", 2]}))
     )  # type: ignore[arg-type]
@@ -3721,6 +3735,26 @@ async def test_sqlite_client_validates_typed_responses() -> None:
         RoomException, match="unexpected return type from sqlite.list_tables"
     ) as ex:
         await malformed_tables_client.list_tables(database="app")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    malformed_inspect_database_client = SqliteClient(
+        room=_StaticInvokeRoom(
+            JsonContent(
+                json={
+                    "name": "app",
+                    "namespace": ["team"],
+                    "tables": "1",
+                    "size_bytes": 1024,
+                }
+            )
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.inspect_database"
+    ) as ex:
+        await malformed_inspect_database_client.inspect_database(name="app")
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
@@ -3744,6 +3778,147 @@ async def test_sqlite_client_validates_typed_responses() -> None:
         )
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    await assert_unexpected_response(
+        lambda: (
+            SqliteClient(  # type: ignore[arg-type]
+                room=_StaticInvokeRoom(JsonContent(json={"count": "1"}))
+            )
+            .database("app")
+            .count(table="records")
+        )
+    )
+    await assert_unexpected_response(
+        lambda: (
+            SqliteClient(  # type: ignore[arg-type]
+                room=_StaticInvokeRoom(JsonContent(json={"rows_affected": "2"}))
+            )
+            .database("app")
+            .update(table="records", where="id = ?", values={"name": "x"})
+        )
+    )
+    await assert_unexpected_response(
+        lambda: (
+            SqliteClient(  # type: ignore[arg-type]
+                room=_StaticInvokeRoom(JsonContent(json={"rows_affected": "2"}))
+            )
+            .database("app")
+            .delete(table="records", where="id = ?")
+        )
+    )
+    await assert_unexpected_response(
+        lambda: (
+            SqliteClient(  # type: ignore[arg-type]
+                room=_StaticInvokeRoom(
+                    JsonContent(json={"kind": "statement", "rows_affected": "3"})
+                )
+            )
+            .database("app")
+            .execute_sql(query="DELETE FROM records")
+        )
+    )
+    await assert_unexpected_response(
+        lambda: (
+            SqliteClient(  # type: ignore[arg-type]
+                room=_StaticInvokeRoom(JsonContent(json={"rows_affected": "3"}))
+            )
+            .database("app")
+            .execute_sql_statement(query="DELETE FROM records")
+        )
+    )
+    await assert_unexpected_response(
+        lambda: SqliteClient(  # type: ignore[arg-type]
+            room=_StaticInvokeRoom(JsonContent(json={"status": "bad"}))
+        ).cancel_sql_query(query_id="sqlite-query-1")
+    )
+    await assert_unexpected_response(
+        lambda: (
+            SqliteClient(  # type: ignore[arg-type]
+                room=_StaticInvokeRoom(
+                    BinaryContent(
+                        data=room_server_client._schema_to_arrow_ipc(
+                            pa.schema([pa.field("id", pa.int64())])
+                        ),
+                        headers={"kind": "query", "query_id": 123},
+                    )
+                )
+            )
+            .database("app")
+            .execute_sql(query="SELECT id FROM records")
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_client_propagates_stream_errors_and_rejects_malformed_chunks() -> (
+    None
+):
+    class _StaticStreamInvokeRoom:
+        def __init__(self, chunks: list[Content]):
+            self.chunks = chunks
+
+        async def invoke(self, **kwargs) -> AsyncIterable[Content]:
+            del kwargs
+
+            async def stream() -> AsyncIterator[Content]:
+                for chunk in self.chunks:
+                    yield chunk
+
+            return stream()
+
+    malformed_write_client = SqliteClient(
+        room=_StaticStreamInvokeRoom(
+            [BinaryContent(data=b"", headers={"kind": "data"})]
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.create_table"
+    ) as ex:
+        await malformed_write_client.database("app").create_table_from_data(
+            name="records",
+            data=pa.table({"id": [1]}),
+        )
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    write_error_client = SqliteClient(
+        room=_StaticStreamInvokeRoom(
+            [ErrorContent(text="write failed", code=ErrorCode.INVALID_REQUEST)]
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(RoomException, match="write failed") as ex:
+        await write_error_client.database("app").insert(
+            table="records",
+            records=pa.table({"id": [1]}),
+        )
+
+    assert ex.value.code == ErrorCode.INVALID_REQUEST
+
+    malformed_read_client = SqliteClient(
+        room=_StaticStreamInvokeRoom(
+            [BinaryContent(data=b"", headers={"kind": "pull"})]
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(
+        RoomException, match="unexpected return type from sqlite.search"
+    ) as ex:
+        await malformed_read_client.database("app").search(table="records")
+
+    assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+    read_error_client = SqliteClient(
+        room=_StaticStreamInvokeRoom(
+            [ErrorContent(text="read failed", code=ErrorCode.INVALID_REQUEST)]
+        )
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(RoomException, match="read failed") as ex:
+        await read_error_client.database("app").search(table="records")
+
+    assert ex.value.code == ErrorCode.INVALID_REQUEST
 
 
 @pytest.mark.asyncio

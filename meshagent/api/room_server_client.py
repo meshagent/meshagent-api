@@ -5610,54 +5610,56 @@ class SqliteDatabaseDetails(BaseModel):
     tables: int | None = None
     size_bytes: int | None = None
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
 
 class _SqliteListDatabasesResponse(BaseModel):
     databases: list[str]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteListTablesResponse(BaseModel):
     tables: list[str]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteRowsAffectedResponse(BaseModel):
     rows_affected: int
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteCountResponse(BaseModel):
     count: int
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteStatementResponse(_SqliteRowsAffectedResponse):
     kind: Literal["statement"]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteCancelResponse(BaseModel):
     status: Literal["cancelled", "cancelling", "not_cancellable"]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteQueryHeaders(BaseModel):
     kind: Literal["query"]
     query_id: str
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteKindHeaders(BaseModel):
     kind: str
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -7771,7 +7773,10 @@ class SqliteClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="inspect_database")
-        return SqliteDatabaseDetails.model_validate(response.json)
+        try:
+            return SqliteDatabaseDetails.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="inspect_database") from exc
 
     async def list_tables(
         self, *, database: str, namespace: Optional[list[str]] = None
