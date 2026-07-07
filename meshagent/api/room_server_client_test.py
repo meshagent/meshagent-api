@@ -4345,7 +4345,7 @@ async def test_services_client_unexpected_response_uses_error_code() -> None:
     with pytest.raises(
         RoomException, match="unexpected return type from services.list"
     ) as ex:
-        await client.list_with_state()
+        await client.list()
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 
@@ -4407,7 +4407,7 @@ async def test_services_client_uses_room_invoke_and_translates_service_states() 
     room = _InvokeRoom()
     client = ServicesClient(room=room)  # type: ignore[arg-type]
 
-    result = await client.list_with_state()
+    result = await client.list()
 
     assert room.calls == [
         {
@@ -4445,7 +4445,7 @@ async def test_services_client_defaults_missing_service_events() -> None:
         )
     )  # type: ignore[arg-type]
 
-    result = await client.list_with_state()
+    result = await client.list()
 
     assert result.service_states["svc-1"].restart_count == 0
     assert result.service_states["svc-1"].last_start_error is None
@@ -4521,7 +4521,7 @@ async def test_services_client_rejects_nested_service_spec_invalid_payloads() ->
         with pytest.raises(
             RoomException, match="unexpected return type from services.list"
         ) as ex:
-            await client.list_with_state()
+            await client.list()
 
         assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
 

@@ -3212,15 +3212,6 @@ class ServicesClient:
 
     async def list(
         self,
-    ) -> List[ServiceSpec]:
-        """
-        Fetch a list of services.
-        """
-
-        return (await self.list_with_state()).services
-
-    async def list_with_state(
-        self,
     ) -> ListServicesResult:
         """
         Fetch a list of services plus runtime state details from the service controller.
