@@ -55,7 +55,7 @@ agents:
         - name: helper-tools
     heartbeat:
       queue: heartbeats
-      path: /agents/agent-1/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread
+      thread_id: /agents/agent-1/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread
       prompt:
         - type: file
           url: room:///agents/agent-1/heartbeat.md
@@ -103,7 +103,7 @@ container:
     assert restored.agents[0].heartbeat is not None
     assert restored.agents[0].heartbeat.queue == "heartbeats"
     assert (
-        restored.agents[0].heartbeat.path
+        restored.agents[0].heartbeat.thread_id
         == "/agents/agent-1/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread"
     )
     assert restored.agents[0].heartbeat.minutes == 60
@@ -124,40 +124,6 @@ container:
     assert isinstance(restored.files[0], ServiceFileSpec)
     assert restored.files[0].path == "/agents/agent-1/heartbeat.md"
     assert restored.files[0].text == "Review recent room activity before acting."
-
-
-def test_service_spec_heartbeat_accepts_thread_id_alias() -> None:
-    yaml_spec = """
-version: v1
-kind: Service
-metadata:
-  name: heartbeat-alias-service
-agents:
-  - name: agent-1
-    heartbeat:
-      queue: heartbeats
-      thread_id: /agents/agent-1/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread
-      prompt:
-        - type: text
-          text: Review the pending room activity
-      minutes: 60
-container:
-  image: meshagent/example
-"""
-
-    service = ServiceSpec.from_yaml(yaml_spec)
-    assert service.agents is not None
-    assert service.agents[0].heartbeat is not None
-    assert (
-        service.agents[0].heartbeat.path
-        == "/agents/agent-1/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread"
-    )
-    assert (
-        service.model_dump(mode="json", exclude_none=True)["agents"][0]["heartbeat"][
-            "path"
-        ]
-        == "/agents/agent-1/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread"
-    )
 
 
 def test_secret_value_is_id_only() -> None:
@@ -266,7 +232,7 @@ agents:
       address: "helper-{{role}}@example.com"
     heartbeat:
       queue: heartbeats
-      path: /agents/helper/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread
+      thread_id: /agents/helper/threads/heartbeats/{YYYY}/{MM}/{DD}/{HH}/{mm}/heartbeat.thread
       prompt:
         - type: text
           text: Summarize the request

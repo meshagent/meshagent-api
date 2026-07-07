@@ -1,5 +1,4 @@
 from pydantic import (
-    AliasChoices,
     BaseModel,
     PositiveInt,
     ConfigDict,
@@ -349,10 +348,7 @@ class HeartbeatSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     queue: str
-    path: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("path", "thread_id"),
-    )
+    thread_id: Optional[str] = None
     prompt: Optional[list[AgentInputContent]] = None
     minutes: PositiveInt
 
