@@ -557,7 +557,6 @@ class SecretVersion(BaseModel):
     id: str
     secret_id: str
     version: int
-    encryption_key_id: str
     value_sha256: Optional[str] = None
     created_by_user_id: Optional[str] = None
     created_by_service_account_id: Optional[str] = None

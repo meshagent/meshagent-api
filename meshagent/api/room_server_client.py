@@ -25,6 +25,7 @@ from pydantic import (
     Field,
     JsonValue,
     ConfigDict,
+    PositiveInt,
     ValidationError,
     field_validator,
 )
@@ -3152,6 +3153,18 @@ class ServiceRuntimeEvent(BaseModel):
     last_timestamp: float
 
 
+class ServicePortRuntimeState(BaseModel):
+    num: Literal["*"] | PositiveInt
+    liveness: Optional[str] = None
+    liveness_status: Literal["not_configured", "not_ready", "ready"] = "not_configured"
+    last_checked_at: Optional[float] = None
+    last_error: Optional[str] = None
+
+
+class ServiceRuntimeStatus(BaseModel):
+    ports: list[ServicePortRuntimeState] = Field(default_factory=list)
+
+
 class ServiceRuntimeState(BaseModel):
     service_id: str
     state: str
@@ -3163,6 +3176,7 @@ class ServiceRuntimeState(BaseModel):
     last_exit_at: Optional[float] = None
     last_start_error: Optional[str] = None
     last_start_error_at: Optional[float] = None
+    status: ServiceRuntimeStatus = Field(default_factory=ServiceRuntimeStatus)
     events: list[ServiceRuntimeEvent] = Field(default_factory=list)
 
 
@@ -3197,15 +3211,6 @@ class ServicesClient:
         )
 
     async def list(
-        self,
-    ) -> List[ServiceSpec]:
-        """
-        Fetch a list of services.
-        """
-
-        return (await self.list_with_state()).services
-
-    async def list_with_state(
         self,
     ) -> ListServicesResult:
         """
@@ -5596,54 +5601,56 @@ class SqliteDatabaseDetails(BaseModel):
     tables: int | None = None
     size_bytes: int | None = None
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
 
 class _SqliteListDatabasesResponse(BaseModel):
     databases: list[str]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteListTablesResponse(BaseModel):
     tables: list[str]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteRowsAffectedResponse(BaseModel):
     rows_affected: int
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteCountResponse(BaseModel):
     count: int
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteStatementResponse(_SqliteRowsAffectedResponse):
     kind: Literal["statement"]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteCancelResponse(BaseModel):
     status: Literal["cancelled", "cancelling", "not_cancellable"]
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteQueryHeaders(BaseModel):
     kind: Literal["query"]
     query_id: str
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class _SqliteKindHeaders(BaseModel):
     kind: str
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -7757,7 +7764,10 @@ class SqliteClient:
         )
         if not isinstance(response, JsonContent):
             raise self._unexpected_response_error(operation="inspect_database")
-        return SqliteDatabaseDetails.model_validate(response.json)
+        try:
+            return SqliteDatabaseDetails.model_validate(response.json)
+        except ValidationError as exc:
+            raise self._unexpected_response_error(operation="inspect_database") from exc
 
     async def list_tables(
         self, *, database: str, namespace: Optional[list[str]] = None

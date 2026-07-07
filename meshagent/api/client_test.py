@@ -916,7 +916,7 @@ def _secret_version_payload(**overrides):
         "id": "version-1",
         "secret_id": "secret-1",
         "version": 1,
-        "encryption_key_id": "key-1",
+        "encryption_key_id": "supabase-vault",
         "value_sha256": None,
         "created_by_user_id": "user-1",
         "created_by_service_account_id": None,
@@ -1059,7 +1059,9 @@ async def test_user_secret_methods_use_new_user_scoped_routes():
     assert fetched.value_base64 == base64.b64encode(b"value").decode()
     assert updated.name == "renamed"
     assert versions[0].version == 1
+    assert not hasattr(versions[0], "encryption_key_id")
     assert created_version.value_sha256 == base64.b64encode(b"hash").decode()
+    assert not hasattr(created_version, "encryption_key_id")
     assert version_value == b"version value"
     assert proxy_access.continuation_token == "next-grants-page"
     assert proxy_access.access_grants[0].subject.type == "service_account"
@@ -1367,7 +1369,9 @@ async def test_service_account_secret_methods_use_service_account_scoped_routes(
     assert fetched.value_base64 == base64.b64encode(b"service value").decode()
     assert updated.http_only is True
     assert versions[0].created_by_service_account_id == "sa-1"
+    assert not hasattr(versions[0], "encryption_key_id")
     assert created_version.id == "version-2"
+    assert not hasattr(created_version, "encryption_key_id")
     assert version_value == b"service version value"
     assert pull_secrets[0].owner_service_account_id == "sa-1"
     assert session.calls == [
