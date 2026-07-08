@@ -914,6 +914,14 @@ class ProjectInfo(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    def __contains__(self, key: str) -> bool:
+        return key in type(self).model_fields
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in type(self).model_fields:
+            raise KeyError(key)
+        return self.__dict__[key]
+
 
 class CreateProjectRequest(BaseModel):
     name: str
@@ -922,6 +930,14 @@ class CreateProjectRequest(BaseModel):
 
 class ProjectsPage(BaseModel):
     projects: list[ProjectInfo]
+
+    def __contains__(self, key: str) -> bool:
+        return key in type(self).model_fields
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in type(self).model_fields:
+            raise KeyError(key)
+        return self.__dict__[key]
 
 
 class CreateRepositoryTokenRequest(BaseModel):
