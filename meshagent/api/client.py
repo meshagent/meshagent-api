@@ -908,11 +908,20 @@ class ProjectInfo(BaseModel):
     id: str
     owner_user_id: str | None = Field(default=None, alias="owner_user_id")
     name: str
-    project_key: str
+    project_key: str | None = None
     created_at: datetime | None = Field(default=None, alias="created_at")
     settings: dict[str, JsonValue] | None = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    settings: dict[str, JsonValue] | None = None
+
+
+class ProjectsPage(BaseModel):
+    projects: list[ProjectInfo]
 
 
 class CreateRepositoryTokenRequest(BaseModel):
@@ -1190,22 +1199,23 @@ class Meshagent:
             return await resp.read()
 
     async def create_project(
-        self, name: str, settings: Optional[dict] = None
-    ) -> Dict[str, Any]:
+        self, name: str, settings: dict[str, JsonValue] | None = None
+    ) -> ProjectInfo:
         """
         Corresponds to: POST /accounts/projects
         Body: { "name": "<name>" }
-        Returns a JSON dict with { "id", "owner_user_id", "name", "project_key" } on success.
+        Returns { "id", "owner_user_id", "name", "project_key" } on success.
         """
         url = f"{self.base_url}/accounts/projects"
+        request = CreateProjectRequest(name=name, settings=settings)
 
         async with self._session.post(
             url,
             headers=self._get_headers(),
-            json={"name": name, "settings": settings},
+            json=request.model_dump(mode="json"),
         ) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            return await self._read_model(resp, ProjectInfo)
 
     async def add_user_to_project(
         self,
@@ -1338,29 +1348,29 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
-    async def list_projects(self) -> Dict[str, Any]:
+    async def list_projects(self) -> ProjectsPage:
         """
         Corresponds to: GET /accounts/projects
-        Returns a JSON dict with { "projects": [...] }.
+        Returns { "projects": [...] }.
         """
         url = f"{self.base_url}/accounts/projects"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            return await self._read_model(resp, ProjectsPage)
 
-    async def get_project(self, project_id: str) -> Dict[str, Any]:
+    async def get_project(self, project_id: str) -> ProjectInfo:
         """
         Corresponds to: GET /accounts/projects
-        Returns a JSON dict with { "projects": [...] }.
+        Returns a project.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}"
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            return await self._read_model(resp, ProjectInfo)
 
-    async def get_project_by_key(self, project_key: str) -> Dict[str, Any]:
+    async def get_project_by_key(self, project_key: str) -> ProjectInfo:
         """
         Corresponds to: GET /accounts/projects/by-key/{project_key}
         Returns a JSON dict with { "id", "owner_user_id", "name", "project_key" }.
@@ -1369,7 +1379,7 @@ class Meshagent:
 
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
-            return await resp.json()
+            return await self._read_model(resp, ProjectInfo)
 
     async def get_project_info(self, project_id: str) -> ProjectInfo:
         url = f"{self.base_url}/accounts/projects/{project_id}"

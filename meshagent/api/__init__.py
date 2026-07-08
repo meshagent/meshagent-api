@@ -33,10 +33,12 @@ from .room_server_client import (
 )
 from .client import (
     Meshagent,
+    CreateProjectRequest,
     CreateProjectRepositoryRequest,
     CreateRepositoryTokenRequest,
     UpdateProjectRepositoryRequest,
     ProjectInfo,
+    ProjectsPage,
     ProjectRepository,
     RepositoryToken,
 )
@@ -104,10 +106,12 @@ from .dataset_schema import LANCE_COMPRESSION_METADATA_KEY, LANCE_ZSTD_FIELD_MET
 
 __all__ = [
     "Meshagent",
+    "CreateProjectRequest",
     "CreateProjectRepositoryRequest",
     "CreateRepositoryTokenRequest",
     "UpdateProjectRepositoryRequest",
     "ProjectInfo",
+    "ProjectsPage",
     "ProjectRepository",
     "RepositoryToken",
     "DatasetJson",
