@@ -260,6 +260,7 @@ class ServiceHost:
                 )
 
         host = ServiceWebhookServer(
+            webhook_secret=self.webhook_secret,
             validate_webhook_secret=self.webhook_secret is not None,
             path=p.path,
             app=self._app,
