@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import mimetypes
 import os
 import warnings
 import aiohttp
@@ -53,6 +52,7 @@ from meshagent.api.chan import ChanClosed
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
 from meshagent.api.messaging import MessageProtocolError, pack_message, unpack_message
+from meshagent.api.mime_types import guess_mime_type
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
 from meshagent.api.messaging import (
@@ -3875,7 +3875,7 @@ class StorageClient:
     def _default_upload_mime_type(*, name: str, mime_type: str | None) -> str:
         if isinstance(mime_type, str) and mime_type != "":
             return mime_type
-        guessed_mime_type, _ = mimetypes.guess_type(name)
+        guessed_mime_type = guess_mime_type(name)
         if guessed_mime_type is None:
             return "application/octet-stream"
         return guessed_mime_type
