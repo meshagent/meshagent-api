@@ -247,6 +247,9 @@ ANNOTATION_REQUEST_PROCESSOR = "meshagent.request.processor"
 ANNOTATION_REQUEST_QUEUE = "meshagent.request.queue"
 ANNOTATION_REQUEST_VALIDATION_METHOD = "meshagent.request.validation.method"
 ANNOTATION_REQUEST_VALIDATION_SECRET = "meshagent.request.validation.secret"
+ANNOTATION_REQUEST_VALIDATION_CHALLENGE_SECRET = (
+    "meshagent.request.validation.challenge_secret"
+)
 ANNOTATION_STORAGE_CLASS = "meshagent.storage.class"
 ANNOTATION_STORAGE_CAPACITY = "meshagent.storage.capacity"
 ANNOTATION_FILES_ROOT = "meshagent.files.root"
