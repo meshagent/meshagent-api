@@ -4456,6 +4456,7 @@ class MessagingClient:
         room.protocol.register_handler("messaging.send", self._handle_message_send)
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task: asyncio.Task[None] | None = None
+        self._send_operations = set[asyncio.Task[None]]()
         self._desired_enabled = False
         self._online = False
         self._enable_in_flight = False
@@ -4653,6 +4654,8 @@ class MessagingClient:
         self._message_queue.close()
         if self._send_task is not None:
             await asyncio.gather(self._send_task, return_exceptions=True)
+        if self._send_operations:
+            await asyncio.gather(*self._send_operations, return_exceptions=True)
         self._send_task = None
         self._desired_enabled = False
         self._clear_current_connection_state()
@@ -4715,38 +4718,49 @@ class MessagingClient:
                 )
                 continue
 
-            try:
-                await self._invoke(
-                    operation="send",
-                    input={
-                        "to_participant_id": resolved_to.id,
-                        "type": msg.type,
-                        "message_json": self._message_json(msg.message),
-                        "attachment_base64": self._attachment_base64(msg.attachment),
-                    },
-                )
-                if msg.fut is not None and not msg.fut.done():
-                    msg.fut.set_result(True)
+            # Preserve queue-order dispatch without making the next message wait for
+            # this request's round trip.
+            operation = asyncio.create_task(
+                self._send_queued_message(msg=msg, resolved_to=resolved_to)
+            )
+            self._send_operations.add(operation)
+            operation.add_done_callback(self._send_operations.discard)
 
-            except asyncio.CancelledError:
-                raise
+    async def _send_queued_message(
+        self, *, msg: _QueuedRoomMessage, resolved_to: Participant
+    ) -> None:
+        try:
+            await self._invoke(
+                operation="send",
+                input={
+                    "to_participant_id": resolved_to.id,
+                    "type": msg.type,
+                    "message_json": self._message_json(msg.message),
+                    "attachment_base64": self._attachment_base64(msg.attachment),
+                },
+            )
+            if msg.fut is not None and not msg.fut.done():
+                msg.fut.set_result(True)
 
-            except RoomException as ex:
-                ex = self.room._coerce_message_send_error(ex)
-                if ex.code == ErrorCode.NOT_FOUND:
-                    self._mark_participant_offline(msg.to)
-                    if msg.drop_if_offline:
-                        self._drop_queued_message(msg=msg, error=ex)
-                        continue
+        except asyncio.CancelledError:
+            raise
 
-                logger.info("Unable to send message to participant", exc_info=ex)
-                if msg.fut is not None and not msg.fut.done():
-                    msg.fut.set_exception(ex)
+        except RoomException as ex:
+            ex = self.room._coerce_message_send_error(ex)
+            if ex.code == ErrorCode.NOT_FOUND:
+                self._mark_participant_offline(msg.to)
+                if msg.drop_if_offline:
+                    self._drop_queued_message(msg=msg, error=ex)
+                    return
 
-            except Exception as ex:
-                logger.info("Unable to send message to participant", exc_info=ex)
-                if msg.fut is not None and not msg.fut.done():
-                    msg.fut.set_exception(ex)
+            logger.info("Unable to send message to participant", exc_info=ex)
+            if msg.fut is not None and not msg.fut.done():
+                msg.fut.set_exception(ex)
+
+        except Exception as ex:
+            logger.info("Unable to send message to participant", exc_info=ex)
+            if msg.fut is not None and not msg.fut.done():
+                msg.fut.set_exception(ex)
 
     def send_message_nowait(
         self,

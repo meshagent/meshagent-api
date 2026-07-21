@@ -2882,6 +2882,46 @@ async def test_messaging_client_send_message_resolves_online_remote_participant_
 
 
 @pytest.mark.asyncio
+async def test_messaging_client_pipelines_queued_sends_before_responses() -> None:
+    class _DelayedMessagingRoom(_FakeRoom):
+        def __init__(self) -> None:
+            super().__init__()
+            self.local_participant = SimpleNamespace(id="local-participant")
+            self.send_inputs: list[dict] = []
+            self.two_sends_started = asyncio.Event()
+            self.release_responses = asyncio.Event()
+
+        async def invoke(
+            self, *, toolkit: str, tool: str, input: dict
+        ) -> Content | AsyncIterator[Content]:
+            assert toolkit == "messaging"
+            assert tool == "send"
+            self.send_inputs.append(input)
+            if len(self.send_inputs) == 2:
+                self.two_sends_started.set()
+            await self.release_responses.wait()
+            return EmptyContent()
+
+    room = _DelayedMessagingRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+    participant = SimpleNamespace(id="remote-participant")
+
+    await client.start()
+    client.send_message_nowait(to=participant, type="delta", message={"index": 1})
+    client.send_message_nowait(to=participant, type="delta", message={"index": 2})
+
+    await asyncio.wait_for(room.two_sends_started.wait(), timeout=0.25)
+    assert [json.loads(item["message_json"])["index"] for item in room.send_inputs] == [
+        1,
+        2,
+    ]
+
+    room.release_responses.set()
+    await client.stop()
+    await _cancel_close_watcher(room)
+
+
+@pytest.mark.asyncio
 async def test_messaging_client_drops_nowait_messages_for_removed_participant() -> None:
     class _FakeMessagingRoom(_FakeRoom):
         def __init__(self) -> None:
