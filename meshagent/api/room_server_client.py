@@ -1808,7 +1808,12 @@ class RoomClient:
 
     # send a request, optionally with a binary trailer
     async def send_request(
-        self, type: str, request: dict, data: bytes | None = None
+        self,
+        type: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        _after_send: Callable[[], None] | None = None,
     ) -> FileContent | None | dict | str:
         self._raise_if_terminal()
         if (
@@ -1840,6 +1845,8 @@ class RoomClient:
 
         try:
             await protocol.send(type=type, data=message, message_id=request_id)
+            if _after_send is not None:
+                _after_send()
             result = await pr.fut
             logger.debug("returning response %s", type)
             return result
@@ -2225,6 +2232,7 @@ class RoomClient:
         input: str | dict | Content | AsyncIterable[Content] | None = None,
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
+        _after_send: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> Content | AsyncIterator[Content]:
         if "arguments" in kwargs and input is None:
@@ -2274,11 +2282,15 @@ class RoomClient:
         request_payload["tool_call_id"] = resolved_tool_call_id
 
         self._ensure_close_watcher()
+        send_request_kwargs: dict[str, Any] = {}
+        if _after_send is not None:
+            send_request_kwargs["_after_send"] = _after_send
         invoke_task = asyncio.create_task(
             self.send_request(
                 "room.invoke_tool",
                 request_payload,
                 invoke_data,
+                **send_request_kwargs,
             )
         )
         call_stream = self._make_tool_call_stream(
@@ -4471,12 +4483,26 @@ class MessagingClient:
             return None
         return base64.b64encode(attachment).decode("utf-8")
 
-    async def _invoke(self, *, operation: str, input: dict) -> None:
-        await self.room.invoke(
-            toolkit="messaging",
-            tool=operation,
-            input=input,
-        )
+    async def _invoke(
+        self,
+        *,
+        operation: str,
+        input: dict,
+        after_send: Callable[[], None] | None = None,
+    ) -> None:
+        if after_send is None:
+            await self.room.invoke(
+                toolkit="messaging",
+                tool=operation,
+                input=input,
+            )
+        else:
+            await self.room.invoke(
+                toolkit="messaging",
+                tool=operation,
+                input=input,
+                _after_send=after_send,
+            )
 
     def _invoke_nowait(self, *, operation: str, input: dict) -> None:
         self.room.invoke_nowait(
@@ -4720,14 +4746,32 @@ class MessagingClient:
 
             # Preserve queue-order dispatch without making the next message wait for
             # this request's round trip.
+            dispatched = asyncio.Event()
             operation = asyncio.create_task(
-                self._send_queued_message(msg=msg, resolved_to=resolved_to)
+                self._send_queued_message(
+                    msg=msg,
+                    resolved_to=resolved_to,
+                    after_send=dispatched.set,
+                )
             )
             self._send_operations.add(operation)
-            operation.add_done_callback(self._send_operations.discard)
+
+            def on_done(
+                completed: asyncio.Task[None],
+                dispatch_event: asyncio.Event = dispatched,
+            ) -> None:
+                self._send_operations.discard(completed)
+                dispatch_event.set()
+
+            operation.add_done_callback(on_done)
+            await dispatched.wait()
 
     async def _send_queued_message(
-        self, *, msg: _QueuedRoomMessage, resolved_to: Participant
+        self,
+        *,
+        msg: _QueuedRoomMessage,
+        resolved_to: Participant,
+        after_send: Callable[[], None],
     ) -> None:
         try:
             await self._invoke(
@@ -4738,6 +4782,7 @@ class MessagingClient:
                     "message_json": self._message_json(msg.message),
                     "attachment_base64": self._attachment_base64(msg.attachment),
                 },
+                after_send=after_send,
             )
             if msg.fut is not None and not msg.fut.done():
                 msg.fut.set_result(True)
