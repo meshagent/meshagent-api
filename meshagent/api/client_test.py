@@ -79,6 +79,40 @@ class _FakeSession:
         self.closed = True
 
 
+@pytest.mark.asyncio
+async def test_connect_agent_normalizes_legacy_messages_url():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "jwt": "agent-token",
+                    "agent_name": "planner",
+                    "project_id": "proj_123",
+                    "agent_url": (
+                        "wss://api.example.test/base/accounts/projects/proj_123/"
+                        "agents/planner/messages?thread=one"
+                    ),
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    connection = await client.connect_agent(project_id="proj_123", agent="planner")
+
+    assert connection.agent_url == (
+        "wss://api.example.test/base/agents/proj_123/planner/messages?thread=one"
+    )
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/agents/planner/connect",
+            {},
+        )
+    ]
+
+
 @pytest.mark.parametrize("role", ["operator", "developer", "admin"])
 def test_room_scope_for_role_compat_includes_sqlite(role):
     scope = room_scope_for_role_compat(role)

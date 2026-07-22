@@ -2766,9 +2766,16 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
                 )
 
         async def send_request(
-            self, typ: str, request: dict, data: bytes | None = None
+            self,
+            typ: str,
+            request: dict,
+            data: bytes | None = None,
+            *,
+            _after_send: Callable[[], None] | None = None,
         ) -> Content | dict:
             self.requests.append((typ, request, data))
+            if _after_send is not None:
+                _after_send()
             if typ != "room.invoke_tool":
                 return {}
             return EmptyContent()
@@ -2841,9 +2848,16 @@ async def test_messaging_client_send_message_resolves_online_remote_participant_
             self.local_participant = SimpleNamespace(id="local-participant")
 
         async def send_request(
-            self, typ: str, request: dict, data: bytes | None = None
+            self,
+            typ: str,
+            request: dict,
+            data: bytes | None = None,
+            *,
+            _after_send: Callable[[], None] | None = None,
         ) -> Content | dict:
             self.requests.append((typ, request, data))
+            if _after_send is not None:
+                _after_send()
             if typ != "room.invoke_tool":
                 return {}
             return EmptyContent()
@@ -2879,6 +2893,59 @@ async def test_messaging_client_send_message_resolves_online_remote_participant_
     assert isinstance(send_input, dict)
     assert send_input["to_participant_id"] == "remote-participant"
     assert json.loads(send_input["message_json"]) == {"value": 1}
+
+
+@pytest.mark.asyncio
+async def test_messaging_client_pipelines_queued_sends_before_responses() -> None:
+    class _DelayedMessagingRoom(_FakeRoom):
+        def __init__(self) -> None:
+            super().__init__()
+            self.local_participant = SimpleNamespace(id="local-participant")
+            self.send_inputs: list[dict] = []
+            self.two_sends_started = asyncio.Event()
+            self.release_first_dispatch = asyncio.Event()
+            self.release_responses = asyncio.Event()
+
+        async def invoke(
+            self,
+            *,
+            toolkit: str,
+            tool: str,
+            input: dict,
+            _after_send: Callable[[], None] | None = None,
+        ) -> Content | AsyncIterator[Content]:
+            assert toolkit == "messaging"
+            assert tool == "send"
+            if json.loads(input["message_json"])["index"] == 1:
+                await self.release_first_dispatch.wait()
+            self.send_inputs.append(input)
+            if _after_send is not None:
+                _after_send()
+            if len(self.send_inputs) == 2:
+                self.two_sends_started.set()
+            await self.release_responses.wait()
+            return EmptyContent()
+
+    room = _DelayedMessagingRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+    participant = SimpleNamespace(id="remote-participant")
+
+    await client.start()
+    client.send_message_nowait(to=participant, type="delta", message={"index": 1})
+    client.send_message_nowait(to=participant, type="delta", message={"index": 2})
+
+    await asyncio.sleep(0.01)
+    assert room.send_inputs == []
+    room.release_first_dispatch.set()
+    await asyncio.wait_for(room.two_sends_started.wait(), timeout=0.25)
+    assert [json.loads(item["message_json"])["index"] for item in room.send_inputs] == [
+        1,
+        2,
+    ]
+
+    room.release_responses.set()
+    await client.stop()
+    await _cancel_close_watcher(room)
 
 
 @pytest.mark.asyncio

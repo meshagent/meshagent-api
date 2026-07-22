@@ -2,7 +2,7 @@ import aiohttp
 import base64
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from typing import Any, Dict, List, Optional, Literal, TypeVar
 from pydantic import (
     BaseModel,
@@ -94,6 +94,22 @@ class AgentConnectionInfo(BaseModel):
     agent_name: str
     project_id: str
     agent_url: str
+
+    @model_validator(mode="after")
+    def normalize_legacy_agent_url(self) -> "AgentConnectionInfo":
+        parsed = urlsplit(self.agent_url)
+        legacy_suffix = (
+            f"/accounts/projects/{quote(self.project_id, safe='')}/agents/"
+            f"{quote(self.agent_name, safe='')}/messages"
+        )
+        if parsed.path.endswith(legacy_suffix):
+            prefix = parsed.path[: -len(legacy_suffix)]
+            current_path = (
+                f"{prefix}/agents/{quote(self.project_id, safe='')}/"
+                f"{quote(self.agent_name, safe='')}/messages"
+            )
+            self.agent_url = urlunsplit(parsed._replace(path=current_path))
+        return self
 
 
 class MeshagentDomains(BaseModel):

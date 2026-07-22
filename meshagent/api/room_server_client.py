@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import mimetypes
 import os
 import warnings
 import aiohttp
@@ -53,6 +52,7 @@ from meshagent.api.chan import ChanClosed
 from meshagent.api.runtime import runtime, RuntimeDocument
 from meshagent.api.schema import MeshSchema
 from meshagent.api.messaging import MessageProtocolError, pack_message, unpack_message
+from meshagent.api.mime_types import guess_mime_type
 from meshagent.api.participant import Participant
 from meshagent.api.chan import Chan
 from meshagent.api.messaging import (
@@ -1808,7 +1808,12 @@ class RoomClient:
 
     # send a request, optionally with a binary trailer
     async def send_request(
-        self, type: str, request: dict, data: bytes | None = None
+        self,
+        type: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        _after_send: Callable[[], None] | None = None,
     ) -> FileContent | None | dict | str:
         self._raise_if_terminal()
         if (
@@ -1840,6 +1845,8 @@ class RoomClient:
 
         try:
             await protocol.send(type=type, data=message, message_id=request_id)
+            if _after_send is not None:
+                _after_send()
             result = await pr.fut
             logger.debug("returning response %s", type)
             return result
@@ -2225,6 +2232,7 @@ class RoomClient:
         input: str | dict | Content | AsyncIterable[Content] | None = None,
         participant_id: Optional[str] = None,
         on_behalf_of_id: Optional[str] = None,
+        _after_send: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> Content | AsyncIterator[Content]:
         if "arguments" in kwargs and input is None:
@@ -2274,11 +2282,15 @@ class RoomClient:
         request_payload["tool_call_id"] = resolved_tool_call_id
 
         self._ensure_close_watcher()
+        send_request_kwargs: dict[str, Any] = {}
+        if _after_send is not None:
+            send_request_kwargs["_after_send"] = _after_send
         invoke_task = asyncio.create_task(
             self.send_request(
                 "room.invoke_tool",
                 request_payload,
                 invoke_data,
+                **send_request_kwargs,
             )
         )
         call_stream = self._make_tool_call_stream(
@@ -3875,7 +3887,7 @@ class StorageClient:
     def _default_upload_mime_type(*, name: str, mime_type: str | None) -> str:
         if isinstance(mime_type, str) and mime_type != "":
             return mime_type
-        guessed_mime_type, _ = mimetypes.guess_type(name)
+        guessed_mime_type = guess_mime_type(name)
         if guessed_mime_type is None:
             return "application/octet-stream"
         return guessed_mime_type
@@ -4456,6 +4468,7 @@ class MessagingClient:
         room.protocol.register_handler("messaging.send", self._handle_message_send)
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task: asyncio.Task[None] | None = None
+        self._send_operations = set[asyncio.Task[None]]()
         self._desired_enabled = False
         self._online = False
         self._enable_in_flight = False
@@ -4470,12 +4483,26 @@ class MessagingClient:
             return None
         return base64.b64encode(attachment).decode("utf-8")
 
-    async def _invoke(self, *, operation: str, input: dict) -> None:
-        await self.room.invoke(
-            toolkit="messaging",
-            tool=operation,
-            input=input,
-        )
+    async def _invoke(
+        self,
+        *,
+        operation: str,
+        input: dict,
+        after_send: Callable[[], None] | None = None,
+    ) -> None:
+        if after_send is None:
+            await self.room.invoke(
+                toolkit="messaging",
+                tool=operation,
+                input=input,
+            )
+        else:
+            await self.room.invoke(
+                toolkit="messaging",
+                tool=operation,
+                input=input,
+                _after_send=after_send,
+            )
 
     def _invoke_nowait(self, *, operation: str, input: dict) -> None:
         self.room.invoke_nowait(
@@ -4653,6 +4680,8 @@ class MessagingClient:
         self._message_queue.close()
         if self._send_task is not None:
             await asyncio.gather(self._send_task, return_exceptions=True)
+        if self._send_operations:
+            await asyncio.gather(*self._send_operations, return_exceptions=True)
         self._send_task = None
         self._desired_enabled = False
         self._clear_current_connection_state()
@@ -4715,38 +4744,68 @@ class MessagingClient:
                 )
                 continue
 
-            try:
-                await self._invoke(
-                    operation="send",
-                    input={
-                        "to_participant_id": resolved_to.id,
-                        "type": msg.type,
-                        "message_json": self._message_json(msg.message),
-                        "attachment_base64": self._attachment_base64(msg.attachment),
-                    },
+            # Preserve queue-order dispatch without making the next message wait for
+            # this request's round trip.
+            dispatched = asyncio.Event()
+            operation = asyncio.create_task(
+                self._send_queued_message(
+                    msg=msg,
+                    resolved_to=resolved_to,
+                    after_send=dispatched.set,
                 )
-                if msg.fut is not None and not msg.fut.done():
-                    msg.fut.set_result(True)
+            )
+            self._send_operations.add(operation)
 
-            except asyncio.CancelledError:
-                raise
+            def on_done(
+                completed: asyncio.Task[None],
+                dispatch_event: asyncio.Event = dispatched,
+            ) -> None:
+                self._send_operations.discard(completed)
+                dispatch_event.set()
 
-            except RoomException as ex:
-                ex = self.room._coerce_message_send_error(ex)
-                if ex.code == ErrorCode.NOT_FOUND:
-                    self._mark_participant_offline(msg.to)
-                    if msg.drop_if_offline:
-                        self._drop_queued_message(msg=msg, error=ex)
-                        continue
+            operation.add_done_callback(on_done)
+            await dispatched.wait()
 
-                logger.info("Unable to send message to participant", exc_info=ex)
-                if msg.fut is not None and not msg.fut.done():
-                    msg.fut.set_exception(ex)
+    async def _send_queued_message(
+        self,
+        *,
+        msg: _QueuedRoomMessage,
+        resolved_to: Participant,
+        after_send: Callable[[], None],
+    ) -> None:
+        try:
+            await self._invoke(
+                operation="send",
+                input={
+                    "to_participant_id": resolved_to.id,
+                    "type": msg.type,
+                    "message_json": self._message_json(msg.message),
+                    "attachment_base64": self._attachment_base64(msg.attachment),
+                },
+                after_send=after_send,
+            )
+            if msg.fut is not None and not msg.fut.done():
+                msg.fut.set_result(True)
 
-            except Exception as ex:
-                logger.info("Unable to send message to participant", exc_info=ex)
-                if msg.fut is not None and not msg.fut.done():
-                    msg.fut.set_exception(ex)
+        except asyncio.CancelledError:
+            raise
+
+        except RoomException as ex:
+            ex = self.room._coerce_message_send_error(ex)
+            if ex.code == ErrorCode.NOT_FOUND:
+                self._mark_participant_offline(msg.to)
+                if msg.drop_if_offline:
+                    self._drop_queued_message(msg=msg, error=ex)
+                    return
+
+            logger.info("Unable to send message to participant", exc_info=ex)
+            if msg.fut is not None and not msg.fut.done():
+                msg.fut.set_exception(ex)
+
+        except Exception as ex:
+            logger.info("Unable to send message to participant", exc_info=ex)
+            if msg.fut is not None and not msg.fut.done():
+                msg.fut.set_exception(ex)
 
     def send_message_nowait(
         self,

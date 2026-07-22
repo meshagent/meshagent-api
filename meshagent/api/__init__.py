@@ -103,6 +103,7 @@ from .webhooks import WebhookServer, RoomStartedEvent, RoomEndedEvent, CallEvent
 from .version import __version__
 from .error_codes import ErrorCode
 from .dataset_schema import LANCE_COMPRESSION_METADATA_KEY, LANCE_ZSTD_FIELD_METADATA
+from .mime_types import guess_mime_type
 
 __all__ = [
     "Meshagent",
@@ -199,5 +200,6 @@ __all__ = [
     "ErrorCode",
     "LANCE_COMPRESSION_METADATA_KEY",
     "LANCE_ZSTD_FIELD_METADATA",
+    "guess_mime_type",
     "__version__",
 ]
