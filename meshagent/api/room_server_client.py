@@ -2091,8 +2091,12 @@ class RoomClient:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
 
     async def _fail_pending_work(self, *, state: _RoomClientTerminalState) -> None:
+        pending_stream_tasks = self._close_tool_call_streams(
+            error=state.tool_call_error()
+        )
         self._fail_pending_requests(error=state.request_error())
-        await self._fail_tool_call_streams_and_wait(error=state.tool_call_error())
+        if pending_stream_tasks:
+            await asyncio.gather(*pending_stream_tasks, return_exceptions=True)
 
     async def _handle_tool_call_response_chunk(
         self, protocol: Protocol, message_id: int, typ: str, data: bytes
