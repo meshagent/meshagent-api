@@ -5445,9 +5445,6 @@ class MessagingStream:
         self._closed = True
         if self._outgoing is not None:
             self._outgoing.put_nowait(None)
-            output = self._output
-            if output is not None and hasattr(output, "aclose"):
-                await output.aclose()  # type: ignore[attr-defined]
         else:
             try:
                 queue = self._send_queue

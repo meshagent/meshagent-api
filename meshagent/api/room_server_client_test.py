@@ -3054,6 +3054,43 @@ async def test_messaging_stream_nowait_sends_are_serialized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_messaging_stream_close_cancels_active_output_reader() -> None:
+    class _FakeStreamClient:
+        def __init__(self) -> None:
+            self._incoming_streams: dict[str, MessagingStream] = {}
+
+    output_started = asyncio.Event()
+    output_closed = asyncio.Event()
+
+    async def output_chunks() -> AsyncIterator[Content]:
+        try:
+            output_started.set()
+            await asyncio.Event().wait()
+            yield EmptyContent()
+        finally:
+            output_closed.set()
+
+    outgoing: asyncio.Queue[JsonContent | None] = asyncio.Queue()
+    client = _FakeStreamClient()
+    stream = MessagingStream(
+        client=client,  # type: ignore[arg-type]
+        stream_id="stream-1",
+        remote_participant_id="remote",
+        outgoing=outgoing,
+        output=output_chunks(),
+    )
+    client._incoming_streams[stream.stream_id] = stream
+
+    await asyncio.wait_for(output_started.wait(), timeout=0.25)
+    await stream.close()
+
+    assert stream.closed
+    assert outgoing.get_nowait() is None
+    assert output_closed.is_set()
+    assert stream.stream_id not in client._incoming_streams
+
+
+@pytest.mark.asyncio
 async def test_messaging_client_drops_nowait_messages_for_removed_participant() -> None:
     class _FakeMessagingRoom(_FakeRoom):
         def __init__(self) -> None:
