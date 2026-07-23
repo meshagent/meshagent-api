@@ -48,6 +48,7 @@ from meshagent.api.room_server_client import (
     MemoryClient,
     MemoryEntityRecord,
     MessagingClient,
+    MessagingStream,
     QueuesClient,
     RemoteParticipant,
     RoomMessage,
@@ -1024,6 +1025,12 @@ class _ReconnectRoomController:
                     content=_ControlContent(method="open"),
                 )
                 return
+            if toolkit == "messaging" and tool == "subscribe":
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=_ControlContent(method="open"),
+                )
+                return
             if toolkit == "messaging" and tool == "enable":
                 self.messaging_enable_calls.append(protocol.index)
                 await protocol.emit_response(
@@ -1057,6 +1064,56 @@ class _ReconnectRoomController:
             toolkit, tool = protocol._tool_calls[tool_call_id]
             chunk = unpack_content_parts(header=request["chunk"], payload=payload)
             await protocol.emit_response(message_id=message_id, content=EmptyContent())
+            if toolkit == "messaging" and tool == "subscribe":
+                if isinstance(chunk, _ControlContent):
+                    assert chunk.method == "close"
+                    await protocol.emit_tool_call_chunk(
+                        tool_call_id=tool_call_id,
+                        chunk=_ControlContent(method="close"),
+                    )
+                    return
+                assert isinstance(chunk, JsonContent)
+                operation = chunk.json["operation"]
+                request_id = chunk.json["request_id"]
+                assert isinstance(request_id, str)
+                if operation == "enable":
+                    self.messaging_enable_calls.append(protocol.index)
+                    await protocol.emit_tool_call_chunk(
+                        tool_call_id=tool_call_id,
+                        chunk=JsonContent(
+                            json={
+                                "kind": "message",
+                                "from_participant_id": "room",
+                                "type": "messaging.enabled",
+                                "message": {
+                                    "participants": self.messaging_participants
+                                },
+                                "attachment_base64": "",
+                            }
+                        ),
+                    )
+                elif operation == "send":
+                    arguments = dict(chunk.json)
+                    arguments.pop("operation")
+                    arguments.pop("request_id")
+                    self.messaging_send_inputs.append((protocol.index, arguments))
+                    if self.delay_messaging_send_responses:
+                        return
+                elif operation not in ("broadcast", "disable"):
+                    raise AssertionError(
+                        f"unexpected messaging subscription operation: {operation}"
+                    )
+                await protocol.emit_tool_call_chunk(
+                    tool_call_id=tool_call_id,
+                    chunk=JsonContent(
+                        json={
+                            "kind": "result",
+                            "request_id": request_id,
+                            "error": None,
+                        }
+                    ),
+                )
+                return
             if toolkit != "sync" or tool != "open":
                 raise AssertionError(f"unexpected stream chunk for {toolkit}.{tool}")
 
@@ -2165,6 +2222,7 @@ async def test_room_client_reconnect_restores_sync_and_messaging_state() -> None
             "utf-8"
         )
 
+        await _wait_until(lambda: room.messaging.online)
         assert room.messaging.online is True
         assert len(room.messaging.remote_participants) == 1
         assert controller.sync_open_headers[0]["vector"] is None
@@ -2946,6 +3004,53 @@ async def test_messaging_client_pipelines_queued_sends_before_responses() -> Non
     room.release_responses.set()
     await client.stop()
     await _cancel_close_watcher(room)
+
+
+@pytest.mark.asyncio
+async def test_messaging_stream_nowait_sends_are_serialized() -> None:
+    class _FakeStreamClient:
+        def __init__(self) -> None:
+            self.started: list[int] = []
+            self.release_first = asyncio.Event()
+            self._incoming_streams: dict[str, MessagingStream] = {}
+
+        async def _invoke(self, *, operation: str, input: dict) -> None:
+            if operation == "stream_close":
+                return
+            assert operation == "stream_send"
+            sequence = json.loads(input["message_json"])["sequence"]
+            self.started.append(sequence)
+            if sequence == 1:
+                await self.release_first.wait()
+
+        @staticmethod
+        def _message_json(message: dict) -> str:
+            return json.dumps(message)
+
+        @staticmethod
+        def _attachment_base64(attachment: bytes | None) -> str | None:
+            del attachment
+            return None
+
+    client = _FakeStreamClient()
+    stream = MessagingStream(
+        client=client,  # type: ignore[arg-type]
+        stream_id="stream-1",
+        remote_participant_id="remote",
+    )
+    client._incoming_streams[stream.stream_id] = stream
+
+    stream.send_message_nowait(type="delta", message={"sequence": 1})
+    stream.send_message_nowait(type="delta", message={"sequence": 2})
+    await asyncio.sleep(0)
+    assert client.started == [1]
+
+    client.release_first.set()
+    await asyncio.wait_for(
+        _wait_until(lambda: client.started == [1, 2]),
+        timeout=0.25,
+    )
+    await stream.close()
 
 
 @pytest.mark.asyncio

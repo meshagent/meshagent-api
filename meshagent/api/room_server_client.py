@@ -4466,12 +4466,23 @@ class MessagingClient:
         self._participants = dict[str, RemoteParticipant]()
         self._events = {}
         room.protocol.register_handler("messaging.send", self._handle_message_send)
+        room.protocol.register_handler(
+            "messaging.stream.request", self._handle_stream_request
+        )
+        room.protocol.register_handler(
+            "messaging.stream.chunk", self._handle_stream_chunk
+        )
+        room.protocol.register_handler(
+            "messaging.stream.closed", self._handle_stream_closed
+        )
         self._message_queue = Chan[_QueuedRoomMessage]()
         self._send_task: asyncio.Task[None] | None = None
         self._send_operations = set[asyncio.Task[None]]()
         self._desired_enabled = False
         self._online = False
         self._enable_in_flight = False
+        self._incoming_streams: dict[str, MessagingStream] = {}
+        self._pending_stream_requests: dict[str, IncomingMessagingStreamRequest] = {}
 
     @staticmethod
     def _message_json(message: dict) -> str:
@@ -4630,8 +4641,11 @@ class MessagingClient:
         self._desired_enabled = False
         self._clear_current_connection_state()
         if self.room.is_connected and was_online:
-            self._invoke_nowait(operation="disable", input={})
+            self._disable_current_connection_nowait()
         return _completed_future()
+
+    def _disable_current_connection_nowait(self) -> None:
+        self._invoke_nowait(operation="disable", input={})
 
     async def _handle_message_send(
         self, protocol: Protocol, message_id: int, type: str, data: bytes
@@ -4658,6 +4672,223 @@ class MessagingClient:
         else:
             self.emit("message", message=message)
 
+    async def _handle_stream_request(
+        self, protocol: Protocol, message_id: int, type: str, data: bytes
+    ) -> None:
+        del message_id, type
+        if protocol is not self.room._protocol_instance:
+            return
+        header, attachment = unpack_message(data)
+        stream_id = header.get("stream_id")
+        from_participant_id = header.get("from_participant_id")
+        message_type = header.get("type")
+        message = header.get("message")
+        if (
+            not isinstance(stream_id, str)
+            or not isinstance(from_participant_id, str)
+            or not isinstance(message_type, str)
+            or not isinstance(message, dict)
+        ):
+            logger.warning("ignoring invalid messaging stream request")
+            return
+        request = IncomingMessagingStreamRequest(
+            client=self,
+            stream_id=stream_id,
+            from_participant_id=from_participant_id,
+            type=message_type,
+            message=message,
+            attachment=attachment,
+        )
+        self._pending_stream_requests[stream_id] = request
+        self.emit("stream_requested", request=request)
+
+    async def _handle_stream_chunk(
+        self, protocol: Protocol, message_id: int, type: str, data: bytes
+    ) -> None:
+        del message_id, type
+        if protocol is not self.room._protocol_instance:
+            return
+        header, attachment = unpack_message(data)
+        stream_id = header.get("stream_id")
+        message_type = header.get("type")
+        message = header.get("message")
+        if (
+            not isinstance(stream_id, str)
+            or not isinstance(message_type, str)
+            or not isinstance(message, dict)
+        ):
+            logger.warning("ignoring invalid messaging stream chunk")
+            return
+        stream = self._incoming_streams.get(stream_id)
+        if stream is None:
+            logger.debug("ignoring chunk for unknown messaging stream %s", stream_id)
+            return
+        stream._push_message(
+            RoomMessage(
+                from_participant_id=stream.remote_participant_id,
+                type=message_type,
+                message=message,
+                attachment=attachment,
+            )
+        )
+
+    async def _handle_stream_closed(
+        self, protocol: Protocol, message_id: int, type: str, data: bytes
+    ) -> None:
+        del message_id, type
+        if protocol is not self.room._protocol_instance:
+            return
+        header, _ = unpack_message(data)
+        stream_id = header.get("stream_id")
+        if not isinstance(stream_id, str):
+            logger.warning("ignoring invalid messaging stream close")
+            return
+        request = self._pending_stream_requests.pop(stream_id, None)
+        if request is not None:
+            request._mark_closed(
+                reason=str(header.get("reason", "closed")),
+                message=(
+                    header.get("message")
+                    if isinstance(header.get("message"), str)
+                    else None
+                ),
+            )
+        stream = self._incoming_streams.pop(stream_id, None)
+        if stream is None:
+            return
+        reason = str(header.get("reason", "closed"))
+        participant_id = header.get("participant_id")
+        if reason == "client_disconnected" and isinstance(participant_id, str):
+            stream._push_event(
+                MessagingStreamClientDisconnected(
+                    stream_id=stream_id,
+                    participant_id=participant_id,
+                )
+            )
+        else:
+            stream._push_event(
+                MessagingStreamClosed(
+                    stream_id=stream_id,
+                    reason=reason,
+                    message=(
+                        header.get("message")
+                        if isinstance(header.get("message"), str)
+                        else None
+                    ),
+                )
+            )
+        stream._finish()
+
+    async def stream(
+        self,
+        *,
+        to: Participant,
+        type: str,
+        message: dict,
+        attachment: Optional[bytes] = None,
+    ) -> "MessagingStream":
+        queue: asyncio.Queue[JsonContent | None] = asyncio.Queue()
+        queue.put_nowait(
+            JsonContent(
+                json={
+                    "to_participant_id": to.id,
+                    "type": type,
+                    "message_json": self._message_json(message),
+                    "attachment_base64": self._attachment_base64(attachment),
+                }
+            )
+        )
+
+        async def input_chunks() -> AsyncIterator[Content]:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    return
+                yield chunk
+
+        try:
+            output = await self.room.invoke(
+                toolkit="messaging",
+                tool="stream",
+                input=input_chunks(),
+            )
+            if not isinstance(output, AsyncIterable):
+                raise RoomException(
+                    "unexpected return type from messaging.stream",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            iterator = output.__aiter__()
+            accepted = await anext(iterator)
+            if (
+                not isinstance(accepted, JsonContent)
+                or not isinstance(accepted.json, dict)
+                or accepted.json.get("kind") != "accepted"
+                or not isinstance(accepted.json.get("stream_id"), str)
+            ):
+                raise RoomException(
+                    "messaging.stream did not acknowledge acceptance",
+                    code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                )
+            stream = MessagingStream(
+                client=self,
+                stream_id=accepted.json["stream_id"],
+                remote_participant_id=to.id,
+                outgoing=queue,
+                output=iterator,
+            )
+            self._incoming_streams[stream.stream_id] = stream
+            return stream
+        except BaseException:
+            queue.put_nowait(None)
+            raise
+
+    async def _accept_stream_request(
+        self, request: "IncomingMessagingStreamRequest"
+    ) -> "MessagingStream":
+        if request.closed:
+            raise RoomException(
+                request.close_message or "the messaging stream is closed",
+                code=ErrorCode.INVALID_STATE,
+            )
+        if self._pending_stream_requests.get(request.stream_id) is not request:
+            raise RoomException(
+                "the messaging stream request is no longer pending",
+                code=ErrorCode.INVALID_STATE,
+            )
+        stream = MessagingStream(
+            client=self,
+            stream_id=request.stream_id,
+            remote_participant_id=request.from_participant_id,
+        )
+        self._incoming_streams[request.stream_id] = stream
+        try:
+            await self._invoke(
+                operation="stream_accept",
+                input={"stream_id": request.stream_id},
+            )
+        except BaseException:
+            self._incoming_streams.pop(request.stream_id, None)
+            stream._finish()
+            raise
+        self._pending_stream_requests.pop(request.stream_id, None)
+        request._accepted = True
+        return stream
+
+    async def _reject_stream_request(
+        self,
+        request: "IncomingMessagingStreamRequest",
+        *,
+        message: str | None,
+    ) -> None:
+        if self._pending_stream_requests.get(request.stream_id) is not request:
+            return
+        await self._invoke(
+            operation="stream_reject",
+            input={"stream_id": request.stream_id, "message": message},
+        )
+        self._pending_stream_requests.pop(request.stream_id, None)
+        request._mark_closed(reason="rejected", message=message)
+
     async def start(self):
         if self._send_task is not None:
             return
@@ -4666,6 +4897,7 @@ class MessagingClient:
             self._enable_current_connection_nowait()
 
     async def stop(self):
+        self._close_local_streams(reason="messaging stopped")
         if self.room._closing and self.room._terminal_state is not None:
             self._drain_queued_messages(
                 error=self.room._terminal_state.message_send_error()
@@ -4717,11 +4949,26 @@ class MessagingClient:
             self._remove_participant(participant_id)
 
     def _on_room_disconnect(self, *, reason: str | None) -> None:
+        self._close_local_streams(reason=reason or "room disconnected")
         self._clear_current_connection_state()
 
     def _on_room_reconnect(self) -> None:
         if self._desired_enabled:
             self._enable_current_connection_nowait()
+
+    def _close_local_streams(self, *, reason: str) -> None:
+        for request in self._pending_stream_requests.values():
+            request._mark_closed(reason="client_disconnected", message=reason)
+        self._pending_stream_requests.clear()
+        for stream in self._incoming_streams.values():
+            stream._push_event(
+                MessagingStreamClientDisconnected(
+                    stream_id=stream.stream_id,
+                    participant_id=stream.remote_participant_id,
+                )
+            )
+            stream._finish()
+        self._incoming_streams.clear()
 
     async def _send_messages(self):
         async for msg in self._message_queue:
@@ -4927,10 +5174,350 @@ class MessagingClient:
 
         self._set_online(True)
         if not self._desired_enabled:
-            self._invoke_nowait(operation="disable", input={})
+            self._disable_current_connection_nowait()
             self._clear_current_connection_state()
             return
         self.emit("messaging_enabled")
+
+
+@dataclass(frozen=True, slots=True)
+class MessagingStreamClientDisconnected:
+    stream_id: str
+    participant_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class MessagingStreamClosed:
+    stream_id: str
+    reason: str
+    message: str | None = None
+
+
+MessagingStreamEvent = (
+    RoomMessage | MessagingStreamClientDisconnected | MessagingStreamClosed
+)
+
+
+class MessagingStream:
+    def __init__(
+        self,
+        *,
+        client: MessagingClient,
+        stream_id: str,
+        remote_participant_id: str,
+        outgoing: asyncio.Queue[JsonContent | None] | None = None,
+        output: AsyncIterator[Content] | None = None,
+    ) -> None:
+        self._client = client
+        self._stream_id = stream_id
+        self._remote_participant_id = remote_participant_id
+        self._outgoing = outgoing
+        self._output = output
+        self._events: asyncio.Queue[MessagingStreamEvent | None] = asyncio.Queue()
+        self._output_task: asyncio.Task[None] | None = None
+        self._send_queue: (
+            asyncio.Queue[tuple[dict[str, Any], asyncio.Future[None] | None] | None]
+            | None
+        ) = None
+        self._send_task: asyncio.Task[None] | None = None
+        self._closed = False
+        if output is not None:
+            self._output_task = asyncio.create_task(self._read_output(output))
+        elif outgoing is None:
+            self._send_queue = asyncio.Queue()
+            self._send_task = asyncio.create_task(self._send_queued_messages())
+
+    @property
+    def stream_id(self) -> str:
+        return self._stream_id
+
+    @property
+    def remote_participant_id(self) -> str:
+        return self._remote_participant_id
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _push_message(self, message: RoomMessage) -> None:
+        self._push_event(message)
+
+    def _push_event(self, event: MessagingStreamEvent) -> None:
+        if not self._closed:
+            self._events.put_nowait(event)
+
+    def _finish(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._send_queue is not None:
+            self._send_queue.put_nowait(None)
+        self._events.put_nowait(None)
+
+    async def _read_output(self, output: AsyncIterator[Content]) -> None:
+        try:
+            async for content in output:
+                if not isinstance(content, JsonContent) or not isinstance(
+                    content.json, dict
+                ):
+                    raise RoomException(
+                        "unexpected chunk from messaging.stream",
+                        code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                    )
+                raw = content.json
+                kind = raw.get("kind")
+                if kind == "message":
+                    raw_message = raw.get("message")
+                    raw_type = raw.get("type")
+                    if not isinstance(raw_message, dict) or not isinstance(
+                        raw_type, str
+                    ):
+                        raise RoomException(
+                            "invalid message chunk from messaging.stream",
+                            code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+                        )
+                    raw_attachment = raw.get("attachment_base64")
+                    attachment = (
+                        None
+                        if raw_attachment in (None, "")
+                        else base64.b64decode(str(raw_attachment).encode("utf-8"))
+                    )
+                    self._push_message(
+                        RoomMessage(
+                            from_participant_id=self.remote_participant_id,
+                            type=raw_type,
+                            message=raw_message,
+                            attachment=attachment,
+                        )
+                    )
+                elif kind == "client_disconnected":
+                    participant_id = raw.get("participant_id")
+                    if isinstance(participant_id, str):
+                        self._push_event(
+                            MessagingStreamClientDisconnected(
+                                stream_id=self.stream_id,
+                                participant_id=participant_id,
+                            )
+                        )
+                elif kind == "closed":
+                    self._push_event(
+                        MessagingStreamClosed(
+                            stream_id=self.stream_id,
+                            reason=str(raw.get("reason", "closed")),
+                            message=(
+                                raw.get("message")
+                                if isinstance(raw.get("message"), str)
+                                else None
+                            ),
+                        )
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._push_event(
+                MessagingStreamClosed(
+                    stream_id=self.stream_id,
+                    reason="error",
+                    message=str(exc),
+                )
+            )
+        finally:
+            self._client._incoming_streams.pop(self.stream_id, None)
+            self._finish()
+
+    async def _send_queued_messages(self) -> None:
+        queue = self._send_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                payload, future = item
+                try:
+                    await self._client._invoke(
+                        operation="stream_send",
+                        input={"stream_id": self.stream_id, **payload},
+                    )
+                except BaseException as exc:
+                    if future is not None and not future.done():
+                        future.set_exception(exc)
+                    self._push_event(
+                        MessagingStreamClosed(
+                            stream_id=self.stream_id,
+                            reason="send_failed",
+                            message=str(exc),
+                        )
+                    )
+                    self._finish()
+                    return
+                if future is not None and not future.done():
+                    future.set_result(None)
+        finally:
+            while not queue.empty():
+                item = queue.get_nowait()
+                if item is None:
+                    continue
+                _, future = item
+                if future is not None and not future.done():
+                    future.set_exception(
+                        RoomException(
+                            "the messaging stream is closed",
+                            code=ErrorCode.INVALID_STATE,
+                        )
+                    )
+
+    def send_message_nowait(
+        self,
+        *,
+        type: str,
+        message: dict,
+        attachment: bytes | None = None,
+    ) -> None:
+        if self._closed:
+            raise RoomException(
+                "the messaging stream is closed",
+                code=ErrorCode.INVALID_STATE,
+            )
+        payload = {
+            "type": type,
+            "message_json": self._client._message_json(message),
+            "attachment_base64": self._client._attachment_base64(attachment),
+        }
+        if self._outgoing is not None:
+            self._outgoing.put_nowait(JsonContent(json=payload))
+            return
+        queue = self._send_queue
+        if queue is None:
+            raise RoomException(
+                "the messaging stream is closed",
+                code=ErrorCode.INVALID_STATE,
+            )
+        queue.put_nowait((payload, None))
+
+    async def send_message(
+        self,
+        *,
+        type: str,
+        message: dict,
+        attachment: bytes | None = None,
+    ) -> None:
+        if self._closed:
+            raise RoomException(
+                "the messaging stream is closed",
+                code=ErrorCode.INVALID_STATE,
+            )
+        payload = {
+            "type": type,
+            "message_json": self._client._message_json(message),
+            "attachment_base64": self._client._attachment_base64(attachment),
+        }
+        if self._outgoing is not None:
+            self._outgoing.put_nowait(JsonContent(json=payload))
+            return
+        queue = self._send_queue
+        if queue is None:
+            raise RoomException(
+                "the messaging stream is closed",
+                code=ErrorCode.INVALID_STATE,
+            )
+        future = asyncio.get_running_loop().create_future()
+        queue.put_nowait((payload, future))
+        await future
+
+    async def receive(self) -> MessagingStreamEvent | None:
+        return await self._events.get()
+
+    def __aiter__(self) -> AsyncIterator[MessagingStreamEvent]:
+        async def events() -> AsyncIterator[MessagingStreamEvent]:
+            while True:
+                event = await self.receive()
+                if event is None:
+                    return
+                yield event
+
+        return events()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._outgoing is not None:
+            self._outgoing.put_nowait(None)
+            output = self._output
+            if output is not None and hasattr(output, "aclose"):
+                await output.aclose()  # type: ignore[attr-defined]
+        else:
+            try:
+                queue = self._send_queue
+                if queue is not None:
+                    queue.put_nowait(None)
+                send_task = self._send_task
+                if send_task is not None:
+                    await asyncio.gather(send_task, return_exceptions=True)
+                await self._client._invoke(
+                    operation="stream_close",
+                    input={"stream_id": self.stream_id},
+                )
+            finally:
+                self._client._incoming_streams.pop(self.stream_id, None)
+        self._client._incoming_streams.pop(self.stream_id, None)
+        output_task = self._output_task
+        if output_task is not None and output_task is not asyncio.current_task():
+            output_task.cancel()
+            await asyncio.gather(output_task, return_exceptions=True)
+        self._events.put_nowait(None)
+
+
+class IncomingMessagingStreamRequest:
+    def __init__(
+        self,
+        *,
+        client: MessagingClient,
+        stream_id: str,
+        from_participant_id: str,
+        type: str,
+        message: dict,
+        attachment: bytes | None,
+    ) -> None:
+        self._client = client
+        self.stream_id = stream_id
+        self.from_participant_id = from_participant_id
+        self.type = type
+        self.message = message
+        self.attachment = attachment
+        self._accepted = False
+        self._closed = False
+        self._close_reason: str | None = None
+        self._close_message: str | None = None
+
+    @property
+    def accepted(self) -> bool:
+        return self._accepted
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def close_reason(self) -> str | None:
+        return self._close_reason
+
+    @property
+    def close_message(self) -> str | None:
+        return self._close_message
+
+    def _mark_closed(self, *, reason: str, message: str | None) -> None:
+        self._closed = True
+        self._close_reason = reason
+        self._close_message = message
+
+    async def accept(self) -> MessagingStream:
+        return await self._client._accept_stream_request(self)
+
+    async def reject(self, *, message: str | None = None) -> None:
+        await self._client._reject_stream_request(self, message=message)
 
 
 @dataclass
