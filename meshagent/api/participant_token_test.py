@@ -424,12 +424,14 @@ def test_token_json_round_trip() -> None:
     pt = ParticipantToken(name="charlie")
     pt.add_role_grant("moderator")
     pt.add_room_grant("main")
+    pt.add_site_grant("main")
     pt.extra_payload = {"meshagent_bootstrap": True, "custom": "value"}
 
     clone = ParticipantToken.from_json(pt.to_json())
     assert clone.name == pt.name
     assert clone.role == "moderator"
     assert clone.grant_scope("room") == "main"
+    assert clone.grant_scope("site") == "main"
     assert clone.extra_payload == {"meshagent_bootstrap": True, "custom": "value"}
 
 

@@ -218,6 +218,7 @@ ProjectRole = Literal[
     "group_manager",
 ]
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
+RoomRole = Literal["site_user", "viewer", "operator", "developer", "admin"]
 FeedRole = Literal["reader", "subscriber", "publisher", "manager"]
 SecretRole = Literal["use_proxy"]
 ServiceAccountRole = Literal[
@@ -230,6 +231,7 @@ ServiceAccountRole = Literal[
 AccessRole = (
     ProjectRole
     | ResourceRole
+    | RoomRole
     | FeedRole
     | SecretRole
     | ServiceAccountRole
