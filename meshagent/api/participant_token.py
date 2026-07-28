@@ -891,6 +891,9 @@ class ParticipantToken:
     def add_room_grant(self, room_name: str):
         self.grants.append(ParticipantGrant(name="room", scope=room_name))
 
+    def add_site_grant(self, room_name: str):
+        self.grants.append(ParticipantGrant(name="site", scope=room_name))
+
     def add_agent_grant(self, agent_name: str):
         self.grants.append(ParticipantGrant(name="agent", scope=agent_name))
 

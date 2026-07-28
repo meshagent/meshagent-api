@@ -26,6 +26,7 @@ from meshagent.api.messaging import (
     _ControlContent,
     pack_content,
     pack_message,
+    pack_request_parts,
     unpack_message,
     unpack_content_parts,
 )
@@ -48,6 +49,7 @@ from meshagent.api.room_server_client import (
     MemoryClient,
     MemoryEntityRecord,
     MessagingClient,
+    MessagingStream,
     QueuesClient,
     RemoteParticipant,
     RoomMessage,
@@ -354,6 +356,7 @@ class _FakeRoom:
     _fail_pending_work = RoomClient._fail_pending_work
     _fail_tool_call_streams = RoomClient._fail_tool_call_streams
     _fail_tool_call_streams_and_wait = RoomClient._fail_tool_call_streams_and_wait
+    _handle_response = RoomClient._handle_response
     _handle_tool_call_response_chunk = RoomClient._handle_tool_call_response_chunk
     _format_closed_message = RoomClient._format_closed_message
     _maybe_cancel_close_watcher = RoomClient._maybe_cancel_close_watcher
@@ -382,12 +385,38 @@ class _FakeRoom:
         self._connected = True
         self._closing = False
         self._allow_disconnected_requests = False
+        self._debug_pending_requests = False
+        self._debug_pending_request_stacks = False
         self._close_reason = None
         self.local_participant = None
         self.list_toolkits_response: dict | None = None
 
     def emit(self, event_name: str, **kwargs) -> None:
         self.events.append((event_name, kwargs))
+
+    def _dispatch_tool_call_request_chunk(
+        self,
+        *,
+        tool_call_id: str,
+        chunk: Content,
+    ) -> None:
+        chunk_header, chunk_data = pack_request_parts(chunk)
+        self.requests.append(
+            (
+                "room.tool_call_request_chunk",
+                {"tool_call_id": tool_call_id, "chunk": chunk_header},
+                chunk_data,
+            )
+        )
+
+    def _dispatch_request(
+        self,
+        *,
+        type: str,
+        request: dict,
+        data: bytes | None = None,
+    ) -> asyncio.Task[JsonContent | dict]:
+        return asyncio.create_task(self.send_request(type, request, data))
 
     @property
     def is_connected(self) -> bool:
@@ -448,9 +477,16 @@ class _FakeRoom:
         self.requests.append(("room.invoke_tool", request, data))
 
     async def send_request(
-        self, typ: str, request: dict, data: bytes | None = None
+        self,
+        typ: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        _after_send: Callable[[], None] | None = None,
     ) -> JsonContent | dict:
         self.requests.append((typ, request, data))
+        if _after_send is not None:
+            _after_send()
         if typ == "room.invoke_tool":
             await asyncio.sleep(0)
             return JsonContent(json={"ok": True})
@@ -1024,6 +1060,12 @@ class _ReconnectRoomController:
                     content=_ControlContent(method="open"),
                 )
                 return
+            if toolkit == "messaging" and tool == "subscribe":
+                await protocol.emit_response(
+                    message_id=message_id,
+                    content=_ControlContent(method="open"),
+                )
+                return
             if toolkit == "messaging" and tool == "enable":
                 self.messaging_enable_calls.append(protocol.index)
                 await protocol.emit_response(
@@ -1057,6 +1099,56 @@ class _ReconnectRoomController:
             toolkit, tool = protocol._tool_calls[tool_call_id]
             chunk = unpack_content_parts(header=request["chunk"], payload=payload)
             await protocol.emit_response(message_id=message_id, content=EmptyContent())
+            if toolkit == "messaging" and tool == "subscribe":
+                if isinstance(chunk, _ControlContent):
+                    assert chunk.method == "close"
+                    await protocol.emit_tool_call_chunk(
+                        tool_call_id=tool_call_id,
+                        chunk=_ControlContent(method="close"),
+                    )
+                    return
+                assert isinstance(chunk, JsonContent)
+                operation = chunk.json["operation"]
+                request_id = chunk.json["request_id"]
+                assert isinstance(request_id, str)
+                if operation == "enable":
+                    self.messaging_enable_calls.append(protocol.index)
+                    await protocol.emit_tool_call_chunk(
+                        tool_call_id=tool_call_id,
+                        chunk=JsonContent(
+                            json={
+                                "kind": "message",
+                                "from_participant_id": "room",
+                                "type": "messaging.enabled",
+                                "message": {
+                                    "participants": self.messaging_participants
+                                },
+                                "attachment_base64": "",
+                            }
+                        ),
+                    )
+                elif operation == "send":
+                    arguments = dict(chunk.json)
+                    arguments.pop("operation")
+                    arguments.pop("request_id")
+                    self.messaging_send_inputs.append((protocol.index, arguments))
+                    if self.delay_messaging_send_responses:
+                        return
+                elif operation not in ("broadcast", "disable"):
+                    raise AssertionError(
+                        f"unexpected messaging subscription operation: {operation}"
+                    )
+                await protocol.emit_tool_call_chunk(
+                    tool_call_id=tool_call_id,
+                    chunk=JsonContent(
+                        json={
+                            "kind": "result",
+                            "request_id": request_id,
+                            "error": None,
+                        }
+                    ),
+                )
+                return
             if toolkit != "sync" or tool != "open":
                 raise AssertionError(f"unexpected stream chunk for {toolkit}.{tool}")
 
@@ -2165,6 +2257,7 @@ async def test_room_client_reconnect_restores_sync_and_messaging_state() -> None
             "utf-8"
         )
 
+        await _wait_until(lambda: room.messaging.online)
         assert room.messaging.online is True
         assert len(room.messaging.remote_participants) == 1
         assert controller.sync_open_headers[0]["vector"] is None
@@ -2838,6 +2931,193 @@ async def test_messaging_client_uses_room_invoke_for_commands() -> None:
     assert send_input["attachment_base64"] == base64.b64encode(b"\x00\x01").decode()
 
 
+def _messaging_stream_tool_call_data(*, tool_call_id: str) -> bytes:
+    open_header, _ = unpack_message(_ControlContent(method="open").pack())
+    return pack_message(
+        header={
+            "name": "stream",
+            "caller_id": "remote-participant",
+            "tool_call_id": tool_call_id,
+            "arguments": open_header,
+        }
+    )
+
+
+def _messaging_stream_request_chunk_data(
+    *,
+    tool_call_id: str,
+    message: dict,
+    initial: bool = False,
+) -> bytes:
+    chunk_header, chunk_data = pack_request_parts(
+        JsonContent(
+            json={
+                **({"from_participant_id": "remote-participant"} if initial else {}),
+                "type": "delta",
+                "message_json": json.dumps(message),
+                "attachment_base64": None,
+            }
+        )
+    )
+    return pack_message(
+        header={"tool_call_id": tool_call_id, "chunk": chunk_header},
+        data=chunk_data,
+    )
+
+
+@pytest.mark.asyncio
+async def test_messaging_stream_rejects_message_before_acceptance() -> None:
+    room = _FakeRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+    requests: list[room_server_client.IncomingMessagingStreamRequest] = []
+    client.on("stream_requested", lambda request: requests.append(request))
+
+    await client._handle_stream_tool_call(
+        room.protocol,
+        41,
+        "room.tool_call.messaging",
+        _messaging_stream_tool_call_data(tool_call_id="stream-1"),
+    )
+    await client._handle_stream_tool_call_request_chunk(
+        room.protocol,
+        0,
+        "room.tool_call_request_chunk.messaging",
+        _messaging_stream_request_chunk_data(
+            tool_call_id="stream-1",
+            message={"sequence": 0},
+            initial=True,
+        ),
+    )
+    assert len(requests) == 1
+
+    await client._handle_stream_tool_call_request_chunk(
+        room.protocol,
+        0,
+        "room.tool_call_request_chunk.messaging",
+        _messaging_stream_request_chunk_data(
+            tool_call_id="stream-1",
+            message={"sequence": 1},
+        ),
+    )
+
+    request = requests[0]
+    assert request.closed
+    assert request.close_reason == "protocol_error"
+    assert "before acceptance" in (request.close_message or "")
+    assert "stream-1" not in client._incoming_stream_calls
+    assert "stream-1" not in client._pending_stream_requests
+    with pytest.raises(RoomException, match="before acceptance") as ex:
+        await request.accept()
+    assert ex.value.code == ErrorCode.INVALID_STATE
+
+    response_type, response_data, response_message_id = room.protocol.sent_messages[-1]
+    assert response_type == "room.tool_call_response"
+    assert response_message_id == 41
+    response_header, response_payload = unpack_message(response_data)
+    response = unpack_content_parts(response_header, response_payload)
+    assert isinstance(response, ErrorContent)
+    assert "before acceptance" in response.text
+
+
+@pytest.mark.asyncio
+async def test_messaging_stream_only_forwards_messages_while_accepted() -> None:
+    room = _FakeRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+    requests: list[room_server_client.IncomingMessagingStreamRequest] = []
+    client.on("stream_requested", lambda request: requests.append(request))
+
+    await client._handle_stream_tool_call(
+        room.protocol,
+        42,
+        "room.tool_call.messaging",
+        _messaging_stream_tool_call_data(tool_call_id="stream-2"),
+    )
+    await client._handle_stream_tool_call_request_chunk(
+        room.protocol,
+        0,
+        "room.tool_call_request_chunk.messaging",
+        _messaging_stream_request_chunk_data(
+            tool_call_id="stream-2",
+            message={"sequence": 0},
+            initial=True,
+        ),
+    )
+    request = requests[0]
+    stream = await request.accept()
+    with pytest.raises(RoomException, match="no longer pending"):
+        await request.accept()
+    with pytest.raises(RoomException, match="no longer pending"):
+        await request.reject()
+
+    await client._handle_stream_tool_call_request_chunk(
+        room.protocol,
+        0,
+        "room.tool_call_request_chunk.messaging",
+        _messaging_stream_request_chunk_data(
+            tool_call_id="stream-2",
+            message={"sequence": 1},
+        ),
+    )
+    event = await asyncio.wait_for(stream.receive(), timeout=0.25)
+    assert isinstance(event, RoomMessage)
+    assert event.message == {"sequence": 1}
+
+    close_header, close_data = pack_request_parts(_ControlContent(method="close"))
+    await client._handle_stream_tool_call_request_chunk(
+        room.protocol,
+        0,
+        "room.tool_call_request_chunk.messaging",
+        pack_message(
+            header={"tool_call_id": "stream-2", "chunk": close_header},
+            data=close_data,
+        ),
+    )
+    disconnected = await asyncio.wait_for(stream.receive(), timeout=0.25)
+    assert isinstance(
+        disconnected, room_server_client.MessagingStreamClientDisconnected
+    )
+    assert stream.closed
+
+    sent_before_late_chunk = len(room.protocol.sent_messages)
+    await client._handle_stream_tool_call_request_chunk(
+        room.protocol,
+        0,
+        "room.tool_call_request_chunk.messaging",
+        _messaging_stream_request_chunk_data(
+            tool_call_id="stream-2",
+            message={"sequence": 2},
+        ),
+    )
+    assert len(room.protocol.sent_messages) == sent_before_late_chunk
+    assert await stream.receive() is None
+    with pytest.raises(RoomException, match="closed"):
+        await stream.send_message(type="late", message={})
+
+
+@pytest.mark.asyncio
+async def test_messaging_stream_duplicate_acceptance_is_terminal() -> None:
+    room = _FakeRoom()
+    client = MessagingClient(room=room)  # type: ignore[arg-type]
+
+    async def output() -> AsyncIterator[Content]:
+        yield JsonContent(json={"kind": "accepted", "stream_id": "duplicate"})
+
+    stream = MessagingStream(
+        client=client,
+        stream_id="stream-3",
+        remote_participant_id="remote-participant",
+        outgoing=asyncio.Queue(),
+        output=output().__aiter__(),
+    )
+    event = await asyncio.wait_for(stream.receive(), timeout=0.25)
+    assert isinstance(event, room_server_client.MessagingStreamClosed)
+    assert event.reason == "error"
+    assert "unexpected chunk" in (event.message or "")
+    assert stream.closed
+    with pytest.raises(RoomException, match="closed"):
+        await stream.send_message(type="late", message={})
+
+
 @pytest.mark.asyncio
 async def test_messaging_client_send_message_resolves_online_remote_participant_by_id() -> (
     None
@@ -2946,6 +3226,95 @@ async def test_messaging_client_pipelines_queued_sends_before_responses() -> Non
     room.release_responses.set()
     await client.stop()
     await _cancel_close_watcher(room)
+
+
+@pytest.mark.asyncio
+async def test_invoke_stream_latency_does_not_wait_for_chunk_responses() -> None:
+    protocol = _FakeProtocol()
+    room = RoomClient(protocol_factory=protocol.create_factory())
+
+    async def chunks() -> AsyncIterator[Content]:
+        invoke_type, invoke_data, invoke_message_id = protocol.sent_messages[0]
+        assert invoke_type == "room.invoke_tool"
+        assert invoke_message_id is not None
+        await room._handle_response(
+            protocol=protocol,  # type: ignore[arg-type]
+            message_id=invoke_message_id,
+            type="__response__",
+            data=_ControlContent(method="open").pack(),
+        )
+        yield JsonContent(json={"sequence": 1})
+        yield JsonContent(json={"sequence": 2})
+
+    response = await room.invoke(
+        toolkit="streaming",
+        tool="stream",
+        input=chunks(),
+    )
+    assert not isinstance(response, Content)
+    await asyncio.sleep(0)
+
+    queued = protocol.sent_messages[1:]
+    assert [typ for typ, _, _ in queued] == [
+        "room.tool_call_request_chunk",
+        "room.tool_call_request_chunk",
+        "room.tool_call_request_chunk",
+    ]
+    decoded = [unpack_message(data)[0]["chunk"] for _, data, _ in queued]
+    assert decoded[0]["json"] == {"sequence": 1}
+    assert decoded[1]["json"] == {"sequence": 2}
+    assert decoded[2] == _ControlContent(method="close").to_json()
+    assert all(message_id is None for _, _, message_id in queued)
+
+    invoke_header, _ = unpack_message(protocol.sent_messages[0][1])
+    await room._handle_tool_call_response_chunk(
+        protocol=protocol,  # type: ignore[arg-type]
+        message_id=1,
+        typ="room.tool_call_response_chunk",
+        data=pack_message(
+            header={
+                "tool_call_id": invoke_header["tool_call_id"],
+                "chunk": _ControlContent(method="close").to_json(),
+            }
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_messaging_stream_close_cancels_active_output_reader() -> None:
+    class _FakeStreamClient:
+        def __init__(self) -> None:
+            self._incoming_streams: dict[str, MessagingStream] = {}
+
+    output_started = asyncio.Event()
+    output_closed = asyncio.Event()
+
+    async def output_chunks() -> AsyncIterator[Content]:
+        try:
+            output_started.set()
+            await asyncio.Event().wait()
+            yield EmptyContent()
+        finally:
+            output_closed.set()
+
+    outgoing: asyncio.Queue[JsonContent | None] = asyncio.Queue()
+    client = _FakeStreamClient()
+    stream = MessagingStream(
+        client=client,  # type: ignore[arg-type]
+        stream_id="stream-1",
+        remote_participant_id="remote",
+        outgoing=outgoing,
+        output=output_chunks(),
+    )
+    client._incoming_streams[stream.stream_id] = stream
+
+    await asyncio.wait_for(output_started.wait(), timeout=0.25)
+    await stream.close()
+
+    assert stream.closed
+    assert outgoing.get_nowait() is None
+    assert output_closed.is_set()
+    assert stream.stream_id not in client._incoming_streams
 
 
 @pytest.mark.asyncio
@@ -5568,9 +5937,16 @@ async def test_invoke_tool_upgrades_str_input_to_text_content() -> None:
 
 class _OpenResponseRoom(_FakeRoom):
     async def send_request(
-        self, typ: str, request: dict, data: bytes | None = None
+        self,
+        typ: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        _after_send: Callable[[], None] | None = None,
     ) -> JsonContent | dict:
         self.requests.append((typ, request, data))
+        if _after_send is not None:
+            _after_send()
         if typ == "room.invoke_tool":
             await asyncio.sleep(0)
             return _ControlContent(method="open")
@@ -5584,23 +5960,34 @@ class _OpenResponseBlockingChunkRoom(_FakeRoom):
         self.chunk_send_cancelled = asyncio.Event()
         self.chunk_send_count = 0
 
+    def _dispatch_tool_call_request_chunk(
+        self,
+        *,
+        tool_call_id: str,
+        chunk: Content,
+    ) -> None:
+        super()._dispatch_tool_call_request_chunk(
+            tool_call_id=tool_call_id,
+            chunk=chunk,
+        )
+        self.chunk_send_count += 1
+        if self.chunk_send_count == 1:
+            self.chunk_send_started.set()
+
     async def send_request(
-        self, typ: str, request: dict, data: bytes | None = None
+        self,
+        typ: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        _after_send: Callable[[], None] | None = None,
     ) -> JsonContent | dict:
         self.requests.append((typ, request, data))
+        if _after_send is not None:
+            _after_send()
         if typ == "room.invoke_tool":
             await asyncio.sleep(0)
             return _ControlContent(method="open")
-        if typ == "room.tool_call_request_chunk":
-            self.chunk_send_count += 1
-            if self.chunk_send_count == 1:
-                self.chunk_send_started.set()
-                try:
-                    await asyncio.Future()
-                except asyncio.CancelledError:
-                    self.chunk_send_cancelled.set()
-                    raise
-            return {}
         return {}
 
 
@@ -5609,9 +5996,19 @@ class _DeveloperLogRoom(_OpenResponseRoom):
         super().__init__()
 
     async def send_request(
-        self, typ: str, request: dict, data: bytes | None = None
+        self,
+        typ: str,
+        request: dict,
+        data: bytes | None = None,
+        *,
+        _after_send: Callable[[], None] | None = None,
     ) -> JsonContent | dict:
-        response = await super().send_request(typ, request, data)
+        response = await super().send_request(
+            typ,
+            request,
+            data,
+            _after_send=_after_send,
+        )
         if (
             typ == "room.tool_call_request_chunk"
             and request.get("chunk") == _ControlContent(method="close").to_json()
@@ -5678,7 +6075,11 @@ async def test_invoke_tool_stream_close_cancels_request_stream_task() -> None:
 
     async def request_stream() -> AsyncIterator[Content]:
         yield TextContent(text="step 1")
-        await asyncio.Future()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            room.chunk_send_cancelled.set()
+            raise
 
     response = await client.invoke_tool(
         toolkit="test-toolkit",
