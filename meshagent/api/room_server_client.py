@@ -10759,6 +10759,7 @@ class ContainersClient:
         ports: Dict[int, int] | None = None,
         credentials: List[DockerSecret] | None = None,
         name: Optional[str] = None,
+        annotations: Dict[str, str] | None = None,
         mounts: Optional[ContainerMountSpec] = None,
         template: Optional[ContainerTemplate] = "none",
         writable_root_fs: Optional[bool] = None,
@@ -10782,7 +10783,7 @@ class ContainersClient:
                     for credential in (credentials or [])
                 ],
                 "name": name,
-                "annotations": None,
+                "annotations": annotations,
                 "mounts": mounts.model_dump(mode="json", exclude_none=True)
                 if mounts is not None
                 else None,
