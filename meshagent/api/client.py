@@ -14,7 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from meshagent.api import RoomException
+from meshagent.api.room_server_client import RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.helpers import is_valid_room_name, meshagent_base_url
 from meshagent.api.http import new_client_session
