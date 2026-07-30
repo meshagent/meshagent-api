@@ -620,6 +620,74 @@ async def test_get_room_service_by_name_uses_by_name_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_get_unique_resources_by_name_use_by_name_endpoints():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "repository-1",
+                    "project_id": "proj_123",
+                    "name": "images",
+                    "created_at": "2026-01-01T00:00:00Z",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={"id": "group-1", "name": "operators"},
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "service-account-1",
+                    "project_id": "proj_123",
+                    "key": "worker",
+                    "name": "worker",
+                },
+            ),
+            _FakeResponse(
+                status=200,
+                payload={
+                    "feed": {
+                        "id": "feed-1",
+                        "project_id": "proj_123",
+                        "name": "events",
+                        "created_at": "2026-01-01T00:00:00Z",
+                    }
+                },
+            ),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    assert (
+        await client.get_repository_by_name(project_id="proj_123", name="Images/V1")
+    ).id == "repository-1"
+    assert (
+        await client.get_group_by_name(project_id="proj_123", name="Operators")
+    ).id == "group-1"
+    assert (
+        await client.get_service_account_by_name("proj_123", "Worker")
+    ).id == "service-account-1"
+    assert (
+        await client.get_feed_by_name(project_id="proj_123", name="Events")
+    ).id == "feed-1"
+
+    assert [call[1] for call in session.calls] == [
+        "http://example.test/accounts/projects/proj_123/repositories/by-name/Images%2FV1",
+        "http://example.test/accounts/projects/proj_123/groups/by-name/Operators",
+        "http://example.test/accounts/projects/proj_123/service-accounts/by-name/Worker",
+        "http://example.test/accounts/projects/proj_123/feeds/by-name/Events",
+    ]
+
+
+def test_managed_agent_metadata_name_is_trimmed_and_lowercased():
+    agent = ManagedAgentMetadata(name=" Planner ")
+
+    assert agent.name == "planner"
+
+
+@pytest.mark.asyncio
 async def test_list_group_members_page_returns_typed_members():
     session = _FakeSession(
         [

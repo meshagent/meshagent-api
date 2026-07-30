@@ -140,6 +140,11 @@ class ManagedAgentMetadata(BaseModel):
     name: str
     annotations: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return value.strip().lower()
+
 
 class ManagedAgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
