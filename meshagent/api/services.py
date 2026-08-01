@@ -10,11 +10,11 @@ import jwt
 import hashlib
 import aiohttp
 
-from meshagent.api import RoomException
+from meshagent.api.room_server_client import RoomException
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.webhooks import WebhookServer
-from meshagent.api import WebSocketClientProtocol, RoomMessage
-from meshagent.api.room_server_client import RoomClient
+from meshagent.api.room_server_client import RoomClient, RoomMessage
+from meshagent.api.websocket_protocol import WebSocketClientProtocol
 
 from meshagent.api.specs.service import (
     ContainerSpec,

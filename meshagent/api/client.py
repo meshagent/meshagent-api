@@ -14,7 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from meshagent.api import RoomException
+from meshagent.api.room_server_client import RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.helpers import is_valid_room_name, meshagent_base_url
 from meshagent.api.http import new_client_session
@@ -706,7 +706,7 @@ class _FeedRequestBase(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str) -> str:
-        normalized = value.strip()
+        normalized = value.strip().lower()
         if not is_valid_room_name(normalized):
             raise ValueError(
                 "name must be 1-63 lowercase letters, numbers, or hyphens, "
@@ -869,7 +869,7 @@ _OCI_REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+
 
 
 def _normalize_repository_name(value: str) -> str:
-    normalized = value.strip()
+    normalized = value.strip().lower()
     if normalized == "":
         raise ValueError("repository name must not be empty")
 
@@ -1502,6 +1502,21 @@ class Meshagent:
             f"{encoded_service_account_id}"
         )
 
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return ServiceAccount.model_validate(await resp.json())
+
+    async def get_service_account_by_name(
+        self,
+        project_id: str,
+        name: str,
+    ) -> ServiceAccount:
+        """GET a service account by its unique name."""
+        encoded_name = quote(name, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/service-accounts/"
+            f"by-name/{encoded_name}"
+        )
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             return ServiceAccount.model_validate(await resp.json())
@@ -2507,6 +2522,17 @@ class Meshagent:
             await self._raise_for_status(resp)
             return Feed.model_validate((await resp.json())["feed"])
 
+    async def get_feed_by_name(self, *, project_id: str, name: str) -> Feed:
+        """GET a feed by its unique name."""
+        encoded_name = quote(name, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/feeds/by-name/"
+            f"{encoded_name}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return Feed.model_validate((await resp.json())["feed"])
+
     async def list_feeds(
         self,
         *,
@@ -3272,6 +3298,22 @@ class Meshagent:
         url = (
             f"{self.base_url}/accounts/projects/{project_id}/repositories/"
             f"{repository_id}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, ProjectRepository)
+
+    async def get_repository_by_name(
+        self,
+        *,
+        project_id: str,
+        name: str,
+    ) -> ProjectRepository:
+        """GET a repository by its unique name."""
+        encoded_name = quote(name, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/repositories/"
+            f"by-name/{encoded_name}"
         )
         async with self._session.get(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
@@ -4111,6 +4153,22 @@ class Meshagent:
 
     async def get_group(self, *, project_id: str, group_id: str) -> Group:
         url = f"{self.base_url}/accounts/projects/{project_id}/groups/{group_id}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            if resp.status == 404:
+                raise RoomException("group not found")
+            await self._raise_for_status(resp)
+            try:
+                return Group.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid group payload: {exc}") from exc
+
+    async def get_group_by_name(self, *, project_id: str, name: str) -> Group:
+        """GET a group by its unique name."""
+        encoded_name = quote(name, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/groups/by-name/"
+            f"{encoded_name}"
+        )
         async with self._session.get(url, headers=self._get_headers()) as resp:
             if resp.status == 404:
                 raise RoomException("group not found")
