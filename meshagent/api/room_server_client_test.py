@@ -68,6 +68,7 @@ from meshagent.api.specs.service import (
     ContainerMountSpec,
     EmptyDirMountSpec,
     RoomStorageMountSpec,
+    VolumeStorageMountSpec,
 )
 from meshagent.api.schema import ChildProperty, ElementType, MeshSchema, ValueProperty
 
@@ -5223,6 +5224,15 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
                                 "started_by": {"id": "p1", "name": "user"},
                                 "state": "RUNNING",
                                 "private": False,
+                                "mounts": {
+                                    "volumes": [
+                                        {
+                                            "name": "zero",
+                                            "path": "/mnt/zero",
+                                            "read_only": False,
+                                        }
+                                    ]
+                                },
                             }
                         ]
                     }
@@ -5304,7 +5314,7 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     builds = await client.list_builds()
     await client.cancel_build(build_id="build-1")
     await client.delete_build(build_id="build-1")
-    await client.list()
+    containers = await client.list()
 
     assert [request["tool"] for request in room.requests] == [
         "pull_image",
@@ -5333,6 +5343,15 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     assert inspection.image.id == "img-1"
     assert inspection.image.references == ["demo:latest"]
     assert inspection.target.digest == "sha256:target"
+    assert containers[0].mounts == ContainerMountSpec(
+        volumes=[
+            VolumeStorageMountSpec(
+                name="zero",
+                path="/mnt/zero",
+                read_only=False,
+            )
+        ]
+    )
     assert inspection.content_size == 235
     assert builds[0].published_images[0].resolved_ref == "example@sha256:digest"
     assert builds[0].published_images[0].stats is not None
@@ -5380,6 +5399,41 @@ async def test_containers_client_uses_room_invoke_with_strict_payloads() -> None
     run_service_input = room.requests[3]["input"]
     assert isinstance(run_service_input, dict)
     assert run_service_input["env"] == [{"key": "A", "value": "1"}]
+
+
+def test_mounted_volume_consumers_are_typed_without_internal_paths() -> None:
+    output = room_server_client._MountedVolumeListOutput.model_validate(
+        {
+            "volumes": [
+                {
+                    "id": "zero-id",
+                    "name": "zero",
+                    "required": False,
+                    "consumers": [
+                        {
+                            "kind": "container",
+                            "container_id": "container-1",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert output.volumes[0].consumers[0].container_id == "container-1"
+    with pytest.raises(ValidationError):
+        room_server_client._MountedVolumeListOutput.model_validate(
+            {
+                "volumes": [
+                    {
+                        "id": "zero-id",
+                        "name": "zero",
+                        "required": False,
+                        "mount_path": "/mnt/volumes/zero",
+                    }
+                ]
+            }
+        )
 
 
 @pytest.mark.asyncio

@@ -483,6 +483,18 @@ def test_token_explicit_secret_preserves_kid() -> None:
     assert decoded["sub"] == "project-1"
 
 
+def test_token_explicit_secret_takes_precedence_over_environment_api_key(
+    monkeypatch,
+) -> None:
+    secret = "explicit-secret"
+    monkeypatch.setenv("MESHAGENT_API_KEY", "not-an-api-key")
+
+    token = ParticipantToken(name="eve", project_id="project-1").to_jwt(token=secret)
+
+    decoded = jwt.decode(token, key=secret, algorithms=["HS256"])
+    assert decoded["sub"] == "project-1"
+
+
 def test_token_default_secret_strips_kid_without_api_key(monkeypatch) -> None:
     secret = "default-secret"
     monkeypatch.setenv("MESHAGENT_SECRET", secret)

@@ -27,6 +27,7 @@ from pydantic import (
     PositiveInt,
     ValidationError,
     field_validator,
+    model_validator,
 )
 from typing import (
     Optional,
@@ -894,6 +895,7 @@ class RoomClient:
         self.sqlite = SqliteClient(room=self)
         self.memory = MemoryClient(room=self)
         self.containers = ContainersClient(room=self)
+        self.mounts = MountsClient(room=self)
         self.services = ServicesClient(room=self)
 
         self._room_url = None
@@ -10132,6 +10134,7 @@ class RoomContainer(BaseModel):
     state: Literal["CREATED", "RUNNING", "EXITED", "UNKNOWN"]
     private: bool
     service_id: Optional[str] = None
+    mounts: Optional[ContainerMountSpec] = None
     stats: Optional[RoomContainerStats] = None
     exit_status: Optional[ContainerExitStatus] = None
 
@@ -10514,6 +10517,66 @@ class ExecSession:
         if self._input_closed:
             return
         self._queue_input(channel=5)
+
+
+# ---------------------------
+# MountsClient
+# ---------------------------
+
+
+class MountedVolumeConsumer(BaseModel):
+    kind: Literal["room", "container"]
+    container_id: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_container_id(self):
+        if self.kind == "container" and self.container_id is None:
+            raise ValueError("container consumers require container_id")
+        if self.kind == "room" and self.container_id is not None:
+            raise ValueError("room consumers cannot include container_id")
+        return self
+
+
+class MountedVolume(BaseModel):
+    id: str
+    name: str
+    required: bool
+    description: str = ""
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    storage_class: Literal["standard", "juice", "zerofs"] = "standard"
+    max_size_mb: int | None = None
+    consumers: list[MountedVolumeConsumer] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+
+class _MountedVolumeListOutput(BaseModel):
+    volumes: list[MountedVolume] = Field(default_factory=list)
+
+
+class MountsClient:
+    def __init__(self, *, room: RoomClient):
+        self.room = room
+
+    async def list(self) -> list[MountedVolume]:
+        response = await self.room.invoke(
+            toolkit="mounts",
+            tool="list",
+            input={},
+        )
+        if not isinstance(response, JsonContent):
+            raise RoomException(
+                "unexpected return type from mounts.list",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            )
+        try:
+            return _MountedVolumeListOutput.model_validate(response.json).volumes
+        except ValidationError as exc:
+            raise RoomException(
+                "unexpected return type from mounts.list",
+                code=ErrorCode.UNEXPECTED_RESPONSE_TYPE,
+            ) from exc
 
 
 # ---------------------------

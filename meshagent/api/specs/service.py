@@ -156,6 +156,16 @@ class RoomStorageMountSpec(BaseModel):
     read_only: bool = False
 
 
+class VolumeStorageMountSpec(BaseModel):
+    """mounts a named room volume into a child container"""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    path: str
+    subpath: Optional[str] = None
+    read_only: bool = False
+
+
 class ImageStorageMountSpec(BaseModel):
     """mounts a the content of a Docker / OCI image at the specified path within the container"""
 
@@ -204,6 +214,7 @@ class ConfigMountSpec(BaseModel):
 class ContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
+    volumes: Optional[list[VolumeStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
     empty_dirs: Optional[list[EmptyDirMountSpec]] = None
@@ -767,6 +778,7 @@ class ServiceTemplateVariable(BaseModel):
 class ServiceTemplateContainerMountSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     room: Optional[list[RoomStorageMountSpec]] = None
+    volumes: Optional[list[VolumeStorageMountSpec]] = None
     images: Optional[list[ImageStorageMountSpec]] = None
     files: Optional[list[FileStorageMountSpec]] = None
     empty_dirs: Optional[list[EmptyDirMountSpec]] = None

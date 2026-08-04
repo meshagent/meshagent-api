@@ -1,4 +1,6 @@
 ## [0.47.1]
+- Added monotonic room-volume expansion through the account API and CLI while preserving immutable volume identity and provider configuration.
+- Changed room mount discovery to return typed room/container consumers without exposing internal source paths, and added typed container mount specs to listed containers.
 - Added OpenAI image generation support, including response-adapter handling for image inputs and `pillow~=11.3.0` for image processing.
 - Added duplex messaging stream subscriptions and aligned replay and pending-state handling across the Python chat clients and room server client, preserving close errors and ordered dispatch.
 - Updated room access and token validation for site-only rooms and removed legacy room OpenAI and Anthropic proxy URL handling from room-connect flows.

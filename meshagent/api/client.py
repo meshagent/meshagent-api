@@ -150,6 +150,27 @@ class Room(BaseModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
+class StorageVolume(BaseModel):
+    id: str
+    room_id: str
+    name: str
+    subpath: str
+    description: str = ""
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+    storage_class: Literal["standard", "juice", "zerofs"] = "standard"
+    max_size_mb: int | None = None
+    phase: Literal["pending", "bound", "deleting", "failed"] = "pending"
+    provisioned: bool = False
+    reconcile_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class _StorageVolumesResponse(BaseModel):
+    volumes: list[StorageVolume] = Field(default_factory=list)
+
+
 class RoomsPage(BaseModel):
     rooms: list[Room]
     total: int = 0
@@ -4127,6 +4148,94 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
+
+    async def list_room_volumes(
+        self,
+        *,
+        project_id: str,
+        room: str,
+    ) -> list[StorageVolume]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/volumes"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            try:
+                payload = _StorageVolumesResponse.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid storage volume payload: {exc}") from exc
+            return payload.volumes
+
+    async def create_room_volume(
+        self,
+        *,
+        project_id: str,
+        room: str,
+        name: str,
+        description: str = "",
+        metadata: dict[str, JsonValue] | None = None,
+        storage_class: Literal["standard", "juice", "zerofs"] = "standard",
+        max_size_mb: int | None = None,
+        annotations: dict[str, str] | None = None,
+    ) -> StorageVolume:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/volumes"
+        payload = {
+            "name": name,
+            "description": description,
+            "metadata": metadata,
+            "storage_class": storage_class,
+            "max_size_mb": max_size_mb,
+            "annotations": annotations,
+        }
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json=payload,
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return StorageVolume.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid storage volume payload: {exc}") from exc
+
+    async def delete_room_volume(
+        self,
+        *,
+        project_id: str,
+        room: str,
+        volume_id: str,
+    ) -> StorageVolume:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/volumes/"
+            f"{volume_id}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return StorageVolume.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid storage volume payload: {exc}") from exc
+
+    async def expand_room_volume(
+        self,
+        *,
+        project_id: str,
+        room: str,
+        volume_id: str,
+        max_size_mb: int,
+    ) -> StorageVolume:
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/volumes/"
+            f"{volume_id}"
+        )
+        async with self._session.patch(
+            url,
+            headers=self._get_headers(),
+            json={"max_size_mb": max_size_mb},
+        ) as resp:
+            await self._raise_for_status(resp)
+            try:
+                return StorageVolume.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid storage volume payload: {exc}") from exc
 
     async def create_group(
         self,
