@@ -879,6 +879,8 @@ class RoomClient:
         self._room_closed = asyncio.Future[None]()
         self._entered = False
         self._closing = False
+        self._dismissed = False
+        self._dismiss_task: asyncio.Task[None] | None = None
         self._connected = False
         self._allow_disconnected_requests = False
         self._close_kind: ProtocolCloseKind | None = None
@@ -1225,7 +1227,7 @@ class RoomClient:
 
         first_attempt = True
         retry_count = 0
-        while not self._closing:
+        while not self._closing and not self._dismissed:
             if first_attempt:
                 first_attempt = False
                 if self._reconnect_timeout is None:
@@ -1453,7 +1455,7 @@ class RoomClient:
                     self._room_closed.set_result(None)
                 return
 
-            if close_kind != ProtocolCloseKind.ERROR:
+            if close_kind != ProtocolCloseKind.ERROR or self._dismissed:
                 self._set_terminal_state(state=state)
 
             self._mark_disconnected(reason=close_reason, kind=close_kind)
@@ -1468,7 +1470,7 @@ class RoomClient:
             await self._fail_pending_work(state=state)
             await self._close_protocol(protocol)
 
-            if close_kind == ProtocolCloseKind.ERROR:
+            if close_kind == ProtocolCloseKind.ERROR and not self._dismissed:
                 if self._reconnect_timeout == 0:
                     if close_reason is None:
                         logger.warning(
@@ -1501,6 +1503,20 @@ class RoomClient:
             if not self._room_closed.done():
                 self._room_closed.set_result(None)
             return
+
+    def _dismiss(self) -> None:
+        if self._closing or self._dismissed:
+            return
+
+        self._dismissed = True
+        task = asyncio.create_task(self._close_protocol(self._protocol_instance))
+        self._dismiss_task = task
+
+        def clear_dismiss_task(completed: asyncio.Task[None]) -> None:
+            if self._dismiss_task is completed:
+                self._dismiss_task = None
+
+        task.add_done_callback(clear_dismiss_task)
 
     @staticmethod
     def _normalize_close_reason(reason: str | None) -> str | None:
@@ -4732,6 +4748,8 @@ class MessagingClient:
         elif message.type == "participant.disabled":
             self._on_participant_disabled(message)
         else:
+            if message.type == "dismiss":
+                self.room._dismiss()
             self.emit("message", message=message)
 
     async def _handle_stream_tool_call(

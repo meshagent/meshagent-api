@@ -2232,6 +2232,39 @@ async def test_room_client_reconnect_timeout_zero_disables_retry_and_closes_room
 
 
 @pytest.mark.asyncio
+async def test_room_client_dismiss_message_closes_without_reconnecting() -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    room = RoomClient(protocol_factory=controller.protocol_factory)
+    await room.__aenter__()
+
+    try:
+        received_messages: list[RoomMessage] = []
+        room.messaging.on(
+            "message", lambda *, message: received_messages.append(message)
+        )
+
+        await controller.protocols[0]._emit(
+            "messaging.send",
+            pack_message(
+                header={
+                    "from_participant_id": "studio",
+                    "type": "dismiss",
+                    "message": {},
+                }
+            ),
+        )
+        await asyncio.wait_for(room.wait_for_close(), timeout=1)
+
+        assert [message.type for message in received_messages] == ["dismiss"]
+        assert len(controller.protocols) == 1
+        assert room.is_connected is False
+        assert room.is_closed is True
+        assert room.close_kind() == ProtocolCloseKind.CLIENT
+    finally:
+        await room.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
 async def test_room_client_reconnect_restores_sync_and_messaging_state() -> None:
     controller = _ReconnectRoomController(schema=_simple_thread_schema())
     room = RoomClient(protocol_factory=controller.protocol_factory)
