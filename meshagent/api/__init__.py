@@ -108,9 +108,11 @@ from .version import __version__
 from .error_codes import ErrorCode
 from .dataset_schema import LANCE_COMPRESSION_METADATA_KEY, LANCE_ZSTD_FIELD_METADATA
 from .mime_types import guess_mime_type
+from .http import MeshagentConsistency
 
 __all__ = [
     "Meshagent",
+    "MeshagentConsistency",
     "CreateProjectRequest",
     "CreateProjectRepositoryRequest",
     "CreateRepositoryTokenRequest",

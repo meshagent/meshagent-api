@@ -11,6 +11,7 @@ from meshagent.api.managed_agents import (
     ManagedAgentMetadata,
     ManagedAgentSpec,
 )
+from meshagent.api.http import MESHAGENT_CONSISTENCY_HEADER
 from meshagent.api.participant_token import ApiScope
 from meshagent.api.client import (
     AccessResource,
@@ -54,29 +55,78 @@ class _FakeSession:
         self._responses = responses
         self.closed = False
         self.calls: list[tuple[str, str, dict | None]] = []
+        self.headers: list[dict[str, str]] = []
 
     def post(self, url: str, *, headers=None, json=None, data=None):
+        self.headers.append(dict(headers or {}))
         self.calls.append(("post", url, data if data is not None else json))
         return self._responses.pop(0)
 
     def put(self, url: str, *, headers=None, json=None):
+        self.headers.append(dict(headers or {}))
         self.calls.append(("put", url, json))
         return self._responses.pop(0)
 
     def patch(self, url: str, *, headers=None, json=None):
+        self.headers.append(dict(headers or {}))
         self.calls.append(("patch", url, json))
         return self._responses.pop(0)
 
     def get(self, url: str, *, headers=None, params=None):
+        self.headers.append(dict(headers or {}))
         self.calls.append(("get", url, params))
         return self._responses.pop(0)
 
     def delete(self, url: str, *, headers=None, params=None):
+        self.headers.append(dict(headers or {}))
         self.calls.append(("delete", url, params))
         return self._responses.pop(0)
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consistency", ["fast", "high"])
+async def test_meshagent_sends_consistency_header_on_rest_calls(consistency) -> None:
+    session = _FakeSession([_FakeResponse(status=200, payload={"domains": {}})])
+    client = Meshagent(
+        base_url="http://example.test",
+        token="token",
+        session=session,
+        consistency=consistency,
+    )
+
+    await client.get_config()
+
+    assert session.headers == [
+        {
+            "Authorization": "Bearer token",
+            "Content-Type": "application/json",
+            MESHAGENT_CONSISTENCY_HEADER: consistency,
+        }
+    ]
+
+
+def test_meshagent_defaults_to_fast_consistency() -> None:
+    client = Meshagent(
+        base_url="http://example.test",
+        token="token",
+        session=_FakeSession([]),
+    )
+
+    assert client.consistency == "fast"
+    assert client._get_consistency_headers() == {MESHAGENT_CONSISTENCY_HEADER: "fast"}
+
+
+def test_meshagent_rejects_invalid_consistency() -> None:
+    with pytest.raises(ValueError, match="consistency must be 'fast' or 'high'"):
+        Meshagent(
+            base_url="http://example.test",
+            token="token",
+            session=_FakeSession([]),
+            consistency="eventual",
+        )
 
 
 @pytest.mark.asyncio

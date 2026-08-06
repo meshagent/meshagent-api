@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 import os
 import ssl
 
@@ -12,6 +12,18 @@ import certifi
 
 LLM_ANNOTATION_HEADER_PREFIX = "X-Meshagent-Annotation-"
 _LLM_ANNOTATION_HEADER_PREFIX_LOWER = LLM_ANNOTATION_HEADER_PREFIX.lower()
+MESHAGENT_CONSISTENCY_HEADER = "Consistency"
+MeshagentConsistency = Literal["fast", "high"]
+DEFAULT_MESHAGENT_CONSISTENCY: MeshagentConsistency = "fast"
+
+
+def normalize_meshagent_consistency(value: str | None) -> MeshagentConsistency:
+    if value is None:
+        return DEFAULT_MESHAGENT_CONSISTENCY
+    normalized = value.strip().lower()
+    if normalized == "fast" or normalized == "high":
+        return normalized
+    raise ValueError("consistency must be 'fast' or 'high'")
 
 
 class _HostAliasResolver(AbstractResolver):

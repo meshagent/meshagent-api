@@ -17,7 +17,12 @@ from pydantic import (
 from meshagent.api.room_server_client import RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.helpers import is_valid_room_name, meshagent_base_url
-from meshagent.api.http import new_client_session
+from meshagent.api.http import (
+    MESHAGENT_CONSISTENCY_HEADER,
+    MeshagentConsistency,
+    new_client_session,
+    normalize_meshagent_consistency,
+)
 from datetime import datetime
 from meshagent.api.specs.service import (
     ContainerSpec,
@@ -1115,13 +1120,16 @@ class Meshagent:
         base_url: str = meshagent_base_url(),
         token: str = os.getenv("MESHAGENT_API_KEY"),
         session: aiohttp.ClientSession | None = None,
+        consistency: MeshagentConsistency = "fast",
     ):
         """
         :param base_url: The root URL of your server, e.g. 'http://localhost:8080'.
         :param token: A Bearer token for the Authorization header.
+        :param consistency: Prefer fast cached authorization queries or high consistency.
         """
         self.base_url = base_url.rstrip("/")
         self.token = token  # The "Bearer" token
+        self.consistency = normalize_meshagent_consistency(consistency)
         self._session_external = session is not None
         self._session = session or new_client_session()
 
@@ -1142,7 +1150,11 @@ class Meshagent:
         return {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
+            **self._get_consistency_headers(),
         }
+
+    def _get_consistency_headers(self) -> Dict[str, str]:
+        return {MESHAGENT_CONSISTENCY_HEADER: self.consistency}
 
     async def _raise_for_status(
         self,
@@ -4046,7 +4058,10 @@ class Meshagent:
         url = f"{self.base_url}/api/participant-token/validate"
         async with self._session.post(
             url,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                **self._get_consistency_headers(),
+            },
             json={"token": token},
         ) as resp:
             await self._raise_for_status(resp)
@@ -4836,7 +4851,10 @@ class Meshagent:
         POST /oauth/token with application/x-www-form-urlencoded OAuth parameters.
         """
         url = f"{self.base_url}/oauth/token"
-        headers = {"Accept": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            **self._get_consistency_headers(),
+        }
         async with self._session.post(url, headers=headers, data=form) as resp:
             if resp.status >= 400:
                 body = await resp.text()
