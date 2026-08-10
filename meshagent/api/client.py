@@ -245,6 +245,9 @@ ProjectRole = Literal[
 ]
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
 RoomRole = Literal["site_user", "guest", "viewer", "operator", "developer", "admin"]
+ProjectSettingsDocumentName = Literal[
+    "openai", "anthropic", "otel", "admission", "room", "room_roles"
+]
 FeedRole = Literal["reader", "subscriber", "publisher", "manager"]
 SecretRole = Literal["use_proxy"]
 ServiceAccountRole = Literal[
@@ -954,7 +957,6 @@ class ProjectInfo(BaseModel):
     name: str
     project_key: str | None = None
     created_at: datetime | None = Field(default=None, alias="created_at")
-    settings: dict[str, JsonValue] | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -969,7 +971,6 @@ class ProjectInfo(BaseModel):
 
 class CreateProjectRequest(BaseModel):
     name: str
-    settings: dict[str, JsonValue] | None = None
 
 
 class ProjectsPage(BaseModel):
@@ -1265,16 +1266,14 @@ class Meshagent:
                 )
             return await resp.read()
 
-    async def create_project(
-        self, name: str, settings: dict[str, JsonValue] | None = None
-    ) -> ProjectInfo:
+    async def create_project(self, name: str) -> ProjectInfo:
         """
         Corresponds to: POST /accounts/projects
         Body: { "name": "<name>" }
         Returns { "id", "owner_user_id", "name", "project_key" } on success.
         """
         url = f"{self.base_url}/accounts/projects"
-        request = CreateProjectRequest(name=name, settings=settings)
+        request = CreateProjectRequest(name=name)
 
         async with self._session.post(
             url,
@@ -1340,17 +1339,54 @@ class Meshagent:
             await self._raise_for_status(resp)
             return await resp.json()
 
-    async def update_project_settings(
-        self, project_id: str, settings: dict
-    ) -> Dict[str, Any]:
-        """
-        Corresponds to: PUT /accounts/projects/:id/settings
-        """
-        url = f"{self.base_url}/accounts/projects/{project_id}/settings"
+    @staticmethod
+    def _project_settings_document_path(name: ProjectSettingsDocumentName) -> str:
+        paths = {
+            "openai": "openai",
+            "anthropic": "anthropic",
+            "otel": "otel",
+            "admission": "admission",
+            "room": "room",
+            "room_roles": "room-roles",
+        }
+        try:
+            return paths[name]
+        except KeyError as error:
+            raise ValueError(
+                f"unsupported project settings document: {name}"
+            ) from error
 
+    async def get_project_settings_document(
+        self, project_id: str, name: ProjectSettingsDocumentName
+    ) -> dict[str, Any] | None:
+        path = self._project_settings_document_path(name)
+        url = f"{self.base_url}/accounts/projects/{project_id}/settings/{path}"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            if resp.status == 404:
+                return None
+            await self._raise_for_status(resp)
+            return await resp.json()
+
+    async def set_project_settings_document(
+        self,
+        project_id: str,
+        name: ProjectSettingsDocumentName,
+        document: dict[str, Any],
+    ) -> Dict[str, Any]:
+        path = self._project_settings_document_path(name)
+        url = f"{self.base_url}/accounts/projects/{project_id}/settings/{path}"
         async with self._session.put(
-            url, headers=self._get_headers(), json=settings
+            url, headers=self._get_headers(), json=document
         ) as resp:
+            await self._raise_for_status(resp)
+            return await resp.json()
+
+    async def delete_project_settings_document(
+        self, project_id: str, name: ProjectSettingsDocumentName
+    ) -> Dict[str, Any]:
+        path = self._project_settings_document_path(name)
+        url = f"{self.base_url}/accounts/projects/{project_id}/settings/{path}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
             return await resp.json()
 

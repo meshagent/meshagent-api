@@ -130,6 +130,58 @@ def test_meshagent_rejects_invalid_consistency() -> None:
 
 
 @pytest.mark.asyncio
+async def test_project_settings_document_methods_use_dedicated_routes() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={"roles": {}}),
+            _FakeResponse(status=200, payload={}),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    document = await client.get_project_settings_document("proj_123", "room_roles")
+    await client.set_project_settings_document("proj_123", "room_roles", {"roles": {}})
+    await client.delete_project_settings_document("proj_123", "room_roles")
+
+    assert document == {"roles": {}}
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/settings/room-roles",
+            None,
+        ),
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/settings/room-roles",
+            {"roles": {}},
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/proj_123/settings/room-roles",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_project_settings_document_returns_none() -> None:
+    session = _FakeSession([_FakeResponse(status=404, payload={})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    assert await client.get_project_settings_document("proj_123", "room") is None
+
+
+def test_project_settings_document_methods_reject_unknown_names() -> None:
+    client = Meshagent(
+        base_url="http://example.test", token="token", session=_FakeSession([])
+    )
+
+    with pytest.raises(ValueError, match="unsupported project settings document"):
+        client._project_settings_document_path("legacy")
+
+
+@pytest.mark.asyncio
 async def test_connect_agent_normalizes_legacy_messages_url():
     session = _FakeSession(
         [
