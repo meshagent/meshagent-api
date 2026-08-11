@@ -1,6 +1,7 @@
 ## [0.48.1]
 - Stability
 - Added `fast`/`high` REST authorization consistency selection to the Python `Meshagent` client, defaulting to fast cached queries.
+- Added typed room-content route targets with subpath, CORS, index serving, IAP, and Brotli-by-default compression options.
 
 ## [0.48.0]
 - Added Python client support for device sessions, storage volumes, and room-server APIs.

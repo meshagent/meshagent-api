@@ -529,19 +529,93 @@ class RouteBackendSpec(BaseModel):
         return self
 
 
+class RouteCorsRule(BaseModel):
+    """CORS response options for content served by a route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allowedOrigins: list[str]
+    allowedMethods: list[str] = Field(default_factory=lambda: ["GET", "HEAD"])
+    allowedHeaders: list[str] = Field(default_factory=list)
+    exposeHeaders: list[str] = Field(default_factory=list)
+    maxAgeSeconds: int = Field(3600, ge=0)
+    allowCredentials: bool = False
+
+    @field_validator("allowedOrigins")
+    @classmethod
+    def validate_origins(cls, value: list[str]) -> list[str]:
+        if len(value) == 0:
+            raise ValueError("RouteSpec CORS allowedOrigins must not be empty")
+        normalized = [item.strip() for item in value]
+        if any(item == "" for item in normalized):
+            raise ValueError("RouteSpec CORS origins must not be empty")
+        return normalized
+
+    @field_validator("allowedHeaders", "exposeHeaders")
+    @classmethod
+    def validate_headers(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(item == "" for item in normalized):
+            raise ValueError("RouteSpec CORS headers must not be empty")
+        return normalized
+
+    @field_validator("allowedMethods")
+    @classmethod
+    def validate_methods(cls, value: list[str]) -> list[str]:
+        if len(value) == 0:
+            raise ValueError("RouteSpec CORS allowedMethods must not be empty")
+        normalized = [method.strip().upper() for method in value]
+        if any(method == "" for method in normalized):
+            raise ValueError("RouteSpec CORS methods must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_credentials(self) -> "RouteCorsRule":
+        if self.allowCredentials and "*" in self.allowedOrigins:
+            raise ValueError(
+                "RouteSpec CORS allowCredentials cannot be used with wildcard origins"
+            )
+        return self
+
+
+class RouteContentSpec(BaseModel):
+    """Serves a subpath of room storage directly from a route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subpath: str = ""
+    cors: list[RouteCorsRule] = Field(default_factory=list)
+    index: bool = False
+    iap: bool = False
+    compression: Literal["brotli", "gzip", "none"] = "brotli"
+
+    @field_validator("subpath")
+    @classmethod
+    def validate_subpath(cls, value: str) -> str:
+        normalized = value.strip().strip("/")
+        if any(part in (".", "..") for part in normalized.split("/")):
+            raise ValueError("RouteSpec content subpath cannot contain dot segments")
+        return normalized
+
+
 class RoutePathSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = "/"
     pathType: Literal["prefix", "exact"] = "prefix"
     stripPrefix: bool = False
-    targetPort: str | int
+    targetPort: str | int | None = None
+    targetContent: RouteContentSpec | None = None
 
     @model_serializer(mode="wrap")
     def serialize_route_path(self, handler: Any) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
         if not self.stripPrefix:
             data.pop("stripPrefix", None)
+        if self.targetPort is None:
+            data.pop("targetPort", None)
+        if self.targetContent is None:
+            data.pop("targetContent", None)
         return data
 
     @field_validator("path")
@@ -553,10 +627,23 @@ class RoutePathSpec(BaseModel):
 
     @field_validator("targetPort")
     @classmethod
-    def validate_target_port(cls, value: str | int) -> str | int:
+    def validate_target_port(cls, value: str | int | None) -> str | int | None:
         if isinstance(value, str) and value.strip() == "":
             raise ValueError("RouteSpec targetPort must not be empty")
         return value
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "RoutePathSpec":
+        targets = [self.targetPort is not None, self.targetContent is not None]
+        if sum(targets) != 1:
+            raise ValueError(
+                "RouteSpec paths require exactly one of targetPort or targetContent"
+            )
+        if self.targetContent is not None and self.stripPrefix:
+            raise ValueError(
+                "RouteSpec content paths do not support stripPrefix; the route path is always removed"
+            )
+        return self
 
 
 class RouteSpec(BaseModel):

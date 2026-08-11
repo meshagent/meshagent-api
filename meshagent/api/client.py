@@ -699,7 +699,8 @@ class Route(BaseModel):
     def port(self) -> str:
         if len(self.spec.paths) == 0:
             return ""
-        return str(self.spec.paths[0].targetPort)
+        target_port = self.spec.paths[0].targetPort
+        return "" if target_port is None else str(target_port)
 
     @property
     def annotations(self) -> dict[str, str]:

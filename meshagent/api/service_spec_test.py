@@ -9,11 +9,62 @@ from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.api.specs.service import (
     EnvironmentVariable,
     PortSpec,
+    RouteContentSpec,
+    RouteCorsRule,
+    RoutePathSpec,
     SecretValue,
     ServiceFileSpec,
     ServiceSpec,
     ServiceTemplateSpec,
 )
+
+
+def test_route_content_spec_round_trips_website_options() -> None:
+    path = RoutePathSpec(
+        path="/docs",
+        targetContent=RouteContentSpec(
+            subpath="sites/docs",
+            index=True,
+            iap=True,
+            cors=[
+                RouteCorsRule(
+                    allowedOrigins=["https://app.example.com"],
+                    allowedMethods=["get", "head"],
+                    allowedHeaders=["Authorization"],
+                    exposeHeaders=["ETag"],
+                    maxAgeSeconds=600,
+                    allowCredentials=True,
+                )
+            ],
+        ),
+    )
+
+    payload = path.model_dump(mode="json")
+    restored = RoutePathSpec.model_validate(payload)
+
+    assert "targetPort" not in payload
+    assert payload["targetContent"]["compression"] == "brotli"
+    assert restored.targetContent is not None
+    assert restored.targetContent.subpath == "sites/docs"
+    assert restored.targetContent.index is True
+    assert restored.targetContent.iap is True
+    assert restored.targetContent.cors[0].allowedMethods == ["GET", "HEAD"]
+
+
+def test_route_path_requires_exactly_one_target() -> None:
+    with pytest.raises(ValidationError, match="exactly one"):
+        RoutePathSpec()
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        RoutePathSpec(
+            targetPort=8080,
+            targetContent=RouteContentSpec(subpath="public"),
+        )
+
+
+def test_route_content_cors_rejects_credentialed_wildcard() -> None:
+    with pytest.raises(ValidationError, match="wildcard origins"):
+        RouteCorsRule(allowedOrigins=["*"], allowCredentials=True)
 
 
 def test_service_spec_channels_round_trip_from_yaml() -> None:
