@@ -25,6 +25,7 @@ ManagedAllowedModel = Annotated[
 ]
 
 ManagedAgentThreadIsolation = Literal["global", "participant"]
+ManagedAgentLlmDelegation = Literal["required", "optional"]
 
 
 class ManagedAgentRunAs(BaseModel):
@@ -34,7 +35,7 @@ class ManagedAgentRunAs(BaseModel):
         ..., description="the service account email this managed agent runs as"
     )
     scopes: list[str] = Field(
-        default_factory=lambda: ["secrets:proxy"],
+        default_factory=lambda: ["secrets:proxy", "llm_proxy"],
         description=(
             "OAuth scopes to grant to the runtime service account token. "
             "The project scope is always added by the server."
@@ -154,6 +155,7 @@ class ManagedAgentSpec(BaseModel):
     metadata: ManagedAgentMetadata
     allowed_models: list[ManagedAllowedModel]
     run_as: ManagedAgentRunAs | None = None
+    llm_delegation: ManagedAgentLlmDelegation = "optional"
     thread_isolation: ManagedAgentThreadIsolation = "global"
     instructions: str | None = None
     toolkits: list[ManagedToolkit] | None = None

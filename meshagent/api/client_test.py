@@ -1,6 +1,7 @@
 import base64
 import json
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -127,6 +128,109 @@ def test_meshagent_rejects_invalid_consistency() -> None:
             session=_FakeSession([]),
             consistency="eventual",
         )
+
+
+@pytest.mark.asyncio
+async def test_connect_llm_accepts_email_subject_and_returns_budget_and_expiry() -> (
+    None
+):
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "id": "delegation-1",
+                    "token": "delegation-token",
+                    "expires_at": "2026-08-13T19:00:00Z",
+                    "project_id": "proj_123",
+                    "delegator": {"type": "user", "id": "user-1"},
+                    "subject": {
+                        "type": "service_account",
+                        "id": "service-account-1",
+                        "email": "assistant@service.demo.api.meshagent.com",
+                    },
+                    "providers": ["openai"],
+                    "models": ["openai/gpt-5"],
+                    "max_budget": "1.25",
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    delegation = await client.connect_llm(
+        project_id="proj_123",
+        subject=AccessSubject(
+            type="service_account",
+            email="assistant@service.demo.api.meshagent.com",
+        ),
+        max_budget=Decimal("2.00"),
+        providers=["openai"],
+        models=["openai/gpt-5"],
+        expires_in_seconds=900,
+    )
+
+    assert delegation.id == "delegation-1"
+    assert delegation.expires_at == datetime.fromisoformat("2026-08-13T19:00:00+00:00")
+    assert delegation.max_budget == Decimal("1.25")
+    assert session.headers == [
+        {
+            "Authorization": "Bearer token",
+            "Content-Type": "application/json",
+            MESHAGENT_CONSISTENCY_HEADER: "fast",
+            "Meshagent-Project-Id": "proj_123",
+        }
+    ]
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/llm/connect",
+            {
+                "subject": {
+                    "type": "service_account",
+                    "email": "assistant@service.demo.api.meshagent.com",
+                },
+                "max_budget": "2.00",
+                "providers": ["openai"],
+                "models": ["openai/gpt-5"],
+                "expires_in_seconds": 900,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_iam_methods_serialize_group_email_without_synthetic_id() -> None:
+    session = _FakeSession(
+        [_FakeResponse(status=200, payload={"allowed": True, "relation": "can_use"})]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    result = await client.test_access(
+        project_id="proj_123",
+        subject=AccessSubject(
+            type="group",
+            email="operators@group.demo.api.meshagent.com",
+        ),
+        resource=AccessResource(type="room", id="room-1"),
+        relation="can_use",
+    )
+
+    assert result.allowed is True
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/access:test",
+            {
+                "subject": {
+                    "type": "group",
+                    "email": "operators@group.demo.api.meshagent.com",
+                },
+                "resource": {"type": "room", "id": "room-1"},
+                "relation": "can_use",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

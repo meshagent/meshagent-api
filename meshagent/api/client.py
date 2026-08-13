@@ -24,6 +24,7 @@ from meshagent.api.http import (
     normalize_meshagent_consistency,
 )
 from datetime import datetime
+from decimal import Decimal
 from meshagent.api.specs.service import (
     ContainerSpec,
     RouteBackendSpec,
@@ -239,6 +240,7 @@ ProjectRole = Literal[
     "llm_logger_inventory",
     "llm_logger_manager",
     "llm_proxy_user",
+    "llm_quota_manager",
     "usage_reporter",
     "billing_manager",
     "group_manager",
@@ -246,7 +248,7 @@ ProjectRole = Literal[
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
 RoomRole = Literal["site_user", "guest", "viewer", "operator", "developer", "admin"]
 ProjectSettingsDocumentName = Literal[
-    "openai", "anthropic", "otel", "admission", "room", "room_roles"
+    "openai", "anthropic", "otel", "admission", "room", "room_roles", "router"
 ]
 FeedRole = Literal["reader", "subscriber", "publisher", "manager"]
 SecretRole = Literal["use_proxy"]
@@ -277,7 +279,7 @@ def _validate_resource_policy_type(resource_type: AccessResourceType) -> None:
 
 class AccessSubject(BaseModel):
     type: AccessSubjectType
-    id: str
+    id: Optional[str] = None
     name: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
@@ -286,6 +288,18 @@ class AccessSubject(BaseModel):
     relation: Optional[Literal["member", "developer", "agent", "service_account"]] = (
         None
     )
+
+
+class LlmDelegation(BaseModel):
+    id: str
+    token: str
+    expires_at: datetime
+    project_id: str
+    delegator: AccessSubject
+    subject: AccessSubject
+    providers: Optional[list[Literal["openai", "anthropic"]]] = None
+    models: Optional[list[str]] = None
+    max_budget: Decimal
 
 
 class AccessResource(BaseModel):
@@ -4579,6 +4593,36 @@ class Meshagent:
         ) as resp:
             await self._raise_for_status(resp)
             return AgentConnectionInfo.model_validate(await resp.json())
+
+    async def connect_llm(
+        self,
+        *,
+        project_id: str,
+        subject: AccessSubject,
+        max_budget: Decimal | str,
+        providers: Optional[list[Literal["openai", "anthropic"]]] = None,
+        models: Optional[list[str]] = None,
+        expires_in_seconds: Optional[int] = None,
+    ) -> LlmDelegation:
+        """Issue LLM authorization delegated to a service-account principal."""
+        payload = {
+            "subject": subject.model_dump(mode="json", exclude_none=True),
+            "max_budget": str(max_budget),
+            "providers": providers,
+            "models": models,
+            "expires_in_seconds": expires_in_seconds,
+        }
+        headers = {
+            **self._get_headers(),
+            "Meshagent-Project-Id": project_id,
+        }
+        async with self._session.post(
+            f"{self.base_url}/llm/connect",
+            headers=headers,
+            json={key: value for key, value in payload.items() if value is not None},
+        ) as resp:
+            await self._raise_for_status(resp)
+            return LlmDelegation.model_validate(await resp.json())
 
     async def list_rooms(
         self,
