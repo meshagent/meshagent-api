@@ -24,6 +24,7 @@ from .room_server_client import (
     MessagingStreamClientDisconnected,
     MessagingStreamClosed,
     RoomLogEvent,
+    RoomDisabledError,
     RoomException,
     ToolContentType,
     ToolContentSpec,
@@ -112,6 +113,7 @@ from .http import MeshagentConsistency
 
 __all__ = [
     "Meshagent",
+    "RoomDisabledError",
     "MeshagentConsistency",
     "CreateProjectRequest",
     "CreateProjectRepositoryRequest",

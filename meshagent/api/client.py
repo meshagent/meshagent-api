@@ -14,7 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from meshagent.api.room_server_client import RoomException
+from meshagent.api.room_server_client import RoomDisabledError, RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.helpers import is_valid_room_name, meshagent_base_url
 from meshagent.api.http import (
@@ -154,6 +154,7 @@ class Room(BaseModel):
     name: str
     metadata: dict[str, JsonValue]
     annotations: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
 
 
 class StorageVolume(BaseModel):
@@ -1192,6 +1193,18 @@ class Meshagent:
             raise PermissionDeniedError(msg)
         if resp.status == 409:
             raise ConflictError(msg)
+        if resp.status == 423:
+            try:
+                payload = json.loads(body)
+                error = payload.get("error") if isinstance(payload, dict) else None
+                message = error.get("message") if isinstance(error, dict) else None
+            except (TypeError, ValueError):
+                message = None
+            raise RoomDisabledError(
+                message
+                if isinstance(message, str)
+                else "This room is currently disabled."
+            )
         if resp.status == 400:
             raise ValidationErrorResponse(msg)
         if resp.status >= 500:
@@ -4189,6 +4202,7 @@ class Meshagent:
         name: str,
         metadata: Optional[dict[str, any]] = None,
         annotations: Optional[dict[str, str]] = None,
+        enabled: bool | None = None,
     ) -> None:
         """
         PUT /accounts/projects/{project_id}/rooms/{room_id}
@@ -4201,6 +4215,8 @@ class Meshagent:
             payload["metadata"] = metadata
         if annotations is not None:
             payload["annotations"] = annotations
+        if enabled is not None:
+            payload["enabled"] = enabled
 
         async with self._session.put(
             url, headers=self._get_headers(), json=payload

@@ -54,6 +54,7 @@ from meshagent.api.room_server_client import (
     RemoteParticipant,
     RoomMessage,
     RoomClient,
+    RoomDisabledError,
     RoomException,
     ServicesClient,
     SqliteClient,
@@ -1941,6 +1942,7 @@ async def test_room_client_enter_retries_transient_startup_exception() -> None:
     [
         (403, "Forbidden"),
         (404, "Not Found"),
+        (423, "This room is currently disabled."),
     ],
 )
 @pytest.mark.asyncio
@@ -1965,10 +1967,15 @@ async def test_room_client_enter_does_not_retry_non_retryable_handshake_response
     with pytest.raises(RoomException) as ex_info:
         await room.__aenter__()
 
-    assert str(ex_info.value) == (
-        "room connection unexpectedly closed before the room became ready: "
-        f"websocket connect failed with status {status}: {message}"
-    )
+    if status == 423:
+        assert isinstance(ex_info.value, RoomDisabledError)
+        assert ex_info.value.status_code == 423
+        assert str(ex_info.value) == "This room is currently disabled."
+    else:
+        assert str(ex_info.value) == (
+            "room connection unexpectedly closed before the room became ready: "
+            f"websocket connect failed with status {status}: {message}"
+        )
     assert protocol_factory_calls == 1
     assert controller.protocols == []
     assert room.is_closed is True
@@ -2025,6 +2032,7 @@ async def test_room_client_enter_reconnect_timeout_closes_room_after_startup_fai
     [
         (403, "Forbidden"),
         (404, "Not Found"),
+        (423, "This room is currently disabled."),
     ],
 )
 @pytest.mark.asyncio

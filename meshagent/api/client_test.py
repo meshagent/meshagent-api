@@ -18,6 +18,8 @@ from meshagent.api.client import (
     AccessResource,
     AccessSubject,
     Meshagent,
+    Room,
+    RoomDisabledError,
     room_scope_for_role_compat,
 )
 from meshagent.api.specs.service import (
@@ -85,6 +87,38 @@ class _FakeSession:
 
     async def close(self):
         self.closed = True
+
+
+def test_room_enabled_defaults_true_and_maps_disabled_state() -> None:
+    assert Room(id="room-1", name="alpha", metadata={}).enabled is True
+    assert Room(id="room-1", name="alpha", metadata={}, enabled=False).enabled is False
+
+
+@pytest.mark.asyncio
+async def test_connect_room_raises_typed_disabled_error() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=423,
+                payload={
+                    "error": {
+                        "code": "room_disabled",
+                        "message": "This room is currently disabled.",
+                    }
+                },
+            )
+        ]
+    )
+    client = Meshagent(
+        base_url="http://example.test",
+        token="token",
+        session=session,
+    )
+
+    with pytest.raises(RoomDisabledError, match="currently disabled") as error:
+        await client.connect_room(project_id="project-1", room="alpha")
+
+    assert error.value.status_code == 423
 
 
 @pytest.mark.asyncio

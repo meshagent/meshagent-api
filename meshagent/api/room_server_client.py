@@ -393,6 +393,13 @@ class RoomException(Exception):
         super().__init__(message)
 
 
+class RoomDisabledError(RoomException):
+    """The room exists but its desired state is disabled."""
+
+    def __init__(self, message: str = "This room is currently disabled.") -> None:
+        super().__init__(message, status_code=423, code=None)
+
+
 class RoomAccessDeniedException(RoomException):
     def __init__(message: str):
         super().__init__(message, status_code=403)
@@ -1194,9 +1201,11 @@ class RoomClient:
     def _non_retryable_connect_failure(
         self, *, ex: Exception
     ) -> _ProtocolRetryResult | None:
-        if isinstance(ex, aiohttp.ClientResponseError) and ex.status in (403, 404):
+        if isinstance(ex, aiohttp.ClientResponseError) and ex.status in (403, 404, 423):
             close_reason = f"websocket connect failed with status {ex.status}"
-            if ex.message != "":
+            if ex.status == 423:
+                close_reason = f"{close_reason}: This room is currently disabled."
+            elif ex.message != "":
                 close_reason = f"{close_reason}: {ex.message}"
             return _ProtocolRetryResult(
                 connected=False,
@@ -1637,6 +1646,11 @@ class RoomClient:
         close_reason: str | None,
         protocol: Protocol | None = None,
     ) -> RoomException:
+        if (
+            close_reason is not None
+            and "websocket connect failed with status 423" in close_reason
+        ):
+            return RoomDisabledError()
         if close_kind == ProtocolCloseKind.ERROR:
             base_message = (
                 "room connection unexpectedly closed before the room became ready"
