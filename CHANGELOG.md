@@ -1,3 +1,6 @@
+## [0.49.1]
+- Stability
+
 ## [0.49.0]
 - Added typed service enable/disable state plus `meshagent service enable` and `meshagent service disable` commands.
 - Breaking: `create_project` no longer accepts inline settings; project settings are now per-document APIs with `room_roles` support.
