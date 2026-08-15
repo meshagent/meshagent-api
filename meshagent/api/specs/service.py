@@ -718,6 +718,10 @@ class ServiceSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["Service"]
     id: Optional[str] = None
+    enabled: bool = Field(
+        True,
+        description="whether the service should be running and available",
+    )
     metadata: ServiceMetadata = Field(..., description="service metadata")
     agents: Optional[list[AgentSpec]] = Field(
         None, description="a list of agents that will be exposed by this service"
