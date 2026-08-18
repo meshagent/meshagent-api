@@ -19,8 +19,12 @@ class AllowedAnthropicModel(AllowedModel):
     provider: Literal["anthropic"] = "anthropic"
 
 
+class AllowedGrokModel(AllowedModel):
+    provider: Literal["grok"] = "grok"
+
+
 ManagedAllowedModel = Annotated[
-    AllowedOpenAIModel | AllowedAnthropicModel,
+    AllowedOpenAIModel | AllowedAnthropicModel | AllowedGrokModel,
     Field(discriminator="provider"),
 ]
 

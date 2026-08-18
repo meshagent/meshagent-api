@@ -249,7 +249,7 @@ ProjectRole = Literal[
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
 RoomRole = Literal["site_user", "guest", "viewer", "operator", "developer", "admin"]
 ProjectSettingsDocumentName = Literal[
-    "openai", "anthropic", "otel", "admission", "room", "room_roles", "router"
+    "openai", "anthropic", "grok", "otel", "admission", "room", "room_roles", "router"
 ]
 FeedRole = Literal["reader", "subscriber", "publisher", "manager"]
 SecretRole = Literal["use_proxy"]
@@ -298,7 +298,7 @@ class LlmDelegation(BaseModel):
     project_id: str
     delegator: AccessSubject
     subject: AccessSubject
-    providers: Optional[list[Literal["openai", "anthropic"]]] = None
+    providers: Optional[list[Literal["openai", "anthropic", "grok"]]] = None
     models: Optional[list[str]] = None
     max_budget: Decimal
 
@@ -1372,6 +1372,7 @@ class Meshagent:
         paths = {
             "openai": "openai",
             "anthropic": "anthropic",
+            "grok": "grok",
             "otel": "otel",
             "admission": "admission",
             "room": "room",
@@ -4616,7 +4617,7 @@ class Meshagent:
         project_id: str,
         subject: AccessSubject,
         max_budget: Decimal | str,
-        providers: Optional[list[Literal["openai", "anthropic"]]] = None,
+        providers: Optional[list[Literal["openai", "anthropic", "grok"]]] = None,
         models: Optional[list[str]] = None,
         expires_in_seconds: Optional[int] = None,
     ) -> LlmDelegation:

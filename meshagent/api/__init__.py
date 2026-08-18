@@ -59,6 +59,7 @@ from .participant_token import (
 )
 from .managed_agents import (
     AllowedAnthropicModel,
+    AllowedGrokModel,
     AllowedModel,
     AllowedOpenAIModel,
     ManagedAgentImageGeneration,
@@ -167,6 +168,7 @@ __all__ = [
     "SqliteTableGrant",
     "LLMGrant",
     "AllowedAnthropicModel",
+    "AllowedGrokModel",
     "AllowedModel",
     "AllowedOpenAIModel",
     "ManagedAgentImageGeneration",
