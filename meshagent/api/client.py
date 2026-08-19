@@ -158,7 +158,6 @@ class RoomLifecycleEvent(BaseModel):
     type: str
     message: str
     severity: Optional[str] = None
-    data: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: datetime
 
 

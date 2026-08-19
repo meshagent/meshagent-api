@@ -170,7 +170,10 @@ async def test_list_room_events_returns_typed_lifecycle_events() -> None:
                             "type": "room.lifecycle.start.failed",
                             "message": "room allocation failed",
                             "severity": "ERROR",
-                            "data": {"reason": "room pool is full"},
+                            "data": {
+                                "reason": "room pool is full",
+                                "code.line.number": 255,
+                            },
                             "created_at": "2026-08-19T16:21:47Z",
                         }
                     ]
@@ -191,7 +194,7 @@ async def test_list_room_events_returns_typed_lifecycle_events() -> None:
     )
 
     assert events[0].type == "room.lifecycle.start.failed"
-    assert events[0].data == {"reason": "room pool is full"}
+    assert "data" not in events[0].model_dump()
     assert events[0].created_at == datetime.fromisoformat("2026-08-19T16:21:47+00:00")
     assert session.calls == [
         (
