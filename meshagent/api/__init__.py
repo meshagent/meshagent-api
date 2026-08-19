@@ -46,6 +46,8 @@ from .client import (
     ProjectsPage,
     ProjectRepository,
     RepositoryToken,
+    RoomLifecycleEvent,
+    RoomStatus,
 )
 from .participant_token import (
     ParticipantToken,
@@ -124,6 +126,8 @@ __all__ = [
     "ProjectsPage",
     "ProjectRepository",
     "RepositoryToken",
+    "RoomLifecycleEvent",
+    "RoomStatus",
     "DatasetJson",
     "DatasetRecord",
     "DatasetRowChunks",
