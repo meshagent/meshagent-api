@@ -122,6 +122,87 @@ async def test_connect_room_raises_typed_disabled_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_room_status_returns_typed_allocation_status() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "status": "Allocated",
+                    "allocated_at": "2026-08-19T16:21:47Z",
+                    "running_for_seconds": 90,
+                },
+            )
+        ]
+    )
+    client = Meshagent(
+        base_url="http://example.test",
+        token="token",
+        session=session,
+    )
+
+    status = await client.get_room_status(project_id="project-1", name="alpha")
+
+    assert status.status == "Allocated"
+    assert status.allocated_at == datetime.fromisoformat("2026-08-19T16:21:47+00:00")
+    assert status.running_for_seconds == 90
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/project-1/rooms/alpha/status",
+            None,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_room_events_returns_typed_lifecycle_events() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "events": [
+                        {
+                            "id": "event-1",
+                            "room_name": "alpha room",
+                            "session_id": "session-1",
+                            "type": "room.lifecycle.start.failed",
+                            "message": "room allocation failed",
+                            "severity": "ERROR",
+                            "data": {"reason": "room pool is full"},
+                            "created_at": "2026-08-19T16:21:47Z",
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    client = Meshagent(
+        base_url="http://example.test",
+        token="token",
+        session=session,
+    )
+
+    events = await client.list_room_events(
+        project_id="project-1",
+        name="alpha room",
+        limit=25,
+    )
+
+    assert events[0].type == "room.lifecycle.start.failed"
+    assert events[0].data == {"reason": "room pool is full"}
+    assert events[0].created_at == datetime.fromisoformat("2026-08-19T16:21:47+00:00")
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/project-1/rooms/alpha%20room/events",
+            {"limit": "25"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("consistency", ["fast", "high"])
 async def test_meshagent_sends_consistency_header_on_rest_calls(consistency) -> None:
     session = _FakeSession([_FakeResponse(status=200, payload={"domains": {}})])
@@ -756,6 +837,7 @@ async def test_create_service_omits_client_supplied_id():
             {
                 "version": "v1",
                 "kind": "Service",
+                "enabled": True,
                 "metadata": {"name": "worker"},
                 "ports": [],
             },
@@ -790,6 +872,7 @@ async def test_create_room_service_omits_client_supplied_id():
             {
                 "version": "v1",
                 "kind": "Service",
+                "enabled": True,
                 "metadata": {"name": "worker"},
                 "ports": [],
             },

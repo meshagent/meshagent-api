@@ -145,6 +145,23 @@ class RoomSession(BaseModel):
     agent_name: Optional[str] = None
 
 
+class RoomStatus(BaseModel):
+    status: Literal["Allocated", "Unallocated"]
+    allocated_at: Optional[datetime] = None
+    running_for_seconds: Optional[int] = None
+
+
+class RoomLifecycleEvent(BaseModel):
+    id: str
+    room_name: str
+    session_id: Optional[str] = None
+    type: str
+    message: str
+    severity: Optional[str] = None
+    data: dict[str, JsonValue] = Field(default_factory=dict)
+    created_at: datetime
+
+
 class _ListRoomSessionsResponse(BaseModel):
     sessions: list[RoomSession]
 
@@ -4194,6 +4211,45 @@ class Meshagent:
                 return Room.model_validate(await resp.json())
             except ValidationError as exc:
                 raise RoomException(f"Invalid room payload: {exc}") from exc
+
+    async def get_room_status(self, *, project_id: str, name: str) -> RoomStatus:
+        """GET /accounts/projects/{project_id}/rooms/{room_name}/status."""
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{name}/status"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            if resp.status == 404:
+                raise RoomException("room not found")
+            await self._raise_for_status(resp)
+            try:
+                return RoomStatus.model_validate(await resp.json())
+            except ValidationError as exc:
+                raise RoomException(f"Invalid room status payload: {exc}") from exc
+
+    async def list_room_events(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        limit: int = 100,
+    ) -> list[RoomLifecycleEvent]:
+        """List recent lifecycle events for a room across all sessions."""
+        room_name = quote(name, safe="")
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/events"
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params={"limit": str(limit)},
+        ) as resp:
+            if resp.status == 404:
+                raise RoomException("room not found")
+            await self._raise_for_status(resp)
+            try:
+                payload = await resp.json()
+                return [
+                    RoomLifecycleEvent.model_validate(event)
+                    for event in payload.get("events", [])
+                ]
+            except ValidationError as exc:
+                raise RoomException(f"Invalid room events payload: {exc}") from exc
 
     async def update_room(
         self,
