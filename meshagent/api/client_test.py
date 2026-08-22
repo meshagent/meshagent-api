@@ -89,6 +89,101 @@ class _FakeSession:
         self.closed = True
 
 
+@pytest.mark.asyncio
+async def test_list_mailbox_deliveries_returns_typed_page_and_filters() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "deliveries": [
+                        {
+                            "id": "delivery-1",
+                            "submission_id": "submission-1",
+                            "recipient": "person@example.net",
+                            "message_id": "<message@example.test>",
+                            "status": "delivered",
+                            "submitted_at": "2026-08-21T12:00:00Z",
+                            "status_at": "2026-08-21T12:01:00Z",
+                            "attempt_count": 1,
+                            "smtp_code": 250,
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    page = await client.list_mailbox_deliveries(
+        project_id="project-1",
+        address="alerts@example.test",
+        count=25,
+        offset=50,
+        status="delivered",
+        recipient="person",
+        message_id="<message@example.test>",
+    )
+
+    assert page.total == 1
+    assert page.deliveries[0].status == "delivered"
+    assert page.deliveries[0].smtp_code == 250
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/project-1/mailboxes/alerts%40example.test/deliveries",
+            {
+                "count": "25",
+                "offset": "50",
+                "status": "delivered",
+                "recipient": "person",
+                "message_id": "<message@example.test>",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_mailbox_delivery_events_returns_typed_page() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "events": [
+                        {
+                            "id": "event-1",
+                            "delivery_id": "delivery-1",
+                            "provider": "mailgun",
+                            "provider_event_id": "mailgun-event-1",
+                            "event_type": "accepted",
+                            "status": "accepted",
+                            "occurred_at": "2026-08-21T12:00:00Z",
+                            "received_at": "2026-08-21T12:00:01Z",
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    page = await client.list_mailbox_delivery_events(
+        project_id="project-1",
+        address="alerts@example.test",
+        delivery_id="delivery-1",
+        count=50,
+    )
+
+    assert page.total == 1
+    assert page.events[0].event_type == "accepted"
+    assert session.calls[0][1].endswith(
+        "/mailboxes/alerts%40example.test/deliveries/delivery-1/events"
+    )
+
+
 def test_room_enabled_defaults_true_and_maps_disabled_state() -> None:
     assert Room(id="room-1", name="alpha", metadata={}).enabled is True
     assert Room(id="room-1", name="alpha", metadata={}, enabled=False).enabled is False

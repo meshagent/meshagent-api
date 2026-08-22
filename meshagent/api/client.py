@@ -572,6 +572,56 @@ class MailboxesPage(BaseModel):
     continuation_token: Optional[str] = None
 
 
+MailboxDeliveryStatus = Literal["accepted", "deferred", "delivered", "failed"]
+
+
+class MailboxDelivery(BaseModel):
+    id: str
+    submission_id: str
+    recipient: str
+    message_id: str
+    status: MailboxDeliveryStatus
+    submitted_at: datetime
+    status_at: datetime
+    attempt_count: int = 0
+    smtp_code: int | None = None
+    enhanced_smtp_code: str | None = None
+    reason: str | None = None
+    description: str | None = None
+    mx_host: str | None = None
+    tls: bool | None = None
+    certificate_verified: bool | None = None
+
+
+class MailboxDeliveryEvent(BaseModel):
+    id: str
+    delivery_id: str
+    provider: str
+    provider_event_id: str
+    event_type: Literal["accepted", "temporary_failed", "delivered", "permanent_failed"]
+    status: MailboxDeliveryStatus
+    occurred_at: datetime
+    received_at: datetime
+    attempt_no: int | None = None
+    smtp_code: int | None = None
+    enhanced_smtp_code: str | None = None
+    reason: str | None = None
+    description: str | None = None
+    mx_host: str | None = None
+    tls: bool | None = None
+    certificate_verified: bool | None = None
+
+
+class MailboxDeliveriesPage(BaseModel):
+    deliveries: list[MailboxDelivery]
+    total: int = 0
+
+
+class MailboxDeliveryEventsPage(BaseModel):
+    events: list[MailboxDeliveryEvent]
+    total: int = 0
+
+
 class RoutesPage(BaseModel):
     routes: list["Route"]
     total: int = 0
@@ -2395,6 +2445,72 @@ class Meshagent:
         url = f"{self.base_url}/accounts/projects/{project_id}/mailboxes/{address}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
+
+    async def list_mailbox_deliveries(
+        self,
+        *,
+        project_id: str,
+        address: str,
+        count: int = 100,
+        offset: int = 0,
+        status: MailboxDeliveryStatus | None = None,
+        recipient: str | None = None,
+        message_id: str | None = None,
+    ) -> MailboxDeliveriesPage:
+        encoded_address = quote(address, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/mailboxes/"
+            f"{encoded_address}/deliveries"
+        )
+        params: dict[str, str] = {"count": str(count), "offset": str(offset)}
+        if status is not None:
+            params["status"] = status
+        if recipient is not None and recipient.strip() != "":
+            params["recipient"] = recipient
+        if message_id is not None and message_id.strip() != "":
+            params["message_id"] = message_id
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            return MailboxDeliveriesPage.model_validate(await resp.json())
+
+    async def get_mailbox_delivery(
+        self,
+        *,
+        project_id: str,
+        address: str,
+        delivery_id: str,
+    ) -> MailboxDelivery:
+        encoded_address = quote(address, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/mailboxes/"
+            f"{encoded_address}/deliveries/{quote(delivery_id, safe='')}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return MailboxDelivery.model_validate((await resp.json())["delivery"])
+
+    async def list_mailbox_delivery_events(
+        self,
+        *,
+        project_id: str,
+        address: str,
+        delivery_id: str,
+        count: int = 100,
+        offset: int = 0,
+    ) -> MailboxDeliveryEventsPage:
+        encoded_address = quote(address, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/mailboxes/"
+            f"{encoded_address}/deliveries/{quote(delivery_id, safe='')}/events"
+        )
+        params = {"count": str(count), "offset": str(offset)}
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
+            await self._raise_for_status(resp)
+            return MailboxDeliveryEventsPage.model_validate(await resp.json())
 
     async def create_route(
         self,
