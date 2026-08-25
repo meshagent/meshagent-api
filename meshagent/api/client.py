@@ -1738,7 +1738,7 @@ class Meshagent:
         project_id: str,
         *,
         name: str | None = None,
-        user_id: str | None = None,
+        email: str | None = None,
         room_name: str | None = None,
         role: str | None = None,
         api: dict[str, Any] | None = None,
@@ -1749,8 +1749,8 @@ class Meshagent:
         payload: dict[str, object] = {}
         if name is not None:
             payload["name"] = name
-        if user_id is not None:
-            payload["user_id"] = user_id
+        if email is not None:
+            payload["email"] = email
         if grants is not None:
             payload["grants"] = grants
         else:
@@ -4766,14 +4766,14 @@ class Meshagent:
         *,
         project_id: str,
         room: str,
-        user_id: str | None = None,
+        email: str | None = None,
     ) -> RoomConnectionInfo:
         """
         POST /accounts/projects/{project_id}/rooms/{room_name}/connect
         Returns: { "jwt", "room_name", "project_id", "room_url" }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/connect"
-        payload = {} if user_id is None else {"user_id": user_id}
+        payload = {} if email is None else {"email": email}
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
@@ -4785,14 +4785,14 @@ class Meshagent:
         *,
         project_id: str,
         agent: str,
-        user_id: str | None = None,
+        email: str | None = None,
     ) -> AgentConnectionInfo:
         """
         POST /accounts/projects/{project_id}/agents/{agent_name}/connect
         Returns: { "jwt", "agent_name", "project_id", "agent_url" }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent}/connect"
-        payload = {} if user_id is None else {"user_id": user_id}
+        payload = {} if email is None else {"email": email}
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
