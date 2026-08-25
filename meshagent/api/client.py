@@ -1737,7 +1737,8 @@ class Meshagent:
         self,
         project_id: str,
         *,
-        name: str,
+        name: str | None = None,
+        user_id: str | None = None,
         room_name: str | None = None,
         role: str | None = None,
         api: dict[str, Any] | None = None,
@@ -1745,7 +1746,11 @@ class Meshagent:
     ) -> str:
         """POST /accounts/projects/{project_id}/participant-tokens."""
         url = f"{self.base_url}/accounts/projects/{project_id}/participant-tokens"
-        payload: dict[str, object] = {"name": name}
+        payload: dict[str, object] = {}
+        if name is not None:
+            payload["name"] = name
+        if user_id is not None:
+            payload["user_id"] = user_id
         if grants is not None:
             payload["grants"] = grants
         else:
@@ -4756,28 +4761,40 @@ class Meshagent:
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
-    async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
+    async def connect_room(
+        self,
+        *,
+        project_id: str,
+        room: str,
+        user_id: str | None = None,
+    ) -> RoomConnectionInfo:
         """
         POST /accounts/projects/{project_id}/rooms/{room_name}/connect
         Returns: { "jwt", "room_name", "project_id", "room_url" }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/connect"
+        payload = {} if user_id is None else {"user_id": user_id}
         async with self._session.post(
-            url, headers=self._get_headers(), json={}
+            url, headers=self._get_headers(), json=payload
         ) as resp:
             await self._raise_for_status(resp)
             return RoomConnectionInfo.model_validate(await resp.json())
 
     async def connect_agent(
-        self, *, project_id: str, agent: str
+        self,
+        *,
+        project_id: str,
+        agent: str,
+        user_id: str | None = None,
     ) -> AgentConnectionInfo:
         """
         POST /accounts/projects/{project_id}/agents/{agent_name}/connect
         Returns: { "jwt", "agent_name", "project_id", "agent_url" }
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/agents/{agent}/connect"
+        payload = {} if user_id is None else {"user_id": user_id}
         async with self._session.post(
-            url, headers=self._get_headers(), json={}
+            url, headers=self._get_headers(), json=payload
         ) as resp:
             await self._raise_for_status(resp)
             return AgentConnectionInfo.model_validate(await resp.json())
