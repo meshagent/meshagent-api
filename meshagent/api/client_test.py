@@ -533,7 +533,7 @@ async def test_connect_agent_normalizes_legacy_messages_url():
 
 
 @pytest.mark.asyncio
-async def test_connect_room_passes_impersonated_user_id():
+async def test_connect_room_passes_impersonated_email():
     session = _FakeSession(
         [
             _FakeResponse(
@@ -552,20 +552,20 @@ async def test_connect_room_passes_impersonated_user_id():
     await client.connect_room(
         project_id="proj_123",
         room="alpha",
-        user_id="user-1",
+        email="alice@example.com",
     )
 
     assert session.calls == [
         (
             "post",
             "http://example.test/accounts/projects/proj_123/rooms/alpha/connect",
-            {"user_id": "user-1"},
+            {"email": "alice@example.com"},
         )
     ]
 
 
 @pytest.mark.asyncio
-async def test_connect_agent_passes_impersonated_user_id():
+async def test_connect_agent_passes_impersonated_email():
     session = _FakeSession(
         [
             _FakeResponse(
@@ -586,14 +586,14 @@ async def test_connect_agent_passes_impersonated_user_id():
     await client.connect_agent(
         project_id="proj_123",
         agent="planner",
-        user_id="user-1",
+        email="alice@example.com",
     )
 
     assert session.calls == [
         (
             "post",
             "http://example.test/accounts/projects/proj_123/agents/planner/connect",
-            {"user_id": "user-1"},
+            {"email": "alice@example.com"},
         )
     ]
 
@@ -638,13 +638,13 @@ async def test_mint_participant_token_accepts_serialized_grants():
 
 
 @pytest.mark.asyncio
-async def test_mint_participant_token_passes_impersonated_user_id():
+async def test_mint_participant_token_passes_impersonated_email():
     session = _FakeSession([_FakeResponse(status=200, payload={"token": "jwt-token"})])
     client = Meshagent(base_url="http://example.test", token="token", session=session)
 
     token = await client.mint_participant_token(
         "proj_123",
-        user_id="user-1",
+        email="alice@example.com",
         room_name="room-1",
     )
 
@@ -653,7 +653,7 @@ async def test_mint_participant_token_passes_impersonated_user_id():
         (
             "post",
             "http://example.test/accounts/projects/proj_123/participant-tokens",
-            {"user_id": "user-1", "room_name": "room-1"},
+            {"email": "alice@example.com", "room_name": "room-1"},
         )
     ]
 
