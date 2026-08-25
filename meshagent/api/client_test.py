@@ -532,6 +532,72 @@ async def test_connect_agent_normalizes_legacy_messages_url():
     ]
 
 
+@pytest.mark.asyncio
+async def test_connect_room_passes_impersonated_user_id():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "jwt": "jwt-token",
+                    "room_name": "alpha",
+                    "project_id": "proj_123",
+                    "room_url": "wss://api.example.test/rooms/alpha",
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.connect_room(
+        project_id="proj_123",
+        room="alpha",
+        user_id="user-1",
+    )
+
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/rooms/alpha/connect",
+            {"user_id": "user-1"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_connect_agent_passes_impersonated_user_id():
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "jwt": "jwt-token",
+                    "agent_name": "planner",
+                    "project_id": "proj_123",
+                    "agent_url": (
+                        "wss://api.example.test/agents/proj_123/planner/messages"
+                    ),
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    await client.connect_agent(
+        project_id="proj_123",
+        agent="planner",
+        user_id="user-1",
+    )
+
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/agents/planner/connect",
+            {"user_id": "user-1"},
+        )
+    ]
+
+
 @pytest.mark.parametrize("role", ["operator", "developer", "admin"])
 def test_room_scope_for_role_compat_includes_sqlite(role):
     scope = room_scope_for_role_compat(role)
@@ -567,6 +633,27 @@ async def test_mint_participant_token_accepts_serialized_grants():
                     {"name": "tunnel_ports", "scope": "9000"},
                 ],
             },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mint_participant_token_passes_impersonated_user_id():
+    session = _FakeSession([_FakeResponse(status=200, payload={"token": "jwt-token"})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    token = await client.mint_participant_token(
+        "proj_123",
+        user_id="user-1",
+        room_name="room-1",
+    )
+
+    assert token == "jwt-token"
+    assert session.calls == [
+        (
+            "post",
+            "http://example.test/accounts/projects/proj_123/participant-tokens",
+            {"user_id": "user-1", "room_name": "room-1"},
         )
     ]
 
