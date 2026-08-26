@@ -4333,7 +4333,15 @@ class Meshagent:
                 raise RoomException(f"Invalid room payload: {exc}") from exc
 
     async def get_room_status(self, *, project_id: str, name: str) -> RoomStatus:
-        """GET /accounts/projects/{project_id}/rooms/{room_name}/status."""
+        """Return the room's current control-plane allocation status.
+
+        ``Allocated`` means the room has an active allocated session and
+        includes its allocation time and running duration. ``Unallocated``
+        means there is no active session. This does not report historical
+        transitions or service/container health.
+
+        GET /accounts/projects/{project_id}/rooms/{room_name}/status
+        """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{name}/status"
         async with self._session.get(url, headers=self._get_headers()) as resp:
             if resp.status == 404:
@@ -4351,7 +4359,14 @@ class Meshagent:
         name: str,
         limit: int = 100,
     ) -> list[RoomLifecycleEvent]:
-        """List recent lifecycle events for a room across all sessions."""
+        """List recent lifecycle transitions for a room across all sessions.
+
+        Results are historical OpenTelemetry records such as allocation,
+        startup, shutdown, and startup failure. Use ``get_room_status`` for
+        the room's current allocation state.
+
+        GET /accounts/projects/{project_id}/rooms/{room_name}/events
+        """
         room_name = quote(name, safe="")
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_name}/events"
         async with self._session.get(
