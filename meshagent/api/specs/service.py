@@ -584,10 +584,18 @@ class RouteContentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     subpath: str = ""
+    notFound: str | None = None
     cors: list[RouteCorsRule] = Field(default_factory=list)
     index: bool = False
     iap: bool = False
     compression: Literal["brotli", "gzip", "none"] = "brotli"
+
+    @model_serializer(mode="wrap")
+    def serialize_route_content(self, handler: Any) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if self.notFound is None:
+            data.pop("notFound", None)
+        return data
 
     @field_validator("subpath")
     @classmethod
@@ -595,6 +603,18 @@ class RouteContentSpec(BaseModel):
         normalized = value.strip().strip("/")
         if any(part in (".", "..") for part in normalized.split("/")):
             raise ValueError("RouteSpec content subpath cannot contain dot segments")
+        return normalized
+
+    @field_validator("notFound")
+    @classmethod
+    def validate_not_found(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().strip("/")
+        if normalized == "":
+            raise ValueError("RouteSpec content notFound must not be empty")
+        if any(part in (".", "..") for part in normalized.split("/")):
+            raise ValueError("RouteSpec content notFound cannot contain dot segments")
         return normalized
 
 
@@ -606,6 +626,7 @@ class RoutePathSpec(BaseModel):
     stripPrefix: bool = False
     targetPort: str | int | None = None
     targetContent: RouteContentSpec | None = None
+    unavailable: str | None = None
 
     @model_serializer(mode="wrap")
     def serialize_route_path(self, handler: Any) -> dict[str, Any]:
@@ -616,6 +637,8 @@ class RoutePathSpec(BaseModel):
             data.pop("targetPort", None)
         if self.targetContent is None:
             data.pop("targetContent", None)
+        if self.unavailable is None:
+            data.pop("unavailable", None)
         return data
 
     @field_validator("path")
@@ -632,6 +655,18 @@ class RoutePathSpec(BaseModel):
             raise ValueError("RouteSpec targetPort must not be empty")
         return value
 
+    @field_validator("unavailable")
+    @classmethod
+    def validate_unavailable(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().strip("/")
+        if normalized == "":
+            raise ValueError("RouteSpec unavailable must not be empty")
+        if any(part in (".", "..") for part in normalized.split("/")):
+            raise ValueError("RouteSpec unavailable cannot contain dot segments")
+        return normalized
+
     @model_validator(mode="after")
     def validate_target(self) -> "RoutePathSpec":
         targets = [self.targetPort is not None, self.targetContent is not None]
@@ -642,6 +677,10 @@ class RoutePathSpec(BaseModel):
         if self.targetContent is not None and self.stripPrefix:
             raise ValueError(
                 "RouteSpec content paths do not support stripPrefix; the route path is always removed"
+            )
+        if self.targetContent is not None and self.unavailable is not None:
+            raise ValueError(
+                "RouteSpec unavailable is supported only for service paths"
             )
         return self
 

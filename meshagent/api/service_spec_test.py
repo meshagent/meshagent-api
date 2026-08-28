@@ -24,6 +24,7 @@ def test_route_content_spec_round_trips_website_options() -> None:
         path="/docs",
         targetContent=RouteContentSpec(
             subpath="sites/docs",
+            notFound="/errors/404.html",
             index=True,
             iap=True,
             cors=[
@@ -46,6 +47,7 @@ def test_route_content_spec_round_trips_website_options() -> None:
     assert payload["targetContent"]["compression"] == "brotli"
     assert restored.targetContent is not None
     assert restored.targetContent.subpath == "sites/docs"
+    assert restored.targetContent.notFound == "errors/404.html"
     assert restored.targetContent.index is True
     assert restored.targetContent.iap is True
     assert restored.targetContent.cors[0].allowedMethods == ["GET", "HEAD"]
@@ -59,6 +61,22 @@ def test_route_path_requires_exactly_one_target() -> None:
         RoutePathSpec(
             targetPort=8080,
             targetContent=RouteContentSpec(subpath="public"),
+        )
+
+
+def test_route_service_unavailable_is_normalized() -> None:
+    path = RoutePathSpec(
+        targetPort="web",
+        unavailable="/errors/unavailable.html",
+    )
+
+    assert path.unavailable == "errors/unavailable.html"
+    assert path.model_dump(mode="json")["unavailable"] == "errors/unavailable.html"
+
+    with pytest.raises(ValidationError, match="only for service paths"):
+        RoutePathSpec(
+            targetContent=RouteContentSpec(subpath="public"),
+            unavailable="unavailable.html",
         )
 
 

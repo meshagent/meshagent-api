@@ -1,3 +1,24 @@
+## [0.51.5]
+- Stability
+- Route specs now support `targetContent.notFound` for content-route 404 bodies and path-level `unavailable` content for room or service routing failures.
+
+## [0.51.4]
+- Breaking: the Python client now uses `email` instead of `user_id` for participant-token minting and room/agent connect impersonation, and serializes the new `email` request field for those helpers.
+
+## [0.51.3]
+- Stability
+
+## [0.51.2]
+- Updated the Python LLM proxy pricing tables to mirror the new GPT-5.6 and GPT-5.6-Sol token rates, add long-context priority token classes, and enforce the >272K long-context cutoff.
+
+## [0.51.1]
+- Storage commands now use the canonical room name returned by account lookup when opening websocket connections, so case-insensitive room names resolve consistently across storage operations.
+
+## [0.51.0]
+- The Python SDK and CLI now expose mailbox delivery tracking and stable room lifecycle diagnostics through the public client surface.
+- Expanded the OpenAI Responses adapter to better normalize response payloads, tool handling, and streaming behavior.
+- Refined the Python CLI process launcher and project bootstrap flow for the refreshed Flutter/provider stack.
+
 ## [0.50.1]
 - Added Grok as a first-class provider in the Python SDK: project settings, LLM delegation grants, managed-agent model types, and the CLI/runtime now recognize Grok models and route them through the correct base URL.
 - Extended the Python LLM proxy to support Grok endpoints, Grok-specific usage extraction and pricing, and preservation of repeated upstream response headers.
