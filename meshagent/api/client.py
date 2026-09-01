@@ -210,6 +210,7 @@ AccessResourceType = Literal[
     "feed",
     "secret",
     "service_account",
+    "custom_domain",
 ]
 ProjectRole = Literal[
     "member",
@@ -247,6 +248,9 @@ ProjectRole = Literal[
     "route_creator",
     "route_inventory",
     "route_manager",
+    "custom_domain_creator",
+    "custom_domain_inventory",
+    "custom_domain_manager",
     "scheduled_task_creator",
     "scheduled_task_inventory",
     "scheduled_task_manager",
@@ -263,6 +267,7 @@ ProjectRole = Literal[
     "group_manager",
 ]
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
+CustomDomainRole = Literal["viewer", "user", "admin"]
 RoomRole = Literal["site_user", "guest", "viewer", "operator", "developer", "admin"]
 ProjectSettingsDocumentName = Literal[
     "openai", "anthropic", "grok", "otel", "admission", "room", "room_roles", "router"
@@ -283,6 +288,7 @@ AccessRole = (
     | FeedRole
     | SecretRole
     | ServiceAccountRole
+    | CustomDomainRole
     | Literal["list"]
 )
 
@@ -626,6 +632,53 @@ class RoutesPage(BaseModel):
     routes: list["Route"]
     total: int = 0
     continuation_token: Optional[str] = None
+
+
+CustomDomainPhase = Literal[
+    "pending_dns",
+    "provisioning_certificate",
+    "provisioning_map_entry",
+    "available",
+    "degraded",
+    "failed",
+    "deleting",
+]
+
+
+class CustomDomainDnsRecord(BaseModel):
+    name: str
+    type: str
+    data: str
+
+
+class CustomDomainCondition(BaseModel):
+    type: str
+    status: Literal["true", "false", "unknown"]
+    reason: str
+    message: str = ""
+    observed_at: datetime
+
+
+class CustomDomain(BaseModel):
+    domain: str
+    project_id: str
+    phase: CustomDomainPhase
+    available: bool
+    dns_authorization_record: CustomDomainDnsRecord | None = None
+    routing_records: list[CustomDomainDnsRecord] = Field(default_factory=list)
+    certificate_state: str | None = None
+    map_entry_state: str | None = None
+    conditions: list[CustomDomainCondition] = Field(default_factory=list)
+    created_at: datetime
+
+    @property
+    def wildcard(self) -> bool:
+        return self.domain.startswith("*.")
+
+
+class CustomDomainsPage(BaseModel):
+    custom_domains: list[CustomDomain]
+    continuation_token: str | None = None
 
 
 class FeedsPage(BaseModel):
@@ -2548,6 +2601,73 @@ class Meshagent:
         async with self._session.post(
             url, headers=self._get_headers(), json=payload
         ) as resp:
+            await self._raise_for_status(resp)
+
+    async def create_custom_domain(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+    ) -> CustomDomain:
+        url = f"{self.base_url}/accounts/projects/{project_id}/custom-domains"
+        async with self._session.post(
+            url,
+            headers=self._get_headers(),
+            json={"domain": domain},
+        ) as resp:
+            await self._raise_for_status(resp)
+            return CustomDomain.model_validate((await resp.json())["custom_domain"])
+
+    async def get_custom_domain(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+    ) -> CustomDomain:
+        encoded_domain = quote(domain, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/custom-domains/"
+            f"{encoded_domain}"
+        )
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return CustomDomain.model_validate((await resp.json())["custom_domain"])
+
+    async def list_custom_domains(
+        self,
+        *,
+        project_id: str,
+        count: int = 100,
+        continuation_token: str | None = None,
+        filter: str | None = None,
+        view: Literal["my", "all"] = "my",
+    ) -> CustomDomainsPage:
+        url = f"{self.base_url}/accounts/projects/{project_id}/custom-domains"
+        params: dict[str, str] = {"page_size": str(count), "view": view}
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        if filter is not None:
+            params["filter"] = filter
+        async with self._session.get(
+            url,
+            headers=self._get_headers(),
+            params=params,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return CustomDomainsPage.model_validate(await resp.json())
+
+    async def delete_custom_domain(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+    ) -> None:
+        encoded_domain = quote(domain, safe="")
+        url = (
+            f"{self.base_url}/accounts/projects/{project_id}/custom-domains/"
+            f"{encoded_domain}"
+        )
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
     async def update_route(
