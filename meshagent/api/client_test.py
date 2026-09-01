@@ -35,6 +35,22 @@ from meshagent.api.specs.service import (
 )
 
 
+def _custom_domain_payload(domain: str = "docs.example.com") -> dict:
+    return {
+        "domain": domain,
+        "project_id": "project-1",
+        "phase": "pending_dns",
+        "available": False,
+        "dns_authorization_record": {
+            "name": "_acme-challenge.example.com.",
+            "type": "CNAME",
+            "data": "authorization.example.net.",
+        },
+        "routing_records": [{"name": "@", "type": "A", "data": "203.0.113.10"}],
+        "created_at": "2026-08-31T12:00:00Z",
+    }
+
+
 class _FakeResponse:
     def __init__(self, *, status: int, payload: dict):
         self.status = status
@@ -87,6 +103,83 @@ class _FakeSession:
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_custom_domain_client_uses_domain_as_encoded_resource_key() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={"custom_domain": _custom_domain_payload("*.example.com")},
+            ),
+            _FakeResponse(status=202, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    custom_domain = await client.get_custom_domain(
+        project_id="project-1",
+        domain="*.example.com",
+    )
+    await client.delete_custom_domain(
+        project_id="project-1",
+        domain="*.example.com",
+    )
+
+    assert custom_domain.domain == "*.example.com"
+    assert custom_domain.wildcard is True
+    assert custom_domain.dns_authorization_record is not None
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/project-1/custom-domains/%2A.example.com",
+            None,
+        ),
+        (
+            "delete",
+            "http://example.test/accounts/projects/project-1/custom-domains/%2A.example.com",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_custom_domain_client_returns_typed_list_page() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={
+                    "custom_domains": [_custom_domain_payload()],
+                    "continuation_token": "next",
+                },
+            )
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    page = await client.list_custom_domains(
+        project_id="project-1",
+        count=25,
+        continuation_token="cursor",
+        filter="docs",
+    )
+
+    assert page.custom_domains[0].domain == "docs.example.com"
+    assert page.continuation_token == "next"
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/project-1/custom-domains",
+            {
+                "page_size": "25",
+                "view": "my",
+                "continuation_token": "cursor",
+                "filter": "docs",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
