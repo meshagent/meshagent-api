@@ -1496,6 +1496,7 @@ class Meshagent:
             "admission": "admission",
             "room": "room",
             "room_roles": "room-roles",
+            "router": "router",
         }
         try:
             return paths[name]

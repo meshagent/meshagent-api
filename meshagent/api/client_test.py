@@ -592,6 +592,35 @@ def test_project_settings_document_methods_reject_unknown_names() -> None:
 
 
 @pytest.mark.asyncio
+async def test_router_settings_document_uses_router_route() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={"rules": []}),
+            _FakeResponse(status=200, payload={}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+
+    assert await client.get_project_settings_document("proj_123", "router") == {
+        "rules": []
+    }
+    await client.set_project_settings_document("proj_123", "router", {"rules": []})
+
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/proj_123/settings/router",
+            None,
+        ),
+        (
+            "put",
+            "http://example.test/accounts/projects/proj_123/settings/router",
+            {"rules": []},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_connect_agent_normalizes_legacy_messages_url():
     session = _FakeSession(
         [
