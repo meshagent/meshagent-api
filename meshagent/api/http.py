@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, Literal
 import os
 import ssl
+from collections.abc import Mapping
+from typing import Any, Literal
 
+import certifi
 from aiohttp import ClientSession, TCPConnector
 from aiohttp.abc import AbstractResolver
-from aiohttp.resolver import DefaultResolver
-import certifi
+from aiohttp.resolver import DefaultResolver, ThreadedResolver
 
 LLM_ANNOTATION_HEADER_PREFIX = "X-Meshagent-Annotation-"
 _LLM_ANNOTATION_HEADER_PREFIX_LOWER = LLM_ANNOTATION_HEADER_PREFIX.lower()
@@ -27,9 +27,16 @@ def normalize_meshagent_consistency(value: str | None) -> MeshagentConsistency:
 
 
 class _HostAliasResolver(AbstractResolver):
-    def __init__(self, aliases: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        aliases: Mapping[str, str],
+        *,
+        use_threaded_resolver: bool = False,
+    ) -> None:
         self._aliases = aliases
-        self._resolver = DefaultResolver()
+        self._resolver: AbstractResolver = (
+            ThreadedResolver() if use_threaded_resolver else DefaultResolver()
+        )
 
     async def resolve(
         self,
@@ -69,8 +76,16 @@ def new_tcp_connector(*args: Any, **kwargs: Any) -> TCPConnector:
         kwargs["ssl"] = ssl_context
     if "resolver" not in kwargs:
         aliases = _http_host_aliases()
+        use_threaded_resolver = os.environ.get(
+            "MESHAGENT_HTTP_THREADED_RESOLVER", ""
+        ).strip().lower() in {"1", "true", "yes"}
         if aliases:
-            kwargs["resolver"] = _HostAliasResolver(aliases)
+            kwargs["resolver"] = _HostAliasResolver(
+                aliases,
+                use_threaded_resolver=use_threaded_resolver,
+            )
+        elif use_threaded_resolver:
+            kwargs["resolver"] = ThreadedResolver()
     return TCPConnector(*args, **kwargs)
 
 
