@@ -187,3 +187,41 @@ def test_managed_agent_spec_drops_legacy_mcp_secret_authorization():
     server_data = toolkit.servers[0].model_dump(mode="json")
     assert server_data["server_label"] == "linear"
     assert "authorization" not in server_data
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"allowed_domains": []},
+        {"blocked_domains": []},
+        {"allowed_domains": ["example.com"]},
+        {"blocked_domains": ["blocked.example.com"]},
+        {
+            "allowed_domains": ["example.com"],
+            "blocked_domains": ["blocked.example.com"],
+        },
+    ],
+)
+def test_managed_web_search_domain_filters_round_trip(filters):
+    toolkit = {"type": "web_search", **filters}
+    spec = ManagedAgentSpec.model_validate(
+        {
+            "metadata": {"name": "researcher"},
+            "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+            "toolkits": [toolkit],
+        }
+    )
+    assert spec.model_dump(exclude_none=True)["toolkits"] == [toolkit]
+
+
+@pytest.mark.parametrize("field", ["allowed_domains", "blocked_domains"])
+def test_managed_web_search_domain_filters_require_lists(field):
+    with pytest.raises(ValidationError):
+        ManagedAgentSpec.model_validate(
+            {
+                "metadata": {"name": "researcher"},
+                "allowed_models": [{"provider": "openai", "model": "gpt-4.1"}],
+                "toolkits": [{"type": "web_search", field: "example.com"}],
+            }
+        )

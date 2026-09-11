@@ -77,6 +77,8 @@ class ManagedAgentToolkit(BaseModel):
 
 class ManagedAgentWebSearch(ManagedAgentToolkit):
     type: Literal["web_search"] = "web_search"
+    allowed_domains: list[str] | None = None
+    blocked_domains: list[str] | None = None
 
 
 class ManagedAgentWebFetch(ManagedAgentToolkit):
