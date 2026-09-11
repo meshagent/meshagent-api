@@ -702,15 +702,16 @@ class _ClosingProtocol(_FakeProtocol):
 
 
 class _ClosingProtocolWithReason(_FakeProtocol):
-    def __init__(self) -> None:
+    def __init__(self, reason: str = "websocket closed with code 1008") -> None:
         super().__init__()
         self._close_kind = ProtocolCloseKind.SERVER
+        self.reason = reason
 
     async def wait_for_close(self) -> None:
         return None
 
     def close_reason(self) -> str | None:
-        return "websocket closed with code 1008"
+        return self.reason
 
 
 class _StatusClosingProtocol(_FakeProtocol):
@@ -1803,7 +1804,7 @@ class _SharedReconnectRoomController:
 @pytest.mark.asyncio
 async def test_room_client_enter_raises_if_connection_closes_before_ready() -> None:
     protocol = _ClosingProtocol()
-    client = RoomClient(protocol_factory=protocol.create_factory())
+    client = RoomClient(protocol_factory=protocol.create_factory(), reconnect_timeout=0)
 
     with pytest.raises(
         RoomException,
@@ -1823,7 +1824,7 @@ async def test_room_client_enter_includes_close_reason_when_connection_closes_ea
     None
 ):
     protocol = _ClosingProtocolWithReason()
-    client = RoomClient(protocol_factory=protocol.create_factory())
+    client = RoomClient(protocol_factory=protocol.create_factory(), reconnect_timeout=0)
 
     with pytest.raises(
         RoomException,
@@ -1850,6 +1851,53 @@ async def test_room_client_enter_does_not_include_last_room_status_when_connecti
         ),
     ):
         await client.__aenter__()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [None, "websocket closed with code 1000"])
+async def test_room_client_enter_retries_server_close_before_ready(reason) -> None:
+    controller = _ReconnectRoomController(schema=_simple_thread_schema())
+    failed_protocols = []
+
+    def protocol_factory():
+        if len(failed_protocols) < 2:
+            protocol = (
+                _ClosingProtocol()
+                if reason is None
+                else _ClosingProtocolWithReason(reason=reason)
+            )
+            failed_protocols.append(protocol)
+            return protocol
+        return controller.protocol_factory()
+
+    async with RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=2,
+    ) as room:
+        assert room.is_connected
+        assert len(failed_protocols) == 2
+        assert all(protocol.exited for protocol in failed_protocols)
+        assert len(controller.protocols) == 1
+
+
+@pytest.mark.asyncio
+async def test_room_client_server_close_startup_retries_respect_timeout() -> None:
+    protocols = []
+
+    def protocol_factory():
+        protocol = _ClosingProtocolWithReason(reason="websocket closed with code 1000")
+        protocols.append(protocol)
+        return protocol
+
+    room = RoomClient(
+        protocol_factory=protocol_factory,
+        reconnect_timeout=0.03,
+    )
+    with pytest.raises(RoomException, match="room reconnect timed out"):
+        await asyncio.wait_for(room.__aenter__(), timeout=1)
+    assert len(protocols) >= 2
+    assert all(protocol.exited for protocol in protocols)
+    assert room.is_closed
 
 
 @pytest.mark.asyncio
