@@ -710,7 +710,7 @@ def _is_retryable_startup_close(
     kind: ProtocolCloseKind,
     reason: str | None,
 ) -> bool:
-    if kind == ProtocolCloseKind.ERROR:
+    if kind in (ProtocolCloseKind.ERROR, ProtocolCloseKind.SERVER):
         return True
 
     normalized_reason = (reason or "").lower()
