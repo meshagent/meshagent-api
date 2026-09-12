@@ -1,4 +1,6 @@
 ## [0.52.2]
+- Added streaming SQLite backup and restore APIs and CLI commands. Backups save a consistent local SQLite file; restores validate it and create a new room database without replaying triggers or overwriting existing data.
+- Renamed `room sqlite database restore` to `room sqlite recover` for replica-history recovery into a local file.
 - Added an offline SQLite replica recovery command with validation, dry-run support, transaction targeting, integrity verification, JSON reports, and safe non-overwriting output.
 
 ## [0.52.1]

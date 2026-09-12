@@ -8677,6 +8677,39 @@ class SqliteClient:
         finally:
             input_stream.close()
 
+    async def backup(
+        self,
+        *,
+        database: str,
+        namespace: Optional[list[str]] = None,
+    ) -> AsyncIterator[bytes]:
+        """Stream a consistent SQLite file, verifying its size and SHA-256 at EOF.
+
+        Consume the entire iterator before publishing the downloaded file.
+        Requires unrestricted table access to this database.
+        """
+        from meshagent.api.sqlite_transfer import backup
+
+        async for chunk in backup(self, database, namespace):
+            yield chunk
+
+    async def restore(
+        self,
+        *,
+        database: str,
+        source: AsyncIterable[bytes],
+        namespace: Optional[list[str]] = None,
+    ) -> None:
+        """Restore chunks of at most 256 KiB as a new, durably stored database.
+
+        Existing names are rejected. The server validates integrity and foreign
+        keys before creating the target. A lost final acknowledgement leaves the
+        outcome uncertain; retries never overwrite an existing database.
+        """
+        from meshagent.api.sqlite_transfer import restore
+
+        await restore(self, database, namespace, source)
+
     async def list_databases(
         self, *, namespace: Optional[list[str]] = None
     ) -> list[str]:
