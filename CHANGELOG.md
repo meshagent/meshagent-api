@@ -1,3 +1,12 @@
+## [0.52.3]
+- Added typed LLM router configuration models and project commands for reading and replacing router settings from YAML.
+- Added deployment configuration values for OpenAI, Anthropic, and Grok proxy URLs.
+- Added SQLite backup and restore APIs with bounded streaming, SHA-256 verification, durable completion checks, and CLI commands.
+- Added OAuth client branding models and CLI commands for creating, inspecting, updating, and clearing login branding.
+- Added managed-agent web-search allowlists and blocklists, including validation and provider tool-definition support.
+- Added optional threaded DNS resolution through `MESHAGENT_HTTP_THREADED_RESOLVER`.
+- Updated `pyarrow` to 22.0.0.
+
 ## [0.52.2]
 - Added streaming SQLite backup and restore APIs and CLI commands. Backups save a consistent local SQLite file; restores validate it and create a new room database without replaying triggers or overwriting existing data.
 - Renamed `room sqlite database restore` to `room sqlite recover` for replica-history recovery into a local file.
