@@ -1,3 +1,7 @@
+## [Unreleased]
+- Added user profile metadata and string annotations to profile and project-member responses, plus optional `metadata`, `annotations`, and `project_id` parameters on `update_user_profile`. Omitted fields are preserved; supplied maps replace their previous contents.
+- Added the `user_profile_editor` project role for editing member names, metadata, and annotations. Project owners and admins inherit it; ordinary users can edit their own names and metadata.
+
 ## [0.52.4]
 - Tool-call events now retain provider-native item-type metadata, enabling correct OpenAI Responses MCP call and tool-list replay.
 - Dataset thread storage now queues steering requests until applied, preserving output ordering and preventing unapplied steering from being replayed as model input.

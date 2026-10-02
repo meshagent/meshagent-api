@@ -265,6 +265,7 @@ ProjectRole = Literal[
     "usage_reporter",
     "billing_manager",
     "group_manager",
+    "user_profile_editor",
 ]
 ResourceRole = Literal["viewer", "operator", "developer", "admin"]
 CustomDomainRole = Literal["viewer", "user", "admin"]
@@ -708,6 +709,17 @@ class User(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: str
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
+
+
+class UpdateUserProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    first_name: str | None = None
+    last_name: str | None = None
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    annotations: dict[str, str] = Field(default_factory=dict)
 
 
 class UserRoomGrant(BaseModel):
@@ -1584,15 +1596,34 @@ class Meshagent:
             return await resp.json()
 
     async def update_user_profile(
-        self, user_id: str, first_name: str, last_name: str
+        self,
+        user_id: str,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        *,
+        metadata: dict[str, JsonValue] | None = None,
+        annotations: dict[str, str] | None = None,
+        project_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/profiles/:id
-        Body: { "first_name", "last_name" }
+        Omitted fields are preserved; metadata and annotations replace their maps.
+        Editing another user or annotations requires the user_profile_editor role
+        in project_id, and the target must belong to that project.
         Returns a JSON dict with { "ok": True } on success.
         """
         url = f"{self.base_url}/accounts/profiles/{user_id}"
-        body = {"first_name": first_name, "last_name": last_name}
+        body: dict[str, Any] = {}
+        if first_name is not None:
+            body["first_name"] = first_name
+        if last_name is not None:
+            body["last_name"] = last_name
+        if metadata is not None:
+            body["metadata"] = metadata
+        if annotations is not None:
+            body["annotations"] = annotations
+        if project_id is not None:
+            url += f"?project_id={quote(project_id, safe='')}"
 
         async with self._session.put(
             url, headers=self._get_headers(), json=body

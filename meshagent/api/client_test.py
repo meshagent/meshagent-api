@@ -20,6 +20,8 @@ from meshagent.api.client import (
     Meshagent,
     Room,
     RoomDisabledError,
+    UpdateUserProfileRequest,
+    User,
     room_scope_for_role_compat,
 )
 from meshagent.api.specs.service import (
@@ -2738,3 +2740,55 @@ async def test_access_evaluator_methods_use_access_routes():
             {"subject": {"type": "user", "id": "user-1"}},
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_user_profile_supports_partial_metadata_and_editor_context():
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={"ok": True}),
+            _FakeResponse(status=200, payload={"ok": True}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    await client.update_user_profile("me", metadata={})
+    await client.update_user_profile(
+        "user-2",
+        "Grace",
+        "Hopper",
+        metadata={"theme": "dark"},
+        annotations={"department": "research"},
+        project_id="project-1",
+    )
+    assert session.calls == [
+        ("put", "http://example.test/accounts/profiles/me", {"metadata": {}}),
+        (
+            "put",
+            "http://example.test/accounts/profiles/user-2?project_id=project-1",
+            {
+                "first_name": "Grace",
+                "last_name": "Hopper",
+                "metadata": {"theme": "dark"},
+                "annotations": {"department": "research"},
+            },
+        ),
+    ]
+
+
+def test_user_profile_models_preserve_json_metadata_and_string_annotations():
+    user = User.model_validate(
+        {
+            "id": "user-1",
+            "email": "ada@example.test",
+            "metadata": {"nested": {"numbers": [1, 2]}, "active": True},
+            "annotations": {"department": "engineering"},
+        }
+    )
+    assert user.model_dump()["metadata"] == {
+        "nested": {"numbers": [1, 2]},
+        "active": True,
+    }
+    assert user.annotations == {"department": "engineering"}
+    assert User(id="old-user", email="old@example.test").metadata == {}
+    update = UpdateUserProfileRequest.model_validate({"metadata": {}})
+    assert update.model_dump(exclude_unset=True) == {"metadata": {}}
