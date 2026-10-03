@@ -1,3 +1,10 @@
+## [0.53.0]
+- Added user profile metadata and annotations, partial profile updates, and the `user_profile_editor` project role with project-scoped authorization for editing other users or annotations.
+- Changed OpenAI Responses defaults from `gpt-5.2` to `gpt-6.1-sol` and CLI/Codex defaults from `gpt-5.6-sol` to `gpt-6.1-sol`.
+- Added OpenAI Responses support for GPT-6 models and 1,050,000-token context windows.
+- Added pricing and usage support for GPT-6, GPT-5.6 Cyber, new image and audio models, new Claude models, and OpenAI `ultrafast` service tiers.
+- Expanded Enterprise Codex distribution tooling with package-manifest generation, installation verification, cross-platform smoke tests, and Windows authentication support.
+
 ## [Unreleased]
 - Added user profile metadata and string annotations to profile and project-member responses, plus optional `metadata`, `annotations`, and `project_id` parameters on `update_user_profile`. Omitted fields are preserved; supplied maps replace their previous contents.
 - Added the `user_profile_editor` project role for editing member names, metadata, and annotations. Project owners and admins inherit it; ordinary users can edit their own names and metadata.
