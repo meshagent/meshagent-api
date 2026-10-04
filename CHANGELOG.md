@@ -9,8 +9,10 @@
 - Expanded Enterprise Codex distribution tooling with package-manifest generation, installation verification, cross-platform smoke tests, and Windows authentication support.
 
 ## [Unreleased]
+- Added isolated project user profile overrides, `project`, `user`, and default `merged` read views, and `inherit` updates. Global profile edits are self-only; global annotations and user administration require sysadmin endpoints.
+- Added sysadmin global user search and profile editing APIs. Project profile edits require `user_profile_editor`, including edits to your own overrides.
 - Added user profile metadata and string annotations to profile and project-member responses, plus optional `metadata`, `annotations`, and `project_id` parameters on `update_user_profile`. Omitted fields are preserved; supplied maps replace their previous contents.
-- Added the `user_profile_editor` project role for editing member names, metadata, and annotations. Project owners and admins inherit it; ordinary users can edit their own names and metadata.
+- Added the `user_profile_editor` project role for editing project member names, metadata, and annotations. Project owners and admins inherit it; ordinary users can edit their own global names and metadata.
 
 ## [0.52.4]
 - Tool-call events now retain provider-native item-type metadata, enabling correct OpenAI Responses MCP call and tool-list replay.

@@ -2764,7 +2764,7 @@ async def test_update_user_profile_supports_partial_metadata_and_editor_context(
         ("put", "http://example.test/accounts/profiles/me", {"metadata": {}}),
         (
             "put",
-            "http://example.test/accounts/profiles/user-2?project_id=project-1",
+            "http://example.test/accounts/projects/project-1/users/user-2/profile",
             {
                 "first_name": "Grace",
                 "last_name": "Hopper",
@@ -2792,3 +2792,81 @@ def test_user_profile_models_preserve_json_metadata_and_string_annotations():
     assert User(id="old-user", email="old@example.test").metadata == {}
     update = UpdateUserProfileRequest.model_validate({"metadata": {}})
     assert update.model_dump(exclude_unset=True) == {"metadata": {}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view", ["project", "user", "merged"])
+async def test_project_profile_reads_use_project_endpoint_and_preserve_raw_fields(view):
+    payload = {
+        "id": "user-1",
+        "email": "a@example.test",
+        "first_name": None,
+        "metadata": {"local": True},
+    }
+    session = _FakeSession([_FakeResponse(status=200, payload=payload)])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    assert (
+        await client.get_user_profile("user-1", project_id="project-1", view=view)
+        == payload
+    )
+    assert session.calls == [
+        (
+            "get",
+            "http://example.test/accounts/projects/project-1/users/user-1/profile",
+            {"view": view},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_project_profile_inheritance_and_global_sysadmin_routes():
+    from meshagent.api.client import UpdateUserProfileRequest
+
+    session = _FakeSession(
+        [
+            _FakeResponse(status=200, payload={"ok": True}),
+            _FakeResponse(
+                status=200, payload={"users": [], "continuation_token": None}
+            ),
+            _FakeResponse(status=200, payload={"ok": True}),
+        ]
+    )
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    await client.update_user_profile(
+        "me", project_id="project-1", inherit=["first_name", "metadata"]
+    )
+    await client.search_sysadmin_users(filter="Ada", page_size=10)
+    await client.update_sysadmin_user_profile(
+        "user-1", update=UpdateUserProfileRequest(annotations={})
+    )
+    assert session.calls == [
+        (
+            "put",
+            "http://example.test/accounts/projects/project-1/users/me/profile",
+            {"inherit": ["first_name", "metadata"]},
+        ),
+        (
+            "get",
+            "http://example.test/accounts/sysadmin/users",
+            {"page_size": "10", "filter": "Ada"},
+        ),
+        (
+            "put",
+            "http://example.test/accounts/sysadmin/users/user-1",
+            {"annotations": {}},
+        ),
+    ]
+    with pytest.raises(ValueError):
+        await client.get_user_profile("me", view="project")
+    with pytest.raises(ValueError):
+        await client.update_user_profile("me", inherit=["metadata"])
+
+
+@pytest.mark.asyncio
+async def test_sysadmin_profile_access_denials_are_raised():
+    from meshagent.api.client import PermissionDeniedError
+
+    session = _FakeSession([_FakeResponse(status=403, payload={"error": "forbidden"})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    with pytest.raises(PermissionDeniedError):
+        await client.get_sysadmin_user_profile("user-1")

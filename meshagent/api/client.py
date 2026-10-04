@@ -722,6 +722,27 @@ class UpdateUserProfileRequest(BaseModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
 
+UserProfileView = Literal["project", "user", "merged"]
+UserProfileField = Literal["first_name", "last_name", "metadata", "annotations"]
+
+
+class UpdateProjectUserProfileRequest(UpdateUserProfileRequest):
+    inherit: list[UserProfileField] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_inherited_fields(self) -> "UpdateProjectUserProfileRequest":
+        if set(self.inherit) & self.model_fields_set:
+            raise ValueError(
+                "A field cannot be supplied and inherited in the same update"
+            )
+        return self
+
+
+class UserProfilesPage(BaseModel):
+    users: list[User]
+    continuation_token: str | None = None
+
+
 class UserRoomGrant(BaseModel):
     room: Room
     user: User
@@ -1558,13 +1579,14 @@ class Meshagent:
         page_size: int = 100,
         continuation_token: str | None = None,
         filter: str | None = None,
+        view: UserProfileView = "merged",
     ) -> ProjectMembersPage:
         """
         Corresponds to: GET /accounts/projects/:id/users
         Returns a JSON dict with { "users": [...] }.
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/users"
-        params: Dict[str, str] = {"page_size": str(page_size)}
+        params: Dict[str, str] = {"page_size": str(page_size), "view": view}
         if continuation_token is not None:
             params["continuation_token"] = continuation_token
         if filter is not None and filter.strip() != "":
@@ -1580,18 +1602,37 @@ class Meshagent:
             except ValidationError as exc:
                 raise RoomException(f"Invalid project users payload: {exc}") from exc
 
-    async def get_users_in_project(self, project_id: str) -> Dict[str, Any]:
-        page = await self.get_users_in_project_page(project_id)
-        return page.model_dump(mode="json")
+    async def get_users_in_project(
+        self, project_id: str, *, view: UserProfileView = "merged"
+    ) -> Dict[str, Any]:
+        page = await self.get_users_in_project_page(project_id, view=view)
+        return page.model_dump(mode="json", exclude_unset=view == "project")
 
-    async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_profile(
+        self,
+        user_id: str,
+        *,
+        project_id: str | None = None,
+        view: UserProfileView = "merged",
+    ) -> Dict[str, Any]:
         """
         Corresponds to: GET /accounts/profiles/:id
         Returns the user profile JSON, e.g. { "id", "first_name", "last_name", "email" } or raises 404 if not found.
         """
-        url = f"{self.base_url}/accounts/profiles/{user_id}"
+        user_path = quote(user_id, safe="")
+        if project_id is None:
+            if view == "project":
+                raise ValueError("project_id is required for the project view")
+            url = f"{self.base_url}/accounts/profiles/{user_path}"
+            params = None
+        else:
+            project_path = quote(project_id, safe="")
+            url = f"{self.base_url}/accounts/projects/{project_path}/users/{user_path}/profile"
+            params = {"view": view}
 
-        async with self._session.get(url, headers=self._get_headers()) as resp:
+        async with self._session.get(
+            url, headers=self._get_headers(), params=params
+        ) as resp:
             await self._raise_for_status(resp)
             return await resp.json()
 
@@ -1604,15 +1645,17 @@ class Meshagent:
         metadata: dict[str, JsonValue] | None = None,
         annotations: dict[str, str] | None = None,
         project_id: str | None = None,
+        inherit: list[UserProfileField] | None = None,
     ) -> Dict[str, Any]:
         """
         Corresponds to: PUT /accounts/profiles/:id
         Omitted fields are preserved; metadata and annotations replace their maps.
-        Editing another user or annotations requires the user_profile_editor role
-        in project_id, and the target must belong to that project.
+        With project_id, edits project overrides and requires user_profile_editor,
+        including for your own profile. Without a project, edits your global profile.
         Returns a JSON dict with { "ok": True } on success.
         """
-        url = f"{self.base_url}/accounts/profiles/{user_id}"
+        user_path = quote(user_id, safe="")
+        url = f"{self.base_url}/accounts/profiles/{user_path}"
         body: dict[str, Any] = {}
         if first_name is not None:
             body["first_name"] = first_name
@@ -1623,10 +1666,54 @@ class Meshagent:
         if annotations is not None:
             body["annotations"] = annotations
         if project_id is not None:
-            url += f"?project_id={quote(project_id, safe='')}"
+            project_path = quote(project_id, safe="")
+            url = f"{self.base_url}/accounts/projects/{project_path}/users/{user_path}/profile"
+        if inherit is not None:
+            if project_id is None:
+                raise ValueError("project_id is required to inherit profile fields")
+            body["inherit"] = inherit
 
         async with self._session.put(
             url, headers=self._get_headers(), json=body
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await resp.json()
+
+    async def search_sysadmin_users(
+        self,
+        *,
+        filter: str | None = None,
+        page_size: int = 100,
+        continuation_token: str | None = None,
+    ) -> UserProfilesPage:
+        params = {"page_size": str(page_size)}
+        if filter is not None:
+            params["filter"] = filter
+        if continuation_token is not None:
+            params["continuation_token"] = continuation_token
+        async with self._session.get(
+            f"{self.base_url}/accounts/sysadmin/users",
+            headers=self._get_headers(),
+            params=params,
+        ) as resp:
+            await self._raise_for_status(resp)
+            return UserProfilesPage.model_validate(await resp.json())
+
+    async def get_sysadmin_user_profile(self, user_id: str) -> User:
+        async with self._session.get(
+            f"{self.base_url}/accounts/sysadmin/users/{quote(user_id, safe='')}",
+            headers=self._get_headers(),
+        ) as resp:
+            await self._raise_for_status(resp)
+            return User.model_validate(await resp.json())
+
+    async def update_sysadmin_user_profile(
+        self, user_id: str, *, update: UpdateUserProfileRequest
+    ) -> dict[str, Any]:
+        async with self._session.put(
+            f"{self.base_url}/accounts/sysadmin/users/{quote(user_id, safe='')}",
+            headers=self._get_headers(),
+            json=update.model_dump(mode="json", exclude_unset=True),
         ) as resp:
             await self._raise_for_status(resp)
             return await resp.json()
