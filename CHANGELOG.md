@@ -14,6 +14,7 @@
 - Expanded Enterprise Codex distribution tooling with package-manifest generation, installation verification, cross-platform smoke tests, and Windows authentication support.
 
 ## [Unreleased]
+- Added SQLite `execute_sql_batch` with typed commands, atomic ordered execution, and mixed statement/query results.
 - Added isolated project user profile overrides, `project`, `user`, and default `merged` read views, and `inherit` updates. Global profile edits are self-only; global annotations and user administration require sysadmin endpoints.
 - Added sysadmin global user search and profile editing APIs. Project profile edits require `user_profile_editor`, including edits to your own overrides.
 - Added user profile metadata and string annotations to profile and project-member responses, plus optional `metadata`, `annotations`, and `project_id` parameters on `update_user_profile`. Omitted fields are preserved; supplied maps replace their previous contents.

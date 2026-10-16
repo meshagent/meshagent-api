@@ -6546,6 +6546,12 @@ class _DatasetStatsResponse(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class SqliteSqlCommand:
+    query: str
+    params: Any = None
+
+
+@dataclass(frozen=True, slots=True)
 class SqliteSqlQuery:
     schema: pa.Schema
     query_id: str
@@ -6599,6 +6605,20 @@ class _SqliteCountResponse(BaseModel):
 
 class _SqliteStatementResponse(_SqliteRowsAffectedResponse):
     kind: Literal["statement"]
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _SqliteBatchQueryResponse(BaseModel):
+    kind: Literal["query"]
+    query_id: str
+    schema_base64: str
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _SqliteBatchResponse(BaseModel):
+    results: list[_SqliteStatementResponse | _SqliteBatchQueryResponse]
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -8540,6 +8560,13 @@ class SqliteDatabaseClient:
         ):
             yield batch
 
+    async def execute_sql_batch(
+        self, *, commands: list[SqliteSqlCommand]
+    ) -> list[SqliteSqlExecution]:
+        return await self._client.execute_sql_batch(
+            database=self.database, commands=commands, namespace=self.namespace
+        )
+
     async def execute_sql(
         self, *, query: str, params: Any = None
     ) -> SqliteSqlExecution:
@@ -9183,6 +9210,54 @@ class SqliteClient:
             schema=_schema_from_arrow_ipc(response.data),
             query_id=headers.query_id,
         )
+
+    async def execute_sql_batch(
+        self,
+        *,
+        database: str,
+        commands: list[SqliteSqlCommand],
+        namespace: Optional[list[str]] = None,
+    ) -> list[SqliteSqlExecution]:
+        """Execute commands atomically in order. Close any returned query handles."""
+        response = await self._invoke(
+            operation="execute_sql_batch",
+            input={
+                "database": database,
+                "namespace": namespace,
+                "commands": [
+                    {"query": command.query, "params": command.params}
+                    for command in commands
+                ],
+            },
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="execute_sql_batch")
+        try:
+            payload = _SqliteBatchResponse.model_validate(response.json)
+            if len(payload.results) != len(commands):
+                raise ValueError("batch result count mismatch")
+            results: list[SqliteSqlExecution] = []
+            for result in payload.results:
+                if isinstance(result, _SqliteStatementResponse):
+                    results.append(
+                        SqliteSqlStatement(rows_affected=result.rows_affected)
+                    )
+                else:
+                    if not result.query_id:
+                        raise ValueError("empty query id")
+                    results.append(
+                        SqliteSqlQuery(
+                            schema=_schema_from_arrow_ipc(
+                                base64.b64decode(result.schema_base64, validate=True)
+                            ),
+                            query_id=result.query_id,
+                        )
+                    )
+            return results
+        except (ValidationError, ValueError, pa.ArrowException) as exc:
+            raise self._unexpected_response_error(
+                operation="execute_sql_batch"
+            ) from exc
 
     async def execute_sql(
         self,
