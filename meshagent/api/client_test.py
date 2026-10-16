@@ -1602,6 +1602,7 @@ async def test_get_config_returns_typed_deployment_config():
                         "mail": "mail.meshagent.life",
                         "pages": "meshagent.life",
                         "registry": "registry.meshagent.life",
+                        "files": "files.meshagent.life",
                     },
                     "version": "0.41.5",
                 },
@@ -1613,6 +1614,7 @@ async def test_get_config_returns_typed_deployment_config():
     config = await client.get_config()
 
     assert config.domains.registry == "registry.meshagent.life"
+    assert config.domains.files == "files.meshagent.life"
     assert config.domains.api == "api.meshagent.life"
     assert config.version == "0.41.5"
     assert session.calls == [
@@ -1622,6 +1624,13 @@ async def test_get_config_returns_typed_deployment_config():
             None,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_config_accepts_deployments_without_files_endpoint():
+    session = _FakeSession([_FakeResponse(status=200, payload={"domains": {}})])
+    client = Meshagent(base_url="http://example.test", token="token", session=session)
+    assert (await client.get_config()).domains.files is None
 
 
 def _secret_payload(**overrides):

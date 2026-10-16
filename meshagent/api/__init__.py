@@ -57,6 +57,20 @@ from .client import (
     RoomLifecycleEvent,
     RoomStatus,
 )
+from .files import (
+    FileAction,
+    FilePathRule,
+    FileRole,
+    FileLocation,
+    FileMetadata,
+    FilePermissions,
+    FilesClient,
+    FilesPage,
+    FilesPolicy,
+    FilesTarget,
+    PresignedFileUrl,
+    TargetFilesClient,
+)
 from .participant_token import (
     ParticipantToken,
     ParticipantGrant,
@@ -123,6 +137,18 @@ from .mime_types import guess_mime_type
 from .http import MeshagentConsistency
 
 __all__ = [
+    "FileLocation",
+    "FileAction",
+    "FilePathRule",
+    "FileRole",
+    "FilesPolicy",
+    "FileMetadata",
+    "FilePermissions",
+    "FilesClient",
+    "FilesPage",
+    "FilesTarget",
+    "PresignedFileUrl",
+    "TargetFilesClient",
     "Meshagent",
     "RoomDisabledError",
     "MeshagentConsistency",
