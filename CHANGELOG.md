@@ -1,3 +1,31 @@
+## [Unreleased]
+- WebSocket download URL creation now requires both read and explicit presign permission. Legacy storage grants do not delegate public URLs; use authenticated downloads or an explicit file policy. OAuth participant tokens retain file-action scopes and IAM path exclusions.
+- Participant storage grants now carry typed file policies, with separate actions, excluded subtrees, ordered read-only rules, and path-component matching. Policies survive signed-token round trips.
+- Added typed file action/path policies, independent file IAM roles, room/agent OAuth file scopes and resource attenuation, and current file permission snapshots. File-only grants no longer advertise room runtime permissions.
+- Added deployment discovery for the files endpoint and typed room/managed-agent REST file clients through `Meshagent.files`, including streaming transfers, pagination, metadata, copy/move, deletion, directories, and presigned URL requests.
+- Official OAuth client registrations can request new file scopes; existing tokens and pending codes retain their consented scopes. Reauthorize with `meshagent auth login` to request file access. Rust CLI login now uses the SDK scope catalog.
+- Python and Rust route create/update commands accept `--agent` for public file routes, preserve existing agent backends, and reject ports/IAP.
+- Agent domain routes can publish file-content paths; IAP and service-port paths are rejected for agent backends. Empty paths retain the existing WebSocket route behavior.
+- Added SQLite `execute_sql_batch` with typed commands, atomic ordered execution, and mixed statement/query results.
+- Added isolated project user profile overrides, `project`, `user`, and default `merged` read views, and `inherit` updates. Global profile edits are self-only; global annotations and user administration require sysadmin endpoints.
+- Added sysadmin global user search and profile editing APIs. Project profile edits require `user_profile_editor`, including edits to your own overrides.
+- Added user profile metadata and string annotations to profile and project-member responses, plus optional `metadata`, `annotations`, and `project_id` parameters on `update_user_profile`. Omitted fields are preserved; supplied maps replace their previous contents.
+- Added the `user_profile_editor` project role for editing project member names, metadata, and annotations. Project owners and admins inherit it; ordinary users can edit their own global names and metadata.
+
+## [0.53.5]
+- Added typed project and global profile models, project-scoped views, local overrides with inheritance, merged project-member profiles, and sysadmin profile administration.
+- Added profile view, global-profile, inheritance, and sysadmin user management options to the Python CLI.
+- Added `/v1/decisions` support with endpoint-aware forwarding, input-only pricing, usage telemetry, and suppression of usage records for failed responses.
+- Project profile updates now require `user_profile_editor`; global profile access is self-only and global annotations require sysadmin APIs.
+
+## [0.53.4]
+- Added `/v1/decisions` support to the Python LLM proxy, including forwarding, exact-path allowlisting, usage collection, and endpoint-aware pricing.
+- Added Decisions usage extraction that bills input tokens only, ignores cache/output/service-tier pricing, and preserves total-token and compute-unit telemetry.
+- Prevented failed upstream HTTP responses from generating usage records.
+
+## [0.53.3]
+- Stability
+
 ## [0.53.2]
 - Added typed project profile views, project-local updates with inheritance, merged project member profiles, and sysadmin global user search and profile administration.
 - Added CLI support for `--view`, `--global`, `--inherit`, and `sysadmin user list/get/update` commands.
@@ -12,20 +40,6 @@
 - Added OpenAI Responses support for GPT-6 models and 1,050,000-token context windows.
 - Added pricing and usage support for GPT-6, GPT-5.6 Cyber, new image and audio models, new Claude models, and OpenAI `ultrafast` service tiers.
 - Expanded Enterprise Codex distribution tooling with package-manifest generation, installation verification, cross-platform smoke tests, and Windows authentication support.
-
-## [Unreleased]
-- Added SQLite `execute_sql_batch` with typed commands, atomic ordered execution, and mixed statement/query results.
-- WebSocket download URL creation now requires both read and explicit presign permission. Legacy storage grants do not delegate public URLs; use authenticated downloads or an explicit file policy. OAuth participant tokens retain file-action scopes and IAM path exclusions.
-- Participant storage grants now carry typed file policies, with separate actions, excluded subtrees, ordered read-only rules, and path-component matching. Policies survive signed-token round trips.
-- Added typed file action/path policies, independent file IAM roles, room/agent OAuth file scopes and resource attenuation, and current file permission snapshots. File-only grants no longer advertise room runtime permissions.
-- Added deployment discovery for the files endpoint and typed room/managed-agent REST file clients through `Meshagent.files`, including streaming transfers, pagination, metadata, copy/move, deletion, directories, and presigned URL requests.
-- Official OAuth client registrations can request new file scopes; existing tokens and pending codes retain their consented scopes. Reauthorize with `meshagent auth login` to request file access. Rust CLI login now uses the SDK scope catalog.
-- Python and Rust route create/update commands accept `--agent` for public file routes, preserve existing agent backends, and reject ports/IAP.
-- Agent domain routes can publish file-content paths; IAP and service-port paths are rejected for agent backends. Empty paths retain the existing WebSocket route behavior.
-- Added isolated project user profile overrides, `project`, `user`, and default `merged` read views, and `inherit` updates. Global profile edits are self-only; global annotations and user administration require sysadmin endpoints.
-- Added sysadmin global user search and profile editing APIs. Project profile edits require `user_profile_editor`, including edits to your own overrides.
-- Added user profile metadata and string annotations to profile and project-member responses, plus optional `metadata`, `annotations`, and `project_id` parameters on `update_user_profile`. Omitted fields are preserved; supplied maps replace their previous contents.
-- Added the `user_profile_editor` project role for editing project member names, metadata, and annotations. Project owners and admins inherit it; ordinary users can edit their own global names and metadata.
 
 ## [0.52.4]
 - Tool-call events now retain provider-native item-type metadata, enabling correct OpenAI Responses MCP call and tool-list replay.
