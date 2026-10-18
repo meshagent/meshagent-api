@@ -297,13 +297,6 @@ AccessRole = (
 )
 
 
-def _validate_resource_policy_type(resource_type: AccessResourceType) -> None:
-    if resource_type == "agent":
-        raise ValueError(
-            "managed agent resource policies are not supported; use agent run_as instead"
-        )
-
-
 class AccessSubject(BaseModel):
     type: AccessSubjectType
     id: Optional[str] = None
@@ -5295,7 +5288,6 @@ class Meshagent:
         continuation_token: str | None = None,
     ) -> ResourcePolicyPage:
         """GET /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy."""
-        _validate_resource_policy_type(resource_type)
         params = {"page_size": str(page_size)}
         if continuation_token is not None:
             params["continuation_token"] = continuation_token
@@ -5348,7 +5340,6 @@ class Meshagent:
         invite_redirect_url: str | None = None,
     ) -> None:
         """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:grant."""
-        _validate_resource_policy_type(resource_type)
         payload = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
             "roles": roles,
@@ -5376,7 +5367,6 @@ class Meshagent:
         subject: AccessSubject,
     ) -> None:
         """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:revoke."""
-        _validate_resource_policy_type(resource_type)
         payload = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
         }

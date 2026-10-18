@@ -2484,11 +2484,12 @@ async def test_service_account_and_scoped_api_key_methods_return_typed_models():
     ]
 
 
+@pytest.mark.parametrize("resource_type", ["room", "agent"])
 @pytest.mark.asyncio
-async def test_resource_policy_methods_use_iam_policy_routes():
+async def test_resource_policy_methods_use_iam_policy_routes(resource_type):
     grant_payload = {
         "resource": {
-            "type": "room",
+            "type": resource_type,
             "id": "room-1",
             "name": "demo",
         },
@@ -2501,7 +2502,7 @@ async def test_resource_policy_methods_use_iam_policy_routes():
             _FakeResponse(
                 status=200,
                 payload={
-                    "resource": {"type": "room", "id": "room-1", "name": "demo"},
+                    "resource": {"type": resource_type, "id": "room-1", "name": "demo"},
                     "access_grants": [grant_payload],
                     "continuation_token": "next-token",
                 },
@@ -2509,7 +2510,7 @@ async def test_resource_policy_methods_use_iam_policy_routes():
             _FakeResponse(
                 status=200,
                 payload={
-                    "resource": {"type": "room", "id": "room-1", "name": "demo"},
+                    "resource": {"type": resource_type, "id": "room-1", "name": "demo"},
                     "access_grants": [grant_payload],
                 },
             ),
@@ -2520,25 +2521,25 @@ async def test_resource_policy_methods_use_iam_policy_routes():
 
     await client.grant_resource_policy(
         project_id="proj_123",
-        resource_type="room",
+        resource_type=resource_type,
         resource_id="room-1",
         subject=AccessSubject(type="user", id="user-1"),
         roles=["operator", "list"],
     )
     page = await client.get_resource_policy_page(
         project_id="proj_123",
-        resource_type="room",
+        resource_type=resource_type,
         resource_id="room-1",
         continuation_token="cursor-1",
     )
     grants = await client.get_resource_policy(
         project_id="proj_123",
-        resource_type="room",
+        resource_type=resource_type,
         resource_id="room-1",
     )
     await client.revoke_resource_policy(
         project_id="proj_123",
-        resource_type="room",
+        resource_type=resource_type,
         resource_id="room-1",
         subject=AccessSubject(type="user", id="user-1"),
     )
@@ -2550,7 +2551,7 @@ async def test_resource_policy_methods_use_iam_policy_routes():
     assert session.calls == [
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy:grant",
+            f"http://example.test/accounts/projects/proj_123/iam/{resource_type}/room-1/policy:grant",
             {
                 "subject": {
                     "type": "user",
@@ -2561,17 +2562,17 @@ async def test_resource_policy_methods_use_iam_policy_routes():
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy",
+            f"http://example.test/accounts/projects/proj_123/iam/{resource_type}/room-1/policy",
             {"page_size": "50", "continuation_token": "cursor-1"},
         ),
         (
             "get",
-            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy",
+            f"http://example.test/accounts/projects/proj_123/iam/{resource_type}/room-1/policy",
             {"page_size": "50"},
         ),
         (
             "post",
-            "http://example.test/accounts/projects/proj_123/iam/room/room-1/policy:revoke",
+            f"http://example.test/accounts/projects/proj_123/iam/{resource_type}/room-1/policy:revoke",
             {
                 "subject": {
                     "type": "user",
@@ -2580,38 +2581,6 @@ async def test_resource_policy_methods_use_iam_policy_routes():
             },
         ),
     ]
-
-
-@pytest.mark.asyncio
-async def test_resource_policy_methods_reject_managed_agent_policies():
-    session = _FakeSession([])
-    client = Meshagent(base_url="http://example.test", token="token", session=session)
-
-    with pytest.raises(ValueError, match="managed agent resource policies"):
-        await client.grant_resource_policy(
-            project_id="proj_123",
-            resource_type="agent",
-            resource_id="agent-1",
-            subject=AccessSubject(type="user", id="user-1"),
-            roles=["operator", "list"],
-        )
-
-    with pytest.raises(ValueError, match="managed agent resource policies"):
-        await client.get_resource_policy_page(
-            project_id="proj_123",
-            resource_type="agent",
-            resource_id="agent-1",
-        )
-
-    with pytest.raises(ValueError, match="managed agent resource policies"):
-        await client.revoke_resource_policy(
-            project_id="proj_123",
-            resource_type="agent",
-            resource_id="agent-1",
-            subject=AccessSubject(type="user", id="user-1"),
-        )
-
-    assert session.calls == []
 
 
 @pytest.mark.asyncio
