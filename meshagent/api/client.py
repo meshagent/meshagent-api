@@ -202,7 +202,9 @@ class RoomsPage(BaseModel):
     continuation_token: Optional[str] = None
 
 
-AccessSubjectType = Literal["user", "group", "agent", "service_account", "userset"]
+AccessSubjectType = Literal[
+    "user", "group", "agent", "service_account", "userset", "everyone"
+]
 AccessResourceType = Literal[
     "project",
     "room",
