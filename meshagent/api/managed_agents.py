@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
+import jsonschema
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -153,6 +155,128 @@ class ManagedAgentMetadata(BaseModel):
         return value.strip().lower()
 
 
+def _validate_python_tool_schema(schema: dict[str, Any], path: str = "input_schema"):
+    allowed = {
+        "type",
+        "title",
+        "description",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "$defs",
+        "$ref",
+        "anyOf",
+        "enum",
+        "const",
+        "format",
+        "pattern",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minItems",
+        "maxItems",
+    }
+    if not isinstance(schema, dict):
+        raise ValueError(f"{path}: expected a schema object")
+    if not any(key in schema for key in ("type", "$ref", "anyOf")):
+        raise ValueError(f"{path}: schema requires type, $ref, or anyOf")
+    for key in schema:
+        if key not in allowed:
+            raise ValueError(f"{path}.{key}: unsupported strict-schema keyword")
+    if "$ref" in schema and (
+        not isinstance(schema["$ref"], str) or not schema["$ref"].startswith("#/$defs/")
+    ):
+        raise ValueError(f"{path}: only local $defs references are supported")
+    schema_type = schema.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        properties = schema.get("properties")
+        required = schema.get("required")
+        if schema.get("additionalProperties") is not False:
+            raise ValueError(f"{path}.additionalProperties must be false")
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            raise ValueError(f"{path}: properties and required are required")
+        if not all(isinstance(name, str) for name in required) or (
+            len(set(required)) != len(required) or set(required) != set(properties)
+        ):
+            raise ValueError(f"{path}.required must list every property exactly once")
+    for key in ("properties", "$defs"):
+        children = schema.get(key, {})
+        if isinstance(children, dict):
+            for name, child in children.items():
+                _validate_python_tool_schema(child, f"{path}.{key}.{name}")
+    if "items" in schema:
+        _validate_python_tool_schema(schema["items"], f"{path}.items")
+    for index, child in enumerate(schema.get("anyOf", [])):
+        _validate_python_tool_schema(child, f"{path}.anyOf[{index}]")
+
+
+class ManagedAgentPythonTool(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["python"] = "python"
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=64)
+    description: str = ""
+    input_schema: dict[str, Any]
+    source: str = Field(min_length=1, max_length=65536)
+    entrypoint: str | None = Field(
+        default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=64
+    )
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 65536:
+            raise ValueError("source must contain at most 65536 bytes")
+        return value
+
+    @field_validator("input_schema")
+    @classmethod
+    def validate_input_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if "anyOf" in value:
+            raise ValueError("root anyOf is not supported")
+        if value.get("type") != "object":
+            raise ValueError("input_schema must be an object schema")
+        try:
+            jsonschema.Draft202012Validator.check_schema(value)
+        except jsonschema.SchemaError as error:
+            raise ValueError(f"invalid input_schema: {error.message}") from error
+        _validate_python_tool_schema(value)
+        return value
+
+
+class ManagedAgentHttpConnection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str
+    use_proxy_secret: str | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise ValueError("URL must be HTTP(S), without credentials or fragment")
+        return value
+
+    @field_validator("use_proxy_secret")
+    @classmethod
+    def validate_proxy_secret(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("use_proxy_secret must not be empty")
+        return value
+
+
 class ManagedAgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["v1"] = "v1"
@@ -165,8 +289,18 @@ class ManagedAgentSpec(BaseModel):
     thread_isolation: ManagedAgentThreadIsolation = "global"
     instructions: str | None = None
     toolkits: list[ManagedToolkit] | None = None
+    tools: list[ManagedAgentPythonTool] = Field(default_factory=list)
+    connections: dict[str, ManagedAgentHttpConnection] = Field(default_factory=dict)
     output_modalities: list[str] | None = None
     store: bool = True
+
+    @field_validator("tools")
+    @classmethod
+    def validate_tool_names(cls, value: list[ManagedAgentPythonTool]):
+        names = [tool.name for tool in value]
+        if len(set(names)) != len(names):
+            raise ValueError("duplicate Python tool name")
+        return value
 
     @model_validator(mode="before")
     @classmethod

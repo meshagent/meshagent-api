@@ -225,3 +225,80 @@ def test_managed_web_search_domain_filters_require_lists(field):
                 "toolkits": [{"type": "web_search", field: "example.com"}],
             }
         )
+
+
+def test_embedded_python_tool_round_trip():
+    from meshagent.api.managed_agents import ManagedAgentPythonTool
+
+    tool = ManagedAgentPythonTool(
+        name="lookup",
+        input_schema={
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        source="async def lookup(args): return args",
+    )
+    spec = ManagedAgentSpec(
+        metadata={"name": "lookup-agent"},
+        allowed_models=[],
+        tools=[tool],
+        connections={"crm": {"base_url": "https://example.com"}},
+    )
+    assert ManagedAgentSpec.model_validate_json(spec.model_dump_json()) == spec
+    assert spec.tools[0].entrypoint is None
+    assert spec.connections["crm"].use_proxy_secret is None
+    with pytest.raises(ValidationError, match="duplicate"):
+        ManagedAgentSpec.model_validate({**spec.model_dump(), "tools": [tool, tool]})
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "properties": {}, "required": []},
+        {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {"nested": {"type": "object"}},
+            "required": ["nested"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "$ref": "https://example.com/schema",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    ],
+)
+def test_python_tools_reject_non_strict_schema(schema):
+    from meshagent.api.managed_agents import ManagedAgentPythonTool
+
+    with pytest.raises(ValidationError):
+        ManagedAgentPythonTool(
+            name="lookup",
+            input_schema=schema,
+            source="async def lookup(args): return args",
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "https://user:secret@example.com",
+        "https://example.com/#secret",
+    ],
+)
+def test_python_connections_reject_invalid_urls(url):
+    from meshagent.api.managed_agents import ManagedAgentHttpConnection
+
+    with pytest.raises(ValidationError):
+        ManagedAgentHttpConnection(base_url=url)
