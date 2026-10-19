@@ -16,6 +16,7 @@ from pydantic import (
 )
 from meshagent.api.room_server_client import RoomDisabledError, RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
+from meshagent.api.files import FILE_RELATIONS, FileRole, FilesClient
 from meshagent.api.helpers import is_valid_room_name, meshagent_base_url
 from meshagent.api.http import (
     MESHAGENT_CONSISTENCY_HEADER,
@@ -126,6 +127,7 @@ class MeshagentDomains(BaseModel):
     mail: str | None = None
     pages: str | None = None
     registry: str | None = None
+    files: str | None = None
 
 
 class MeshagentDeploymentConfig(BaseModel):
@@ -290,15 +292,9 @@ AccessRole = (
     | SecretRole
     | ServiceAccountRole
     | CustomDomainRole
+    | FileRole
     | Literal["list"]
 )
-
-
-def _validate_resource_policy_type(resource_type: AccessResourceType) -> None:
-    if resource_type == "agent":
-        raise ValueError(
-            "managed agent resource policies are not supported; use agent run_as instead"
-        )
 
 
 class AccessSubject(BaseModel):
@@ -515,6 +511,12 @@ class ProjectRoomGrant(RoleGrant):
 
     @property
     def permissions(self) -> ApiScope:
+        if set(self.direct_roles).intersection(FILE_RELATIONS) and not set(
+            self.direct_roles
+        ).intersection(
+            {"guest", "viewer", "site_user", "operator", "developer", "admin"}
+        ):
+            return ApiScope()
         if "admin" in self.direct_roles:
             return room_scope_for_role_compat("admin")
         if "developer" in self.direct_roles:
@@ -1301,6 +1303,7 @@ class Meshagent:
         self.consistency = normalize_meshagent_consistency(consistency)
         self._session_external = session is not None
         self._session = session or new_client_session()
+        self.files = FilesClient(self)
 
     async def close(self):
         if not self._session_external and not self._session.closed:
@@ -5285,7 +5288,6 @@ class Meshagent:
         continuation_token: str | None = None,
     ) -> ResourcePolicyPage:
         """GET /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy."""
-        _validate_resource_policy_type(resource_type)
         params = {"page_size": str(page_size)}
         if continuation_token is not None:
             params["continuation_token"] = continuation_token
@@ -5338,7 +5340,6 @@ class Meshagent:
         invite_redirect_url: str | None = None,
     ) -> None:
         """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:grant."""
-        _validate_resource_policy_type(resource_type)
         payload = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
             "roles": roles,
@@ -5366,7 +5367,6 @@ class Meshagent:
         subject: AccessSubject,
     ) -> None:
         """POST /accounts/projects/{project_id}/iam/{resource_type}/{resource_id}/policy:revoke."""
-        _validate_resource_policy_type(resource_type)
         payload = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
         }

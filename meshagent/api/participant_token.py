@@ -11,6 +11,12 @@ from pydantic import (
     model_validator,
 )
 import logging
+from .file_permissions import (
+    FileAction,
+    FilesPolicy,
+    legacy_storage_rules,
+    storage_request_path,
+)
 from .keys import parse_api_key
 from .version import __version__
 
@@ -550,26 +556,47 @@ class StoragePathGrant(BaseModel):
 
 class StorageGrant(BaseModel):
     paths: Optional[list[StoragePathGrant]] = None
+    files: FilesPolicy | None = None
 
-    def can_read(self, path: str):
-        if self.paths is None:
-            return True
+    def file_policy(self) -> FilesPolicy:
+        if self.files is not None:
+            return self.files
+        return FilesPolicy(
+            paths=legacy_storage_rules(
+                None
+                if self.paths is None
+                else ((path.path, path.read_only) for path in self.paths)
+            )
+        )
 
-        for t in self.paths:
-            if path.startswith(t.path):
-                return True
+    def allows(self, action: FileAction, path: str, *, subtree: bool = False) -> bool:
+        try:
+            return self.file_policy().allows(
+                action, storage_request_path(path), subtree=subtree
+            )
+        except ValueError:
+            return False
 
-        return False
+    def can_read(self, path: str, *, subtree: bool = False) -> bool:
+        return self.allows("read", path, subtree=subtree)
 
-    def can_write(self, path: str):
-        if self.paths is None:
-            return True
+    def can_write(self, path: str, *, subtree: bool = False) -> bool:
+        return self.allows("write", path, subtree=subtree)
 
-        for t in self.paths:
-            if path.startswith(t.path):
-                return not t.read_only
+    def can_delete(self, path: str, *, recursive: bool = False) -> bool:
+        return self.allows("delete", path, subtree=recursive)
 
-        return False
+    def can_list(self, path: str) -> bool:
+        return self.allows("list", path)
+
+    def can_list_directory(self, path: str) -> bool:
+        try:
+            return self.file_policy().can_list_directory(storage_request_path(path))
+        except ValueError:
+            return False
+
+    def can_presign(self, path: str) -> bool:
+        return self.allows("presign", path)
 
 
 def _matches_grant_pattern(

@@ -12,6 +12,7 @@ from meshagent.api.specs.service import (
     RouteContentSpec,
     RouteCorsRule,
     RoutePathSpec,
+    RouteSpec,
     SecretValue,
     ServiceFileSpec,
     ServiceSpec,
@@ -393,3 +394,40 @@ def test_mcp_endpoint_spec_preserves_proxy_secret() -> None:
 def test_port_spec_rejects_reserved_room_infrastructure_port() -> None:
     with pytest.raises(ValidationError, match=str(ROOM_INTERNAL_API_PORT)):
         PortSpec(num=ROOM_INTERNAL_API_PORT, type="http")
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [[], [{"path": "/docs", "targetContent": {"subpath": "site", "index": True}}]],
+)
+def test_agent_routes_allow_legacy_websockets_or_public_files(paths):
+    spec = RouteSpec.model_validate(
+        {
+            "metadata": {"name": "agent.example.test"},
+            "domain": "agent.example.test",
+            "backend": {"agent": {"name": "assistant"}},
+            "paths": paths,
+        }
+    )
+    assert RouteSpec.model_validate(spec.model_dump(mode="json")) == spec
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        {"targetPort": 80},
+        {"targetContent": {"iap": True}},
+        {"targetContent": {}, "stripPrefix": True},
+        {"targetContent": {}, "unavailable": "error.html"},
+    ],
+)
+def test_agent_routes_reject_iap_and_service_options(path):
+    with pytest.raises(ValidationError):
+        RouteSpec.model_validate(
+            {
+                "metadata": {"name": "agent.example.test"},
+                "domain": "agent.example.test",
+                "backend": {"agent": {"name": "assistant"}},
+                "paths": [{"path": "/", **path}],
+            }
+        )

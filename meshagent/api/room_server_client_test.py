@@ -6544,3 +6544,80 @@ async def test_sync_client_unexpected_response_uses_error_code() -> None:
         await client.open(path="thread.thread")
 
     assert ex.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_sqlite_batch_encodes_commands_and_decodes_ordered_results():
+    schema = pa.schema([pa.field("id", pa.int64())])
+
+    class BatchRoom:
+        calls = []
+
+        async def invoke(self, **kwargs):
+            self.calls.append(kwargs)
+            return JsonContent(
+                json={
+                    "results": [
+                        {"kind": "statement", "rows_affected": 1},
+                        {
+                            "kind": "query",
+                            "query_id": "batch-query",
+                            "schema_base64": base64.b64encode(
+                                room_server_client._schema_to_arrow_ipc(schema)
+                            ).decode("ascii"),
+                        },
+                    ]
+                }
+            )
+
+    room = BatchRoom()
+    client = SqliteClient(room=room)
+    results = await client.database("app", namespace=["team"]).execute_sql_batch(
+        commands=[
+            room_server_client.SqliteSqlCommand("INSERT INTO items VALUES (?)", [1]),
+            room_server_client.SqliteSqlCommand(
+                "SELECT * FROM items WHERE id=:id", {"id": 1}
+            ),
+        ]
+    )
+    assert results[0] == SqliteSqlStatement(rows_affected=1)
+    assert results[1].schema == schema
+    assert results[1].query_id == "batch-query"
+    assert room.calls == [
+        {
+            "toolkit": "sqlite",
+            "tool": "execute_sql_batch",
+            "input": {
+                "database": "app",
+                "namespace": ["team"],
+                "commands": [
+                    {"query": "INSERT INTO items VALUES (?)", "params": [1]},
+                    {"query": "SELECT * FROM items WHERE id=:id", "params": {"id": 1}},
+                ],
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"results": []},
+        {"results": [{"kind": "unexpected"}]},
+        {"results": [{"kind": "statement", "rows_affected": True}]},
+        {"results": [{"kind": "query", "query_id": "", "schema_base64": ""}]},
+        {"results": [{"kind": "query", "query_id": "x", "schema_base64": "%%%"}]},
+        {"results": [{"kind": "query", "query_id": "x", "schema_base64": "YQ=="}]},
+    ],
+)
+async def test_sqlite_batch_rejects_malformed_results(payload):
+    class BatchRoom:
+        async def invoke(self, **kwargs):
+            return JsonContent(json=payload)
+
+    with pytest.raises(RoomException) as error:
+        await SqliteClient(room=BatchRoom()).execute_sql_batch(
+            database="app", commands=[room_server_client.SqliteSqlCommand("SELECT 1")]
+        )
+    assert error.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE

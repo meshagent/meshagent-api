@@ -721,8 +721,14 @@ class RouteSpec(BaseModel):
     def validate_paths(self) -> "RouteSpec":
         if self.backend.room is not None and len(self.paths) == 0:
             raise ValueError("RouteSpec room backend requires at least one path")
-        if self.backend.agent is not None and len(self.paths) != 0:
-            raise ValueError("RouteSpec agent backend does not support paths")
+        if self.backend.agent is not None:
+            for path in self.paths:
+                if path.targetContent is None:
+                    raise ValueError("RouteSpec agent paths require targetContent")
+                if path.targetContent.iap:
+                    raise ValueError(
+                        "RouteSpec agent content routes do not support IAP"
+                    )
         return self
 
     @property
