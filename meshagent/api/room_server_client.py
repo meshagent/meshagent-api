@@ -6570,6 +6570,11 @@ class SqliteSqlCancelResult:
     status: Literal["cancelled", "cancelling", "not_cancellable"]
 
 
+class SqliteReplicationSettings(BaseModel):
+    replication_mode: Literal["synchronous", "asynchronous"] = "synchronous"
+    flush_interval_ms: int = Field(default=1000, ge=1, le=3600000)
+
+
 class SqliteDatabaseDetails(BaseModel):
     name: str
     namespace: Optional[list[str]] = None
@@ -8342,11 +8347,19 @@ class SqliteDatabaseClient:
         self.database = database
         self.namespace = namespace
 
-    async def create_database(self, *, mode: Optional[CreateMode] = "create") -> None:
+    async def create_database(
+        self,
+        *,
+        mode: Optional[CreateMode] = "create",
+        replication_mode: Optional[Literal["synchronous", "asynchronous"]] = None,
+        flush_interval_ms: Optional[int] = None,
+    ) -> None:
         await self._client.create_database(
             name=self.database,
             namespace=self.namespace,
             mode=mode,
+            replication_mode=replication_mode,
+            flush_interval_ms=flush_interval_ms,
         )
 
     async def drop_database(self, *, ignore_missing: bool = False) -> None:
@@ -8758,13 +8771,60 @@ class SqliteClient:
         name: str,
         namespace: Optional[list[str]] = None,
         mode: str = "create",
+        replication_mode: Optional[Literal["synchronous", "asynchronous"]] = None,
+        flush_interval_ms: Optional[int] = None,
     ) -> None:
+        settings = {}
+        if replication_mode is not None:
+            settings["replication_mode"] = replication_mode
+        if flush_interval_ms is not None:
+            settings["flush_interval_ms"] = flush_interval_ms
         response = await self._invoke(
             operation="create_database",
-            input={"name": name, "namespace": namespace, "mode": mode},
+            input={"name": name, "namespace": namespace, "mode": mode, **settings},
         )
         if not isinstance(response, EmptyContent):
             raise self._unexpected_response_error(operation="create_database")
+
+    async def get_database_settings(
+        self, *, name: str, namespace: Optional[list[str]] = None
+    ) -> SqliteReplicationSettings:
+        response = await self._invoke(
+            operation="get_database_settings",
+            input={"name": name, "namespace": namespace},
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="get_database_settings")
+        return SqliteReplicationSettings.model_validate(response.json)
+
+    async def update_database_settings(
+        self,
+        *,
+        name: str,
+        namespace: Optional[list[str]] = None,
+        replication_mode: Optional[Literal["synchronous", "asynchronous"]] = None,
+        flush_interval_ms: Optional[int] = None,
+    ) -> SqliteReplicationSettings:
+        values = {"name": name, "namespace": namespace}
+        if replication_mode is not None:
+            values["replication_mode"] = replication_mode
+        if flush_interval_ms is not None:
+            values["flush_interval_ms"] = flush_interval_ms
+        response = await self._invoke(
+            operation="update_database_settings", input=values
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="update_database_settings")
+        return SqliteReplicationSettings.model_validate(response.json)
+
+    async def flush_database(
+        self, *, name: str, namespace: Optional[list[str]] = None
+    ) -> None:
+        response = await self._invoke(
+            operation="flush_database", input={"name": name, "namespace": namespace}
+        )
+        if not isinstance(response, JsonContent):
+            raise self._unexpected_response_error(operation="flush_database")
 
     async def drop_database(
         self,

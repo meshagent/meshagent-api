@@ -1,4 +1,6 @@
 ## [0.55.0]
+- Added SQLite replication settings, create-time policy options, and explicit database flush, with CLI settings and flush commands.
+- Fixed concurrent dataset catalog read misses preventing initial catalog creation.
 - Added managed-agent Python tool and HTTP connection models, including strict schema, URL, source, entrypoint, and duplicate-name validation.
 - Added local CLI execution for embedded Python tools with JSON input, live HTTP requests, captured logs, request summaries, and optional private-HTTP access for development.
 - Agent file commands now support managed-agent paths without requiring a room.
