@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -249,11 +250,104 @@ class ManagedAgentPythonTool(BaseModel):
         return value
 
 
+class ManagedAgentSecretHeader(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("secret.id must not be empty")
+        return value
+
+
+class ManagedAgentConnectionHeader(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    value: str | None = None
+    secret: ManagedAgentSecretHeader | None = None
+    prefix: str = ""
+
+    @field_validator("prefix")
+    @classmethod
+    def validate_prefix(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("prefix must not contain control characters")
+        return value
+
+    @model_validator(mode="after")
+    def validate_source(self) -> ManagedAgentConnectionHeader:
+        if (self.value is None) == (self.secret is None):
+            raise ValueError("header requires exactly one of value or secret")
+        if self.value is not None and self.prefix:
+            raise ValueError("prefix requires secret")
+        return self
+
+
 class ManagedAgentHttpConnection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_url: str
     use_proxy_secret: str | None = None
+    headers: list[ManagedAgentConnectionHeader] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_headers(self) -> ManagedAgentHttpConnection:
+        reserved = {
+            "host",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+            "proxy-authorization",
+            "proxy-authenticate",
+            "proxy-connection",
+            "keep-alive",
+            "upgrade",
+            "te",
+            "trailer",
+            "cookie",
+            "set-cookie",
+            "sec-websocket-accept",
+            "sec-websocket-extensions",
+            "sec-websocket-key",
+            "sec-websocket-protocol",
+            "sec-websocket-version",
+        }
+        names: set[str] = set()
+        secret_count = int(self.use_proxy_secret is not None)
+        for header in self.headers:
+            name = header.name
+            normalized = name.lower()
+            if (
+                re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name) is None
+                or normalized in reserved
+                or normalized in names
+            ):
+                raise ValueError(f"header {name} is not allowed")
+            names.add(normalized)
+            if header.value is not None:
+                if any(
+                    ord(character) < 32 or ord(character) == 127
+                    for character in header.value
+                ):
+                    raise ValueError(f"header {name} has an invalid value")
+            else:
+                secret_count += 1
+        if self.use_proxy_secret is not None and "authorization" in names:
+            raise ValueError("Authorization conflicts with use_proxy_secret")
+        if secret_count > 16:
+            raise ValueError("a connection supports at most 16 secret headers")
+        if secret_count and any(
+            header.name.lower() == "authorization" and header.value is not None
+            for header in self.headers
+        ):
+            raise ValueError(
+                "literal Authorization cannot be combined with secret headers"
+            )
+        return self
 
     @field_validator("base_url")
     @classmethod
@@ -277,6 +371,140 @@ class ManagedAgentHttpConnection(BaseModel):
         return value
 
 
+class ManagedAgentEnvironmentVariable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
+    value: str | None = None
+    secret: ManagedAgentSecretHeader | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> ManagedAgentEnvironmentVariable:
+        if (self.value is None) == (self.secret is None):
+            raise ValueError(
+                "environment entry requires exactly one of value or secret"
+            )
+        return self
+
+
+class ManagedAgentDecisionCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["decision"] = "decision"
+    model: str = Field(pattern=r"^openai/[^/\s]+$")
+    instructions: str = Field(min_length=1, max_length=16384)
+    minimum_allow_probability: float = Field(ge=0, le=1, allow_inf_nan=False)
+
+    @field_validator("instructions")
+    @classmethod
+    def validate_instructions(cls, value: str) -> str:
+        if not value.strip() or len(value.encode("utf-8")) > 16384:
+            raise ValueError(
+                "guardrail instructions must contain 1 to 16384 UTF-8 bytes"
+            )
+        return value
+
+
+class ManagedAgentGuardrailFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["block", "deny", "replace", "pass", "fail"] = "block"
+    message: str | None = None
+
+    @model_validator(mode="after")
+    def validate_replacement(self):
+        if self.action == "replace" and not (self.message or "").strip():
+            raise ValueError("replacement guardrails require a message")
+        return self
+
+
+class ManagedAgentGuardrail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    check: ManagedAgentDecisionCheck
+    on_reject: ManagedAgentGuardrailFailure = Field(
+        default_factory=ManagedAgentGuardrailFailure
+    )
+    on_error: ManagedAgentGuardrailFailure = Field(
+        default_factory=lambda: ManagedAgentGuardrailFailure(action="fail")
+    )
+    max_retries: int = Field(default=2, ge=0, le=3, strict=True)
+
+
+class ManagedAgentToolMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    names: list[str] = Field(min_length=1)
+
+
+class ManagedAgentToolGuardrails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    match: ManagedAgentToolMatch
+    input: list[ManagedAgentGuardrail] = Field(default_factory=list)
+    output: list[ManagedAgentGuardrail] = Field(default_factory=list)
+
+
+class ManagedAgentOutputGuardrails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    checks: list[ManagedAgentGuardrail] = Field(default_factory=list)
+
+
+class ManagedAgentGuardrails(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    input: list[ManagedAgentGuardrail] = Field(default_factory=list)
+    tools: list[ManagedAgentToolGuardrails] = Field(default_factory=list)
+    output: ManagedAgentOutputGuardrails = Field(
+        default_factory=ManagedAgentOutputGuardrails
+    )
+
+    @model_validator(mode="after")
+    def validate_rules(self):
+        names: set[str] = set()
+        rules = [*self.input, *self.output.checks]
+        for tool in self.tools:
+            if not tool.name.strip() or any(
+                not name.strip() for name in tool.match.names
+            ):
+                raise ValueError("tool guardrails require nonempty names")
+            rules.extend(tool.input)
+            rules.extend(tool.output)
+        if len(rules) > 32:
+            raise ValueError("at most 32 guardrail checks are allowed")
+        boundaries = [
+            (self.input, {"block"}),
+            (self.output.checks, {"block", "replace"}),
+        ]
+        for tool in self.tools:
+            boundaries.extend(
+                [
+                    (tool.input, {"block", "deny"}),
+                    (tool.output, {"block", "deny", "replace"}),
+                ]
+            )
+        for checks, allowed in boundaries:
+            for rule in checks:
+                if (
+                    rule.on_reject.action not in allowed
+                    or rule.on_error.action not in allowed | {"pass", "fail"}
+                ):
+                    raise ValueError(
+                        "guardrail action is not supported at this boundary"
+                    )
+        for rule in rules:
+            if (
+                not rule.name
+                or len(rule.name) > 64
+                or any(
+                    not (char.isascii() and (char.isalnum() or char in "_.-"))
+                    for char in rule.name
+                )
+                or rule.name in names
+            ):
+                raise ValueError("guardrail names must be nonempty and unique")
+            names.add(rule.name)
+            if not rule.check.instructions.strip():
+                raise ValueError("guardrail instructions must not be empty")
+        return self
+
+
 class ManagedAgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["v1"] = "v1"
@@ -284,6 +512,7 @@ class ManagedAgentSpec(BaseModel):
     id: str | None = None
     metadata: ManagedAgentMetadata
     allowed_models: list[ManagedAllowedModel]
+    guardrails: ManagedAgentGuardrails | None = None
     run_as: ManagedAgentRunAs | None = None
     llm_delegation: ManagedAgentLlmDelegation = "optional"
     thread_isolation: ManagedAgentThreadIsolation = "global"
@@ -291,6 +520,7 @@ class ManagedAgentSpec(BaseModel):
     toolkits: list[ManagedToolkit] | None = None
     tools: list[ManagedAgentPythonTool] = Field(default_factory=list)
     connections: dict[str, ManagedAgentHttpConnection] = Field(default_factory=dict)
+    environment: list[ManagedAgentEnvironmentVariable] = Field(default_factory=list)
     output_modalities: list[str] | None = None
     store: bool = True
 
@@ -301,6 +531,20 @@ class ManagedAgentSpec(BaseModel):
         if len(set(names)) != len(names):
             raise ValueError("duplicate Python tool name")
         return value
+
+    @model_validator(mode="after")
+    def validate_environment(self) -> ManagedAgentSpec:
+        names = [entry.name for entry in self.environment]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate environment variable name")
+        if len(names) > 64:
+            raise ValueError("at most 64 environment variables are supported")
+        if any(entry.secret is not None for entry in self.environment):
+            if self.run_as is None or "secrets:read" not in self.run_as.scopes:
+                raise ValueError(
+                    "secret environment variables require run_as with secrets:read"
+                )
+        return self
 
     @model_validator(mode="before")
     @classmethod
