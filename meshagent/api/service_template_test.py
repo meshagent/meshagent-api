@@ -1,8 +1,67 @@
 import json
 
+import pytest
+from jinja2 import UndefinedError
+from jinja2.sandbox import SecurityError
+
 from meshagent.api.specs.service import (
     ServiceTemplateSpec,
+    format_yaml_value,
 )
+
+
+@pytest.mark.parametrize(
+    "render_path", ["scalar", "legacy_scalar", "yaml", "tagged_scalar"]
+)
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{{ cycler.__init__.__globals__.os.environ['MESHAGENT_TEMPLATE_TEST_SECRET'] }}",
+        "{{ lipsum.__globals__.os.environ['MESHAGENT_TEMPLATE_TEST_SECRET'] }}",
+        "{{ (cycler|attr('__init__')|attr('__globals__')).os.environ['MESHAGENT_TEMPLATE_TEST_SECRET'] }}",
+    ],
+)
+def test_service_templates_block_process_environment_access(
+    monkeypatch: pytest.MonkeyPatch, render_path: str, payload: str
+):
+    monkeypatch.setenv("MESHAGENT_TEMPLATE_TEST_SECRET", "synthetic-template-secret")
+
+    with pytest.raises((SecurityError, UndefinedError)):
+        if render_path == "scalar":
+            format_yaml_value(payload, {})
+        elif render_path == "legacy_scalar":
+            format_yaml_value("!template " + payload, {})
+        elif render_path == "yaml":
+            ServiceTemplateSpec.from_yaml(
+                yaml="version: v1\nkind: ServiceTemplate\nmetadata:\n  name: " + payload
+            )
+        else:
+            ServiceTemplateSpec.from_yaml(
+                yaml="version: v1\nkind: ServiceTemplate\nmetadata:\n  name: !template |-\n    {{ payload }}",
+                values={"payload": payload},
+            )
+
+
+def test_service_template_sandbox_preserves_conditions_loops_and_filters():
+    yaml_spec = """
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: "{{ name | upper }}"
+{% if enabled %}
+agents:
+{% for index in range(2) %}
+  - name: "agent-{{ index }}"
+{% endfor %}
+{% endif %}
+"""
+    spec = ServiceTemplateSpec.from_yaml(
+        yaml=yaml_spec, values={"name": "support", "enabled": "yes"}
+    )
+
+    assert spec.metadata.name == "SUPPORT"
+    assert spec.agents is not None
+    assert [agent.name for agent in spec.agents] == ["agent-0", "agent-1"]
 
 
 def test_service_template_spec_renders_jinja_values():

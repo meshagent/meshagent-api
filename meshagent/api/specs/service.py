@@ -981,6 +981,15 @@ class ExternalServiceTemplateSpec(BaseModel):
     url: str
 
 
+def _render_service_template(source: str, values: dict[str, str]) -> str:
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    # Service templates are untrusted input. Plain Template permits access to
+    # Python internals, including process globals, through its built-in helpers.
+    environment = ImmutableSandboxedEnvironment()
+    return environment.from_string(source).render(**values)
+
+
 def format_yaml_value(original: Optional[str], values: dict[str, str]):
     if original is None:
         return None
@@ -992,10 +1001,7 @@ def format_yaml_value(original: Optional[str], values: dict[str, str]):
     if not legacy_prefixed and not has_jinja_syntax:
         return original
 
-    from jinja2 import Template
-
-    template = Template(value)
-    return template.render(**values)
+    return _render_service_template(value, values)
 
 
 def format_yaml_map(original: Optional[dict[str, str]], values: dict[str, str]):
@@ -1095,8 +1101,6 @@ class ServiceTemplateSpec(BaseModel):
 
     @staticmethod
     def from_yaml(yaml: str, values: dict[str, str] = {}) -> "ServiceTemplateSpec":
-        from jinja2 import Template
-
         YAML, SafeLoader = _yaml_support()
 
         class _ApplyTagLoader(SafeLoader):
@@ -1104,17 +1108,14 @@ class ServiceTemplateSpec(BaseModel):
 
         def _tagged_scalar(loader, tag_suffix, node):
             value = loader.construct_scalar(node)
-            template = Template(value)
-            return template.render(**values)
+            return _render_service_template(value, values)
 
         _ApplyTagLoader.add_multi_constructor("!template", _tagged_scalar)
 
         def load_yaml(y: str):
             return YAML.load(y, Loader=_ApplyTagLoader)
 
-        template = Template(yaml)
-
-        rendered = template.render(**values)
+        rendered = _render_service_template(yaml, values)
 
         spec = ServiceTemplateSpec.model_validate(load_yaml(rendered))
 

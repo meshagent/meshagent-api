@@ -132,6 +132,7 @@ class MeshagentDomains(BaseModel):
 
 class MeshagentDeploymentConfig(BaseModel):
     domains: MeshagentDomains
+    reserved_route_domains: list[str] = Field(default_factory=list)
     version: str | None = None
 
 
