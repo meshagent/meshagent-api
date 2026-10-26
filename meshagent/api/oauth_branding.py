@@ -8,6 +8,7 @@ class OAuthClientBranding(BaseModel):
 
     logo_url: HttpUrl | None = None
     theme: Literal["light", "dark", "auto"] = "auto"
+    remove_powered_by_meshagent: bool = False
 
     @field_validator("logo_url", mode="before")
     @classmethod
