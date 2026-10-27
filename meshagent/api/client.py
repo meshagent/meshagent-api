@@ -5227,12 +5227,14 @@ class Meshagent:
         project_id: str,
         subject: AccessSubject,
         resource: AccessResource,
+        roles: list[str],
         relations: list[str] | None = None,
     ) -> ResourceAccessSummary:
         """POST /accounts/projects/{project_id}/access:effective."""
         payload: dict[str, Any] = {
             "subject": subject.model_dump(mode="json", exclude_none=True),
             "resource": resource.model_dump(mode="json", exclude_none=True),
+            "roles": roles,
         }
         if relations is not None:
             payload["relations"] = relations
