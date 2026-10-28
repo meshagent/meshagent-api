@@ -2655,6 +2655,7 @@ async def test_access_evaluator_methods_use_access_routes():
         project_id="proj_123",
         subject=AccessSubject(type="user", id="user-1"),
         resource=AccessResource(type="room", id="room-1"),
+        roles=["developer"],
         relations=["can_use", "can_manage"],
     )
     bindings_page = await client.list_access_bindings_page(
@@ -2704,6 +2705,7 @@ async def test_access_evaluator_methods_use_access_routes():
             {
                 "subject": {"type": "user", "id": "user-1"},
                 "resource": {"type": "room", "id": "room-1"},
+                "roles": ["developer"],
                 "relations": ["can_use", "can_manage"],
             },
         ),
