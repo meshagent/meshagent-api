@@ -13,6 +13,7 @@ class _StorageModel(BaseModel):
 
 
 class _Location(_StorageModel):
+    anonymous: bool = False
     prefix: str = ""
 
     @field_validator("prefix")
@@ -90,11 +91,16 @@ ConnectionName = Annotated[
 class CreateStorageConnection(_StorageModel):
     name: ConnectionName
     config: StorageConfig
-    credentials: StorageCredentials = Field(repr=False)
+    credentials: StorageCredentials | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def matching_provider(self):
-        if self.config.provider != self.credentials.provider:
+        if self.config.anonymous:
+            if self.credentials is not None:
+                raise ValueError("anonymous connections must not contain credentials")
+        elif self.credentials is None:
+            raise ValueError("credentials are required for authenticated connections")
+        elif self.config.provider != self.credentials.provider:
             raise ValueError("configuration and credentials must use the same provider")
         return self
 
@@ -106,6 +112,8 @@ class UpdateStorageConnection(_StorageModel):
 
     @model_validator(mode="after")
     def matching_provider(self):
+        if self.config.anonymous and self.credentials is not None:
+            raise ValueError("anonymous connections must not contain credentials")
         if self.credentials and self.config.provider != self.credentials.provider:
             raise ValueError("configuration and credentials must use the same provider")
         return self
@@ -125,13 +133,28 @@ class ResolvedStorageConnection(_StorageModel):
     id: UUID
     config: StorageConfig
     revision: int
-    credentials: StorageCredentials = Field(repr=False)
+    credentials: StorageCredentials | None = Field(default=None, repr=False)
 
     def location_and_options(self, path: str) -> tuple[str, dict[str, str]]:
         validate_external_dataset_path(path)
         options: dict[str, str] = {}
         config, credentials = self.config, self.credentials
-        if isinstance(config, GCSStorageConfig) and isinstance(
+        if config.anonymous:
+            if credentials is not None:
+                raise ValueError("anonymous connections must not contain credentials")
+            if isinstance(config, GCSStorageConfig):
+                root = f"gs://{config.bucket}"
+                options["google_skip_signature"] = "true"
+            elif isinstance(config, S3StorageConfig):
+                root = f"s3://{config.bucket}"
+                options.update(aws_region=config.region, aws_skip_signature="true")
+            else:
+                root = f"az://{config.container}"
+                options.update(
+                    azure_storage_account_name=config.account,
+                    azure_skip_signature="true",
+                )
+        elif isinstance(config, GCSStorageConfig) and isinstance(
             credentials, GCSStorageCredentials
         ):
             root = f"gs://{config.bucket}"
