@@ -7495,6 +7495,27 @@ class DatasetsClient:
             input_stream=input_stream,
         )
 
+    async def register_table(
+        self,
+        *,
+        name: str,
+        connection_id: str,
+        path: str,
+        namespace: Optional[list[str]] = None,
+        branch: Optional[str] = None,
+    ) -> None:
+        """Register an existing, read-only Lance dataset from room external storage."""
+        await self._invoke(
+            operation="register_table",
+            input={
+                "name": name,
+                "connection_id": connection_id,
+                "path": path,
+                "namespace": namespace,
+                "branch": branch,
+            },
+        )
+
     async def drop_table(
         self,
         *,

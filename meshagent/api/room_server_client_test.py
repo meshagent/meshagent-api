@@ -6621,3 +6621,29 @@ async def test_sqlite_batch_rejects_malformed_results(payload):
             database="app", commands=[room_server_client.SqliteSqlCommand("SELECT 1")]
         )
     assert error.value.code == ErrorCode.UNEXPECTED_RESPONSE_TYPE
+
+
+@pytest.mark.asyncio
+async def test_datasets_client_registers_external_source_without_credentials():
+    from unittest.mock import AsyncMock
+
+    room = SimpleNamespace(invoke=AsyncMock(return_value=EmptyContent()))
+    client = room_server_client.DatasetsClient(room)
+    await client.register_table(
+        name="events",
+        connection_id="connection-id",
+        path="events.lance",
+        namespace=["analytics"],
+        branch="experiment",
+    )
+    room.invoke.assert_awaited_once_with(
+        toolkit="dataset",
+        tool="register_table",
+        input={
+            "name": "events",
+            "connection_id": "connection-id",
+            "path": "events.lance",
+            "namespace": ["analytics"],
+            "branch": "experiment",
+        },
+    )

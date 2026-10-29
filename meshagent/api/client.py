@@ -38,6 +38,12 @@ from meshagent.api.specs.service import (
     ServiceTemplateSpec,
 )
 from meshagent.api.managed_agents import ManagedAgentSpec
+from meshagent.api.storage_connections import (
+    CreateStorageConnection,
+    UpdateStorageConnection,
+    StorageConnection,
+    StorageConnectionsResponse,
+)
 import os
 
 
@@ -4665,6 +4671,48 @@ class Meshagent:
         DELETE /accounts/projects/{project_id}/rooms/{room_id}
         """
         url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room_id}"
+        async with self._session.delete(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+
+    async def list_room_storage_connections(
+        self, *, project_id: str, room: str
+    ) -> list[StorageConnection]:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/storage-connections"
+        async with self._session.get(url, headers=self._get_headers()) as resp:
+            await self._raise_for_status(resp)
+            return (
+                await self._read_model(resp, StorageConnectionsResponse)
+            ).connections
+
+    async def create_room_storage_connection(
+        self, *, project_id: str, room: str, connection: CreateStorageConnection
+    ) -> StorageConnection:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/storage-connections"
+        async with self._session.post(
+            url, headers=self._get_headers(), json=connection.model_dump(mode="json")
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, StorageConnection)
+
+    async def update_room_storage_connection(
+        self,
+        *,
+        project_id: str,
+        room: str,
+        connection_id: str,
+        connection: UpdateStorageConnection,
+    ) -> StorageConnection:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/storage-connections/{connection_id}"
+        async with self._session.put(
+            url, headers=self._get_headers(), json=connection.model_dump(mode="json")
+        ) as resp:
+            await self._raise_for_status(resp)
+            return await self._read_model(resp, StorageConnection)
+
+    async def delete_room_storage_connection(
+        self, *, project_id: str, room: str, connection_id: str
+    ) -> None:
+        url = f"{self.base_url}/accounts/projects/{project_id}/rooms/{room}/storage-connections/{connection_id}"
         async with self._session.delete(url, headers=self._get_headers()) as resp:
             await self._raise_for_status(resp)
 
