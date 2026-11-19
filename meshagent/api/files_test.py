@@ -19,6 +19,7 @@ class FilesApiFixture:
     calls: list[tuple[str, str, dict[str, str], str]] = field(default_factory=list)
     blobs: dict[str, bytes] = field(default_factory=dict)
     actions: list[dict] = field(default_factory=list)
+    etags: dict[str, int] = field(default_factory=dict)
 
 
 @pytest_asyncio.fixture
@@ -73,10 +74,23 @@ async def files_api() -> AsyncIterator[FilesApiFixture]:
             state.actions.append(await request.json())
             return web.json_response({})
         if request.method == "PUT":
+            current = state.etags.get(request.path)
+            if (
+                request.headers.get("If-Match") is not None
+                and request.headers["If-Match"] != f'"v{current}"'
+            ):
+                return web.Response(status=412)
+            if (
+                not request.query.get("overwrite", "true") == "true"
+                and current is not None
+            ):
+                return web.Response(status=409)
             state.blobs[request.path] = await request.read()
+            state.etags[request.path] = (current or 0) + 1
             return web.Response(status=204)
         if request.method == "DELETE":
             state.blobs.pop(request.path, None)
+            state.etags.pop(request.path, None)
             return web.Response(status=204)
         data = state.blobs.get(request.path)
         if data is None:
@@ -84,7 +98,7 @@ async def files_api() -> AsyncIterator[FilesApiFixture]:
         return web.Response(
             body=data,
             content_type="application/octet-stream",
-            headers={"ETag": '"file-etag"'},
+            headers={"ETag": f'"v{state.etags[request.path]}"'},
         )
 
     app.router.add_get("/config", config)
@@ -126,7 +140,7 @@ async def test_room_agent_streams_share_discovery_session_and_current_credential
         )
         metadata = await room.stat(path)
         assert metadata.size == len(b"\x00\xfffirstsecond")
-        assert metadata.etag == '"file-etag"'
+        assert metadata.etag == '"v1"'
         assert await agent.exists(path)
         assert not await agent.exists("missing")
         client.token = "rotated-token"
@@ -233,3 +247,18 @@ async def test_invalid_paths_fail_before_discovery(files_api):
 def test_target_cannot_escape_namespace(name):
     with pytest.raises(ValidationError):
         FilesTarget(project_id="p1", kind="agent", name=name)
+
+
+@pytest.mark.asyncio
+async def test_conditional_upload_rejects_stale_etag(files_api):
+    async with Meshagent(base_url=files_api.base_url, token="test-token") as client:
+        files = client.files.for_room(project_id="p", room_name="r")
+        await files.upload("workbook", b"first", overwrite=False)
+        etag = (await files.stat("workbook")).etag
+        assert etag == '"v1"'
+        await files.upload("workbook", b"second", if_match=etag)
+        with pytest.raises(RoomException):
+            await files.upload("workbook", b"stale", if_match=etag)
+        assert await files.download("workbook") == b"second"
+        with pytest.raises(ValueError):
+            await files.upload("workbook", b"invalid", if_match=" ")

@@ -1,4 +1,5 @@
 ## [0.57.0]
+- Files uploads now accept an optional `if_match` ETag for conditional replacement; use `stat()` to read the current ETag.
 - Added typed Python models and client methods for room storage connections, including provider-specific configuration, credential validation, anonymous access, secure credential redaction, and path validation.
 - Added Python SDK support for registering existing external Lance datasets as read-only room tables.
 - Added CLI commands to list, create, update, and delete room storage connections and register external datasets.

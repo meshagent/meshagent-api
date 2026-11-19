@@ -261,12 +261,18 @@ class TargetFilesClient:
         *,
         content_type: str = "application/octet-stream",
         overwrite: bool = True,
+        if_match: str | None = None,
     ) -> None:
+        if if_match is not None and not if_match.strip():
+            raise ValueError("If-Match ETag must not be empty")
         client = self._files._client
+        headers = {**client._get_headers(), "Content-Type": content_type}
+        if if_match is not None:
+            headers["If-Match"] = if_match
         async with client._session.put(
             await self._files._url(self.target, path),
             params={"overwrite": str(overwrite).lower()},
-            headers={**client._get_headers(), "Content-Type": content_type},
+            headers=headers,
             data=data,
             allow_redirects=False,
         ) as response:
