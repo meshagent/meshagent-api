@@ -14,6 +14,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_server_client import RoomDisabledError, RoomException
 from meshagent.api.participant_token import ApiScope, ParticipantToken
 from meshagent.api.files import FILE_RELATIONS, FileRole, FilesClient
@@ -68,6 +69,17 @@ class ConflictError(RoomException):
 
 class ValidationErrorResponse(RoomException):
     """400 – invalid request payload."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 400,
+        code: int | None = ErrorCode.INVALID_REQUEST,
+        error_code: str | None = None,
+    ):
+        super().__init__(message, status_code=status_code, code=code)
+        self.error_code = error_code
 
 
 class ServerError(RoomException):
@@ -1370,6 +1382,15 @@ class Meshagent:
                 else "This room is currently disabled."
             )
         if resp.status == 400:
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                payload = None
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict):
+                code, message = error.get("code"), error.get("message")
+                if isinstance(code, str) and isinstance(message, str) and message:
+                    raise ValidationErrorResponse(message, error_code=code)
             raise ValidationErrorResponse(msg)
         if resp.status >= 500:
             raise ServerError(msg)

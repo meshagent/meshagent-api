@@ -22,6 +22,7 @@ from meshagent.api.client import (
     RoomDisabledError,
     UpdateUserProfileRequest,
     User,
+    ValidationErrorResponse,
     room_scope_for_role_compat,
 )
 from meshagent.api.specs.service import (
@@ -2257,6 +2258,34 @@ async def test_create_room_serializes_permissions_payload():
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_agent_exposes_structured_configuration_error():
+    message = "Enter a model name for allowed_models[0].model."
+    error_code = "invalid_managed_agent_configuration"
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=400,
+                payload={"error": {"code": error_code, "message": message}},
+            )
+        ]
+    )
+    client = Meshagent(base_url="https://example.test", token="token", session=session)
+
+    with pytest.raises(ValidationErrorResponse) as failure:
+        await client.create_agent(
+            project_id="project-1",
+            configuration=ManagedAgentSpec(
+                metadata=ManagedAgentMetadata(name="planner"),
+                allowed_models=[AllowedOpenAIModel(model=" ")],
+            ),
+        )
+
+    assert failure.value.status_code == 400
+    assert failure.value.error_code == error_code
+    assert str(failure.value) == message
 
 
 @pytest.mark.asyncio
