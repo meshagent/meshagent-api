@@ -1,3 +1,6 @@
+## [0.58.0]
+- Stability
+
 ## [0.57.2]
 - Daily storage pricing now uses a prorated rate of $0.05 per GiB-month over a 30-day month.
 
@@ -60,7 +63,7 @@
 - Added deployment discovery for the files endpoint and typed room/managed-agent REST file clients through `Meshagent.files`, including streaming transfers, pagination, metadata, copy/move, deletion, directories, and presigned URL requests.
 - Official OAuth client registrations can request new file scopes; existing tokens and pending codes retain their consented scopes. Reauthorize with `meshagent auth login` to request file access. Rust CLI login now uses the SDK scope catalog.
 - Python and Rust route create/update commands accept `--agent` for public file routes, preserve existing agent backends, and reject ports/IAP.
-- Agent domain routes can publish file-content paths; IAP and service-port paths are rejected for agent backends. Empty paths retain the existing WebSocket route behavior.
+- Managed Agent routes can publish public or IAP-protected file paths. A signed-in browser can reuse its IAP cookie at `/.well-known/meshagent/agent/connect`.
 - Added SQLite `execute_sql_batch` with typed commands, atomic ordered execution, and mixed statement/query results.
 - Added isolated project user profile overrides, `project`, `user`, and default `merged` read views, and `inherit` updates. Global profile edits are self-only; global annotations and user administration require sysadmin endpoints.
 - Added sysadmin global user search and profile editing APIs. Project profile edits require `user_profile_editor`, including edits to your own overrides.

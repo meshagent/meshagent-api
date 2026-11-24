@@ -725,10 +725,6 @@ class RouteSpec(BaseModel):
             for path in self.paths:
                 if path.targetContent is None:
                     raise ValueError("RouteSpec agent paths require targetContent")
-                if path.targetContent.iap:
-                    raise ValueError(
-                        "RouteSpec agent content routes do not support IAP"
-                    )
         return self
 
     @property

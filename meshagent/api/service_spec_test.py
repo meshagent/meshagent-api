@@ -398,9 +398,13 @@ def test_port_spec_rejects_reserved_room_infrastructure_port() -> None:
 
 @pytest.mark.parametrize(
     "paths",
-    [[], [{"path": "/docs", "targetContent": {"subpath": "site", "index": True}}]],
+    [
+        [],
+        [{"path": "/docs", "targetContent": {"subpath": "site", "index": True}}],
+        [{"path": "/docs", "targetContent": {"subpath": "site", "iap": True}}],
+    ],
 )
-def test_agent_routes_allow_legacy_websockets_or_public_files(paths):
+def test_agent_routes_allow_websockets_and_public_or_protected_files(paths):
     spec = RouteSpec.model_validate(
         {
             "metadata": {"name": "agent.example.test"},
@@ -416,12 +420,11 @@ def test_agent_routes_allow_legacy_websockets_or_public_files(paths):
     "path",
     [
         {"targetPort": 80},
-        {"targetContent": {"iap": True}},
         {"targetContent": {}, "stripPrefix": True},
         {"targetContent": {}, "unavailable": "error.html"},
     ],
 )
-def test_agent_routes_reject_iap_and_service_options(path):
+def test_agent_routes_reject_service_options(path):
     with pytest.raises(ValidationError):
         RouteSpec.model_validate(
             {
